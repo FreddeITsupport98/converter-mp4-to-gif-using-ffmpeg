@@ -31,6 +31,48 @@ else
     export TERMINAL_BOUND=false
 fi
 
+# 🔒 Single Instance Lock - Prevent multiple concurrent executions
+# This ensures only one instance of the script runs at a time
+LOCK_FILE="${HOME}/.smart-gif-converter/script.lock"
+LOCK_DIR="$(dirname "$LOCK_FILE")"
+
+# Create lock directory if it doesn't exist
+mkdir -p "$LOCK_DIR" 2>/dev/null || true
+
+# Try to acquire the lock
+if [[ -f "$LOCK_FILE" ]]; then
+    # Lock file exists, check if the process is still running
+    existing_pid=$(cat "$LOCK_FILE" 2>/dev/null)
+    
+    if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" 2>/dev/null; then
+        # Process is still running - block this new instance
+        echo -e "" >&2
+        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+        echo -e "${RED}${BOLD}⏸️  Script is already running in another terminal${NC}" >&2
+        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+        echo -e "" >&2
+        echo -e "${CYAN}Running process ID (PID): ${BOLD}$existing_pid${NC}" >&2
+        echo -e "" >&2
+        echo -e "${CYAN}Your options:${NC}" >&2
+        echo -e "  ${GREEN}1. Wait${NC} - Let the current conversion finish" >&2
+        echo -e "  ${GREEN}2. Stop${NC} - Run: ${BOLD}kill $existing_pid${NC}" >&2
+        echo -e "" >&2
+        exit 1
+    else
+        # Process is not running, clean up stale lock
+        rm -f "$LOCK_FILE" 2>/dev/null || true
+    fi
+fi
+
+# Create lock file with current PID
+echo "$$" > "$LOCK_FILE" 2>/dev/null || true
+
+# Setup cleanup for lock file on exit
+cleanup_lock_file() {
+    rm -f "$LOCK_FILE" 2>/dev/null || true
+}
+trap cleanup_lock_file EXIT
+
 # =============================================================================
 # 🎬 SMART GIF CONVERTER - Revolutionary Video-to-GIF Conversion Tool
 # =============================================================================
@@ -1792,12 +1834,7 @@ detect_duplicate_gifs() {
     echo -e "\n  ${MAGENTA}Choice [1-4]: ${NC}"
     
     local choice
-    if [[ "${INTERACTIVE_MODE:-true}" == "false" ]]; then
-        choice="4"  # Default to skip duplicates in non-interactive mode
-        echo "4 (auto-selected: skip)"
-    else
-        read -r choice
-    fi
+    read -r choice
     
     case "$choice" in
         1)
