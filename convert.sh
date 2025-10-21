@@ -7338,7 +7338,7 @@ _convert_video_internal() {
                 local reopt_filter="fps=${FRAMERATE},scale=${RESOLUTION}:force_original_aspect_ratio=decrease:flags=${SCALING_ALGO},pad=${RESOLUTION}:(ow-iw)/2:(oh-ih)/2:black,palettegen=max_colors=${reopt_colors}:reserve_transparent=0"
                 
                 # Use background process for palette generation and track it
-                ffmpeg $FFMPEG_INPUT_OPTS -i "$file" -vf "$reopt_filter" $FFMPEG_MEMORY_OPTS -frames:v 1 -update 1 -y "$temp_palette" -loglevel error 2>/dev/null &
+                ffmpeg $FFMPEG_INPUT_OPTS -i "$file" -vf "$reopt_filter" $FFMPEG_MEMORY_OPTS -frames:v 1 -update 1 -y "$temp_palette" -loglevel error </dev/null >/dev/null 2>&1 &
                 local palette_pid=$!
                 SCRIPT_FFMPEG_PIDS+=("$palette_pid")
                 
@@ -7360,7 +7360,7 @@ _convert_video_internal() {
                     local reopt_conversion_filter="fps=${FRAMERATE},scale=${RESOLUTION}:force_original_aspect_ratio=decrease:flags=${SCALING_ALGO},pad=${RESOLUTION}:(ow-iw)/2:(oh-ih)/2:black[x];[x][1:v]paletteuse=dither=${DITHER_MODE}:bayer_scale=2"
                     
                     # Use background process for reencoding and track it
-                    ffmpeg $FFMPEG_INPUT_OPTS -i "$file" -i "$temp_palette" -lavfi "$reopt_conversion_filter" $FFMPEG_MEMORY_OPTS -y "$temp_output" -loglevel error 2>/dev/null &
+                    ffmpeg $FFMPEG_INPUT_OPTS -i "$file" -i "$temp_palette" -lavfi "$reopt_conversion_filter" $FFMPEG_MEMORY_OPTS -y "$temp_output" -loglevel error </dev/null >/dev/null 2>&1 &
                     local reopt_pid=$!
                     SCRIPT_FFMPEG_PIDS+=("$reopt_pid")
                     
@@ -7394,7 +7394,6 @@ _convert_video_internal() {
                 
                 kill $ffmpeg_progress_pid 2>/dev/null || true
                 wait $ffmpeg_progress_pid 2>/dev/null || true
-                disown $ffmpeg_progress_pid 2>/dev/null || true  # Remove from job list
                 
                 if [[ "$best_file" != "$final_output_file" && -f "$best_file" ]]; then
                     local savings=$(( (original_size - best_size) * 100 / original_size ))
