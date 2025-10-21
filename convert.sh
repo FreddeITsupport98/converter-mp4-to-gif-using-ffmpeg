@@ -1,9 +1,39 @@
 #!/bin/bash
 
-# Shell compatibility check
+# ============================================================================
+# 🔒 BASH SHELL ENFORCEMENT - This script REQUIRES bash
+# ============================================================================
+# This check runs immediately (even before any sourcing or subshells)
 if [ -z "$BASH_VERSION" ]; then
-    echo "Error: This script requires bash, but you're running it with $0"
-    echo "Please run: bash $0 or make sure the script is executable and run: ./$0"
+    # Not running in bash - show helpful error and exit
+    echo ""
+    echo "╔════════════════════════════════════════════════════════════════════╗"
+    echo "║                    ⚠️  SHELL COMPATIBILITY ERROR                    ║"
+    echo "╚════════════════════════════════════════════════════════════════════╝"
+    echo ""
+    echo "🚫 This script REQUIRES GNU Bash and cannot run in $(basename $SHELL)."
+    echo ""
+    echo "📝 Why? The script uses advanced bash features like:"
+    echo "   • Associative arrays"
+    echo "   • Parameter expansion (\${var//pattern/replace})"
+    echo "   • Process substitution"
+    echo "   • [[  ]] test syntax"
+    echo "   • \${...} advanced substitution"
+    echo ""
+    echo "💡 How to fix this:"
+    echo "   1. Run with bash explicitly:"
+    echo "      bash $0"
+    echo ""
+    echo "   2. Or set bash as your default shell:"
+    echo "      chsh -s /bin/bash"
+    echo ""
+    echo "   3. Then run the script normally:"
+    echo "      ./$(basename $0)"
+    echo ""
+    echo "📋 Current shell:"
+    echo "   SHELL variable: $SHELL"
+    echo "   Running as: $(basename $0)"
+    echo ""
     exit 1
 fi
 
