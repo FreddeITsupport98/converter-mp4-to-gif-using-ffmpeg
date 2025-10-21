@@ -1856,12 +1856,14 @@ detect_duplicate_gifs() {
     
     echo -e "  ${YELLOW}What would you like to do with duplicate GIFs?${NC}"
     echo -e "  ${CYAN}1)${NC} Delete duplicates automatically (recommended)"
-    echo -e "  ${CYAN}2)${NC} Move duplicates to backup folder"
-    echo -e "  ${CYAN}3)${NC} Review each duplicate interactively"
-    echo -e "  ${CYAN}4)${NC} Skip and continue (keep all duplicates)"
-    echo -e "\n  ${GRAY}Option 2 moves duplicates to ~/.smart-gif-converter/duplicate_gifs/"
+    echo -e "  ${CYAN}2)${NC} Smart delete (also remove corresponding video files)"
+    echo -e "  ${CYAN}3)${NC} Move duplicates to backup folder"
+    echo -e "  ${CYAN}4)${NC} Review each duplicate interactively"
+    echo -e "  ${CYAN}5)${NC} Skip and continue (keep all duplicates)"
+    echo -e "  ${GRAY}Option 2 prevents re-conversion of duplicate content.${NC}"
+    echo -e "  ${GRAY}Option 3 moves duplicates to ~/.smart-gif-converter/duplicate_gifs/"
     echo -e "  so you can review them later if needed.${NC}"
-    echo -e "\n  ${MAGENTA}Choice [1-4]: ${NC}"
+    echo -e "\n  ${MAGENTA}Choice [1-5]: ${NC}"
     
     local choice
     read -r choice
@@ -1889,6 +1891,21 @@ detect_duplicate_gifs() {
                 if [[ -f "$remove_file" ]] && rm -f "$remove_file" 2>/dev/null; then
                     echo -e "    ${GREEN}✓ Deleted: $remove_file (keeping $keep_file)${NC}"
                     ((deleted_count++))
+                    
+                    # Also delete the corresponding video file to prevent re-conversion
+                    local video_file="${remove_file%.*}.mp4"
+                    local alt_extensions=("avi" "mov" "mkv" "webm")
+                    
+                    for ext in "mp4" "${alt_extensions[@]}"; do
+                        local corresponding_video="${remove_file%.*}.$ext"
+                        if [[ -f "$corresponding_video" ]]; then
+                            if rm -f "$corresponding_video" 2>/dev/null; then
+                                echo -e "    ${BLUE}  ↳ Also deleted corresponding video: $(basename "$corresponding_video")${NC}"
+                            fi
+                            break
+                        fi
+                    done
+                    
                     # Log the deletion
                     {
                         echo "[$(date '+%Y-%m-%d %H:%M:%S')] DUPLICATE GIF DELETED: $remove_file (kept $keep_file)"
@@ -1899,7 +1916,45 @@ detect_duplicate_gifs() {
             done
             echo -e "  ${GREEN}✓ $deleted_count duplicate GIF(s) cleaned up${NC}"
             ;;
-        2)
+        "2")
+            echo -e "\n  ${YELLOW}🤖 Smart deleting duplicate GIFs and corresponding videos...${NC}"
+            local smart_deleted_count=0
+            for pair in "${duplicate_pairs[@]}"; do
+                local remove_file="${pair%|*}"
+                local keep_file="${pair#*|}"
+                
+                # Safety check: only delete GIF files
+                if [[ "${remove_file##*.}" != "gif" ]]; then
+                    echo -e "    ${RED}❌ SAFETY: Refusing to delete non-GIF file: $remove_file${NC}"
+                    continue
+                fi
+                
+                if [[ -f "$remove_file" ]] && rm -f "$remove_file" 2>/dev/null; then
+                    echo -e "    ${GREEN}✓ Deleted GIF: $remove_file (keeping $keep_file)${NC}"
+                    
+                    # Also delete the corresponding video file
+                    for ext in "mp4" "avi" "mov" "mkv" "webm"; do
+                        local corresponding_video="${remove_file%.*}.$ext"
+                        if [[ -f "$corresponding_video" ]]; then
+                            if rm -f "$corresponding_video" 2>/dev/null; then
+                                echo -e "    ${BLUE}  ↳ Also deleted video: $(basename "$corresponding_video")${NC}"
+                            fi
+                            break
+                        fi
+                    done
+                    
+                    ((smart_deleted_count++))
+                    # Log the deletion
+                    {
+                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SMART DUPLICATE DELETED: $remove_file + video (kept $keep_file)"
+                    } >> "$CONVERSION_LOG" 2>/dev/null || true
+                else
+                    echo -e "    ${RED}❌ Failed to delete: $remove_file${NC}"
+                fi
+            done
+            echo -e "  ${GREEN}✓ $smart_deleted_count duplicate GIF(s) and videos cleaned up${NC}"
+            ;;
+        "3")
             echo -e "\n  ${YELLOW}📦 Moving duplicate GIFs to backup...${NC}"
             local backup_dir="$LOG_DIR/duplicate_gifs"
             mkdir -p "$backup_dir" 2>/dev/null || {
@@ -1938,7 +1993,7 @@ detect_duplicate_gifs() {
             done
             echo -e "  ${GREEN}✓ $moved_count duplicate GIF(s) moved to: $backup_dir${NC}"
             ;;
-        3)
+        "4")
             echo -e "\n  ${CYAN}🔍 Interactive duplicate review:${NC}"
             for pair in "${duplicate_pairs[@]}"; do
                 local remove_file="${pair%|*}"
@@ -1974,7 +2029,7 @@ detect_duplicate_gifs() {
                 fi
             done
             ;;
-        4)
+        "5")
             echo -e "\n  ${YELLOW}⚠️  Keeping all duplicate GIFs${NC}"
             echo -e "  ${YELLOW}Note: Duplicates may consume unnecessary disk space${NC}"
             ;;
