@@ -189,10 +189,124 @@ AI_VISUAL_SIMILARITY=true  # Enable visual similarity in duplicate detection
 AI_SMART_CROP=true  # Enable intelligent crop detection
 AI_DYNAMIC_FRAMERATE=true  # Enable smart frame rate adjustment
 AI_QUALITY_SCALING=true  # Enable intelligent quality parameter scaling
-AI_CONTENT_FINGERPRINT=true  # Enable content fingerprinting for duplicates
+AI_CONTENT_FINGERPRINT=true   # Enable content fingerprinting for duplicates
 AI_THREADS_OPTIMAL="auto"  # AI-optimized thread count
-AI_MEMORY_OPT="auto"  # AI-optimized memory settings
+AI_MEMORY_OPT="auto"        # AI-optimized memory settings
+
+# 🔍 AI Video Discovery Preferences
+AI_DISCOVERY_ENABLED=true      # Enable AI video discovery when no files found
+AI_DISCOVERY_AUTO_SELECT="ask" # Auto selection mode: "ask", "recent", "all", "disabled"
+AI_DISCOVERY_REMEMBER_CHOICE=true  # Remember user's selection preference
 CPU_BENCHMARK=false
+
+# 🚀 Advanced Multi-Threading Configuration
+CPU_CORES="$(nproc 2>/dev/null || echo '4')"
+CPU_PHYSICAL_CORES="$(lscpu 2>/dev/null | grep '^Core(s) per socket:' | awk '{print $4}' || echo "$CPU_CORES")"
+CPU_LOGICAL_CORES="$CPU_CORES"
+AI_MAX_PARALLEL_JOBS="$(( CPU_CORES > 8 ? 8 : CPU_CORES ))"  # Cap at 8 for memory efficiency
+AI_DUPLICATE_THREADS="$(( CPU_CORES > 4 ? CPU_CORES - 1 : CPU_CORES ))"  # Leave 1 core free on high-core systems
+AI_ANALYSIS_BATCH_SIZE="$(( CPU_CORES * 2 ))"  # Process 2x CPU cores worth in each batch
+
+# 🚀 Parallel Processing Utility Functions
+# =====================================================
+
+# 🧠 Optimize thread count based on workload type
+get_optimal_threads() {
+    local workload_type="${1:-default}"  # io, cpu, mixed, default
+    local total_work="${2:-1}"           # Number of items to process
+    
+    case "$workload_type" in
+        "io")  # I/O intensive (file operations, FFprobe)
+            # Use more threads for I/O bound tasks
+            echo "$(( CPU_CORES * 2 ))"
+            ;;
+        "cpu") # CPU intensive (FFmpeg encoding, hash calculations)
+            # Use physical cores to avoid oversubscription
+            echo "$CPU_PHYSICAL_CORES"
+            ;;
+        "mixed") # Mixed workload
+            # Use logical cores but cap at reasonable limit
+            echo "$(( CPU_CORES > 12 ? 12 : CPU_CORES ))"
+            ;;
+        "memory") # Memory intensive operations
+            # Conservative threading to avoid memory pressure
+            echo "$(( CPU_CORES > 6 ? 6 : CPU_CORES ))"
+            ;;
+        *) # Default balanced approach
+            # Adapt based on total work and available cores
+            if [[ $total_work -lt $CPU_CORES ]]; then
+                echo "$total_work"  # Don't use more threads than work items
+            else
+                echo "$CPU_CORES"
+            fi
+            ;;
+    esac
+}
+
+# ⚡ Run commands in parallel with controlled concurrency
+run_parallel() {
+    local max_jobs="$1"      # Maximum concurrent jobs
+    local job_function="$2"  # Function to call for each item
+    shift 2                  # Remove first two args
+    local items=("$@")       # Remaining args are items to process
+    
+    if [[ $max_jobs -le 1 || ${#items[@]} -eq 0 ]]; then
+        # No parallelization needed/possible
+        for item in "${items[@]}"; do
+            "$job_function" "$item"
+        done
+        return
+    fi
+    
+    local active_jobs=0
+    local job_pids=()
+    
+    for item in "${items[@]}"; do
+        # Wait if we have too many active jobs
+        while [[ $active_jobs -ge $max_jobs ]]; do
+            # Check for completed jobs
+            local new_pids=()
+            for pid in "${job_pids[@]}"; do
+                if kill -0 "$pid" 2>/dev/null; then
+                    new_pids+=("$pid")
+                else
+                    ((active_jobs--))
+                fi
+            done
+            job_pids=("${new_pids[@]}")
+            
+            # Short sleep to avoid busy waiting
+            [[ $active_jobs -ge $max_jobs ]] && sleep 0.1
+        done
+        
+        # Start new job in background
+        "$job_function" "$item" &
+        job_pids+=("$!")
+        ((active_jobs++))
+    done
+    
+    # Wait for all remaining jobs to complete
+    for pid in "${job_pids[@]}"; do
+        wait "$pid" 2>/dev/null || true
+    done
+}
+
+# 📊 Progress tracker for parallel operations
+update_parallel_progress() {
+    local current="$1"
+    local total="$2"
+    local operation="${3:-Processing}"
+    local bar_length="${4:-25}"
+    
+    local progress=$(( current * 100 / total ))
+    local filled=$(( progress * bar_length / 100 ))
+    local empty=$(( bar_length - filled ))
+    
+    printf "\r  ${CYAN}%s [${NC}" "$operation"
+    for ((i=0; i<filled; i++)); do printf "${GREEN}█${NC}"; done
+    for ((i=0; i<empty; i++)); do printf "${GRAY}░${NC}"; done
+    printf "${CYAN}] ${BOLD}%3d%%${NC} (${BOLD}%d${NC}/${BOLD}%d${NC})" "$progress" "$current" "$total"
+}
 RAM_OPTIMIZATION=true
 RAM_CACHE_SIZE="auto"
 RAM_DISK_ENABLED=false
@@ -540,7 +654,7 @@ ai_smart_analyze() {
     CROP_FILTER=""
     AI_CONTENT_CACHE=""
     
-    echo -e "  🧠 ${CYAN}Advanced AI Analysis Starting...${NC}"
+    echo -e "  🧠 ${CYAN}Advanced AI Analysis Starting (${BOLD}$AI_MAX_PARALLEL_JOBS threads${NC}${CYAN})...${NC}"
     
     # Get basic video properties first
     local video_info=$(get_video_properties "$file")
@@ -580,15 +694,16 @@ ai_smart_analyze() {
     echo -e "  ✅ ${GREEN}AI Analysis Complete${NC}"
 }
 
-# 📊 Get comprehensive video properties
+# 📊 Get comprehensive video properties with optimal threading
 get_video_properties() {
     local file="$1"
     local properties
+    local optimal_threads=$(get_optimal_threads "io" 1)
     
-    # Use ffprobe to get detailed information
+    # Use ffprobe to get detailed information with optimal threading
     if command -v jq >/dev/null 2>&1; then
-        # Enhanced analysis with jq
-        properties=$(ffprobe -v quiet -print_format json -show_format -show_streams "$file" 2>/dev/null)
+        # Enhanced analysis with jq and optimized threading
+        properties=$(ffprobe -v quiet -threads $optimal_threads -print_format json -show_format -show_streams "$file" 2>/dev/null)
         
         local duration=$(echo "$properties" | jq -r '.format.duration // "0"' | cut -d. -f1)
         local width=$(echo "$properties" | jq -r '.streams[0].width // "0"')
@@ -598,11 +713,11 @@ get_video_properties() {
         
         echo "${duration}|${width}|${height}|${fps}|${bitrate}"
     else
-        # Fallback without jq
-        local duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$file" 2>/dev/null | cut -d. -f1)
-        local width=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$file" 2>/dev/null)
-        local height=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$file" 2>/dev/null)
-        local fps=$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 "$file" 2>/dev/null | cut -d'/' -f1)
+        # Fallback without jq but with optimal threading
+        local duration=$(ffprobe -v error -threads $optimal_threads -show_entries format=duration -of csv=p=0 "$file" 2>/dev/null | cut -d. -f1)
+        local width=$(ffprobe -v error -threads $optimal_threads -select_streams v:0 -show_entries stream=width -of csv=p=0 "$file" 2>/dev/null)
+        local height=$(ffprobe -v error -threads $optimal_threads -select_streams v:0 -show_entries stream=height -of csv=p=0 "$file" 2>/dev/null)
+        local fps=$(ffprobe -v error -threads $optimal_threads -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 "$file" 2>/dev/null | cut -d'/' -f1)
         local bitrate="0"
         
         echo "${duration:-0}|${width:-0}|${height:-0}|${fps:-0}|${bitrate}"
@@ -642,29 +757,30 @@ ai_smart_analysis() {
     apply_ai_optimizations "$content_type" "$motion_level" "$complexity_score" "$duration" "$width" "$height"
 }
 
-# 🎨 Enhanced Content Type Detection with ML-inspired algorithms
+# 🎨 Hyper-Optimized Content Type Detection with Multi-Threading
 detect_content_type() {
     local file="$1" duration="$2" width="$3" height="$4"
+    local cpu_threads=$(get_optimal_threads "cpu" 5)
     
-    # Multi-stage analysis for accurate content type detection
+    # Multi-stage parallel analysis for maximum performance
     local content_scores=()
     
-    # Stage 1: Visual Pattern Analysis
-    local histogram_variance=$(ffmpeg -v error -i "$file" -t 8 -vf "histogram=level_height=200,scale=100:100" -frames:v 10 -f null - 2>&1 | wc -l 2>/dev/null || echo "0")
+    # Stage 1: Visual Pattern Analysis (optimized with maximum threads)
+    local histogram_variance=$(ffmpeg -v error -threads $cpu_threads -i "$file" -t 6 -vf "histogram=level_height=150,scale=80:80:flags=fast_bilinear" -frames:v 8 -f null - 2>&1 | wc -l 2>/dev/null || echo "0")
     
-    # Stage 2: Advanced Edge Detection with multiple thresholds
-    local edge_low=$(ffmpeg -v error -i "$file" -t 5 -vf "edgedetect=low=0.05:high=0.2" -frames:v 8 -f null - 2>&1 | grep -c "frame=" 2>/dev/null || echo "0")
-    local edge_high=$(ffmpeg -v error -i "$file" -t 5 -vf "edgedetect=low=0.2:high=0.6" -frames:v 8 -f null - 2>&1 | grep -c "frame=" 2>/dev/null || echo "0")
+    # Stage 2: Advanced Edge Detection with multiple thresholds (parallel processing)
+    local edge_low=$(ffmpeg -v error -threads $cpu_threads -i "$file" -t 4 -vf "edgedetect=low=0.05:high=0.2:flags=fast_bilinear" -frames:v 6 -f null - 2>&1 | grep -c "frame=" 2>/dev/null || echo "0")
+    local edge_high=$(ffmpeg -v error -threads $cpu_threads -i "$file" -t 4 -vf "edgedetect=low=0.2:high=0.6:flags=fast_bilinear" -frames:v 6 -f null - 2>&1 | grep -c "frame=" 2>/dev/null || echo "0")
     
-    # Stage 3: Color Complexity Analysis
-    local color_stats=$(ffmpeg -v error -i "$file" -t 4 -vf "signalstats" -f null - 2>&1 | grep -E "YAVG=|UAVG=|VAVG=" | wc -l 2>/dev/null || echo "0")
-    local color_range=$(ffmpeg -v error -i "$file" -t 3 -vf "signalstats" -f null - 2>&1 | grep -E "YMAX=|YMIN=" | wc -l 2>/dev/null || echo "0")
+    # Stage 3: Color Complexity Analysis (optimized)
+    local color_stats=$(ffmpeg -v error -threads $cpu_threads -i "$file" -t 3 -vf "signalstats" -f null - 2>&1 | grep -E "YAVG=|UAVG=|VAVG=" | wc -l 2>/dev/null || echo "0")
+    local color_range=$(ffmpeg -v error -threads $cpu_threads -i "$file" -t 3 -vf "signalstats" -f null - 2>&1 | grep -E "YMAX=|YMIN=" | wc -l 2>/dev/null || echo "0")
     
-    # Stage 4: Motion Vector Analysis
-    local motion_vectors=$(ffmpeg -v error -i "$file" -t 6 -vf "select='gt(scene,0.1)',showinfo" -f null - 2>&1 | grep -c "scene:" 2>/dev/null || echo "0")
+    # Stage 4: Motion Vector Analysis (accelerated)
+    local motion_vectors=$(ffmpeg -v error -threads $cpu_threads -i "$file" -t 5 -vf "select='gt(scene,0.1)',showinfo" -f null - 2>&1 | grep -c "scene:" 2>/dev/null || echo "0")
     
-    # Stage 5: Frame Rate Pattern Analysis
-    local fps_consistency=$(ffmpeg -v error -i "$file" -t 4 -vf "select='not(mod(n,5))',showinfo" -f null - 2>&1 | grep -c "pkt_pts_time=" 2>/dev/null || echo "0")
+    # Stage 5: Frame Rate Pattern Analysis (optimized)
+    local fps_consistency=$(ffmpeg -v error -threads $cpu_threads -i "$file" -t 3 -vf "select='not(mod(n,4))',showinfo" -f null - 2>&1 | grep -c "pkt_pts_time=" 2>/dev/null || echo "0")
     
     # Sanitize and normalize values
     histogram_variance=${histogram_variance//[^0-9]/}; histogram_variance=${histogram_variance:-0}
@@ -1280,12 +1396,29 @@ ai_quality_selection() {
     
     for i in "${!quality_options[@]}"; do
         local num=$((i + 1))
-        local is_current=$([[ "${quality_values[$i]}" == "$QUALITY" ]] && echo " 🎯 (Current)" || echo "")
-        local is_recommended=$([[ "${quality_values[$i]}" == "$ai_recommendation" ]] && echo " 💡 (AI Recommended)" || echo "")
         
-        # Special handling for AI auto option
+        # Don't show "(Current)" in quick mode - user is making a fresh selection
+        # Only show current if this is a settings/advanced mode, not quick selection
+        local is_current=""
+        
+        # Check if this option matches the AI recommendation
+        local is_recommended=""
+        if [[ "${quality_values[$i]}" == "$ai_recommendation" ]]; then
+            is_recommended=" 💡 (AI Recommended)"
+        fi
+        
+        # Special handling for AI auto option - always show as smart choice
         if [[ "${quality_values[$i]}" == "ai_auto" ]]; then
             is_recommended=" 🎆 (Smart Choice!)"
+            # Don't show as current for ai_auto since it's a special mode
+            if [[ "$QUALITY" == "ai_auto" ]]; then
+                is_current=""
+            fi
+        fi
+        
+        # Optional debug output (enable by setting DEBUG_AI_SELECTION=true)
+        if [[ "$DEBUG_AI_SELECTION" == "true" ]]; then
+            echo "DEBUG: Option $((i+1)): value='${quality_values[$i]}' current_QUALITY='$QUALITY' ai_rec='$ai_recommendation'" >&2
         fi
         
         echo -e "  ${GREEN}[$num]${NC} ${quality_options[$i]}${is_current}${is_recommended}"
@@ -1310,19 +1443,489 @@ ai_quality_selection() {
             AI_AUTO_QUALITY=false
             echo -e "${GREEN}✓ Selected: ${BOLD}$QUALITY${NC} ${GREEN}quality${NC}"
         fi
+        
+        # Save the selected quality choice to settings
+        if [[ -n "$SETTINGS_FILE" ]]; then
+            save_settings --silent
+        fi
     else
         # Use AI recommendation as default
         apply_preset "$ai_recommendation"
         AI_AUTO_QUALITY=false
         echo -e "${GREEN}✓ Using AI recommendation: ${BOLD}$QUALITY${NC} ${GREEN}quality${NC}"
+        
+        # Save the AI recommendation to settings
+        if [[ -n "$SETTINGS_FILE" ]]; then
+            save_settings --silent
+        fi
     fi
     
     echo -e "${CYAN}${BOLD}🧠 AI will now analyze and optimize all other settings based on each video's content!${NC}"
 }
 
+# 🤖 AI-Powered Video Discovery System
+ai_discover_videos() {
+    # Check if AI discovery is enabled
+    if [[ "$AI_DISCOVERY_ENABLED" != "true" ]]; then
+        echo -e "  ${YELLOW}🙅 AI video discovery is disabled${NC}"
+        echo -e "  ${CYAN}Enable it with: ${BOLD}AI_DISCOVERY_ENABLED=true${NC}"
+        return 1
+    fi
+    
+    echo -e "  ${CYAN}🔍 AI is scanning common video locations...${NC}"
+    
+    # Define intelligent search paths
+    local search_paths=()
+    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    
+    # Add script directory and common video locations
+    search_paths+=("$script_dir")
+    search_paths+=("$HOME/Videos")
+    search_paths+=("$HOME/Downloads")
+    search_paths+=("$HOME/Desktop")
+    search_paths+=("$HOME/Documents")
+    search_paths+=("$HOME/Pictures")
+    search_paths+=("$(pwd)")
+    
+    # Add any mounted drives or common media locations
+    if [[ -d "/media/$USER" ]]; then
+        for media_dir in /media/$USER/*; do
+            [[ -d "$media_dir" ]] && search_paths+=("$media_dir")
+        done
+    fi
+    
+    # Remove duplicates and non-existent paths
+    local unique_paths=()
+    for path in "${search_paths[@]}"; do
+        if [[ -d "$path" ]] && ! printf '%s\n' "${unique_paths[@]}" | grep -Fxq "$path"; then
+            unique_paths+=("$path")
+        fi
+    done
+    
+    # Search for videos with progress indication
+    local total_paths=${#unique_paths[@]}
+    local current_path=0
+    local found_videos=()
+    
+    for search_dir in "${unique_paths[@]}"; do
+        ((current_path++))
+        local progress=$((current_path * 100 / total_paths))
+        
+        printf "\r  ${BLUE}Scanning [${NC}"
+        local filled=$((progress * 20 / 100))
+        for ((i=0; i<filled; i++)); do printf "${GREEN}█${NC}"; done
+        for ((i=filled; i<20; i++)); do printf "${GRAY}░${NC}"; done
+        printf "${BLUE}] ${BOLD}%3d%%${NC} ${CYAN}%s${NC}" "$progress" "$(basename "$search_dir")"
+        
+        # Search for video files (non-recursive for performance)
+        shopt -s nullglob
+        for ext in mp4 avi mov mkv webm MP4 AVI MOV MKV WEBM; do
+            for video in "$search_dir"/*."$ext"; do
+                if [[ -f "$video" ]]; then
+                    # Get file info for intelligent sorting
+                    local size=$(stat -c%s "$video" 2>/dev/null || echo "0")
+                    local modified=$(stat -c%Y "$video" 2>/dev/null || echo "0")
+                    found_videos+=("$video|$size|$modified")
+                fi
+            done
+        done
+        shopt -u nullglob
+    done
+    
+    printf "\r  ${GREEN}✓ Search complete! Found ${BOLD}${#found_videos[@]}${NC} ${GREEN}video files${NC}\n\n"
+    
+    if [[ ${#found_videos[@]} -eq 0 ]]; then
+        echo -e "  ${YELLOW}🚨 No video files found in common locations${NC}"
+        echo -e "  ${GRAY}Searched in: $(printf '%s, ' "${unique_paths[@]%,}" | sed 's/, $//')${NC}"
+        return 1
+    fi
+    
+    # Sort videos by modification time (newest first) and size
+    local sorted_videos=()
+    while IFS= read -r line; do
+        sorted_videos+=("$line")
+    done < <(printf '%s\n' "${found_videos[@]}" | sort -t'|' -k3,3nr -k2,2nr)
+    
+    # Display found videos with intelligent categorization
+    echo -e "  ${GREEN}${BOLD}🎬 Found Videos - AI Analysis & Recommendations:${NC}\n"
+    
+    # Categorize videos
+    local recent_videos=()
+    local large_videos=()
+    local other_videos=()
+    local current_time=$(date +%s)
+    
+    for video_info in "${sorted_videos[@]}"; do
+        local video_path="${video_info%%|*}"
+        local size="${video_info#*|}"; size="${size%|*}"
+        local modified="${video_info##*|}"
+        
+        local age_days=$(( (current_time - modified) / 86400 ))
+        local size_mb=$((size / 1024 / 1024))
+        
+        if [[ $age_days -le 7 ]]; then
+            recent_videos+=("$video_info")
+        elif [[ $size_mb -gt 50 ]]; then
+            large_videos+=("$video_info")
+        else
+            other_videos+=("$video_info")
+        fi
+    done
+    
+    # Display categories with AI insights
+    local display_count=0
+    local max_display=15
+    
+    if [[ ${#recent_videos[@]} -gt 0 ]]; then
+        echo -e "  ${YELLOW}${BOLD}🔥 Recent Videos (Modified within 7 days):${NC}"
+        for video_info in "${recent_videos[@]}"; do
+            [[ $display_count -ge $max_display ]] && break
+            display_video_option "$video_info" $((++display_count))
+        done
+        echo ""
+    fi
+    
+    if [[ ${#large_videos[@]} -gt 0 && $display_count -lt $max_display ]]; then
+        echo -e "  ${BLUE}${BOLD}💾 Large Videos (>50MB):${NC}"
+        for video_info in "${large_videos[@]}"; do
+            [[ $display_count -ge $max_display ]] && break
+            display_video_option "$video_info" $((++display_count))
+        done
+        echo ""
+    fi
+    
+    if [[ ${#other_videos[@]} -gt 0 && $display_count -lt $max_display ]]; then
+        echo -e "  ${CYAN}${BOLD}📁 Other Videos:${NC}"
+        for video_info in "${other_videos[@]}"; do
+            [[ $display_count -ge $max_display ]] && break
+            display_video_option "$video_info" $((++display_count))
+        done
+        echo ""
+    fi
+    
+    if [[ ${#sorted_videos[@]} -gt $max_display ]]; then
+        echo -e "  ${GRAY}... and $((${#sorted_videos[@]} - max_display)) more videos${NC}\n"
+    fi
+    
+    # Check for auto-selection based on user preferences
+    if [[ "$AI_DISCOVERY_AUTO_SELECT" != "ask" ]]; then
+        echo -e "  ${BLUE}🤖 ${BOLD}AI Auto-Selection Mode: $AI_DISCOVERY_AUTO_SELECT${NC}"
+        
+        case "$AI_DISCOVERY_AUTO_SELECT" in
+            "recent")
+                if [[ ${#recent_videos[@]} -gt 0 ]]; then
+                    echo -e "  ${GREEN}✓ Auto-selecting ${#recent_videos[@]} recent videos!${NC}"
+                    copy_videos_to_current "${recent_videos[@]}"
+                    return 0
+                else
+                    echo -e "  ${YELLOW}No recent videos found, showing manual options...${NC}"
+                fi
+                ;;
+            "all")
+                echo -e "  ${GREEN}✓ Auto-selecting all displayed videos!${NC}"
+                copy_videos_to_current "${sorted_videos[@]:0:$display_count}"
+                return 0
+                ;;
+            "disabled")
+                echo -e "  ${YELLOW}AI auto-selection disabled, showing manual options...${NC}"
+                ;;
+        esac
+        echo ""
+    fi
+    
+    # User selection options with clear explanation
+    echo -e "  ${MAGENTA}${BOLD}🎯 Selection Options:${NC}"
+    echo -e "  ${YELLOW}📍 Important: Selected videos will be ${BOLD}copied${NC} ${YELLOW}to current directory for conversion${NC}"
+    echo -e "  ${CYAN}💾 GIF outputs will be saved in: ${BOLD}$(pwd)${NC}\n"
+    echo -e "    ${GREEN}[a]${NC} Copy all displayed videos here and convert"
+    echo -e "    ${GREEN}[r]${NC} Copy recent videos only (${#recent_videos[@]} files) and convert"
+    echo -e "    ${GREEN}[1-$display_count]${NC} Copy specific video by number and convert"
+    echo -e "    ${GREEN}[c]${NC} Copy custom selection (ranges like 1,3,5 or 1-5)"
+    echo -e "    ${GREEN}[w]${NC} Change working directory first"
+    echo -e "    ${GREEN}[s]${NC} Save preference and set auto-selection mode"
+    echo -e "    ${GREEN}[n]${NC} No thanks, I'll add videos manually\n"
+    
+    echo -e "${MAGENTA}Your choice: ${NC}"
+    read -r choice
+    
+    case "$choice" in
+        "a"|"A")
+            echo -e "\n${GREEN}✓ Selected all displayed videos!${NC}"
+            # Remember this choice if enabled
+            if [[ "$AI_DISCOVERY_REMEMBER_CHOICE" == "true" ]]; then
+                AI_DISCOVERY_AUTO_SELECT="all"
+                save_settings --silent
+                echo -e "  ${CYAN}💾 Remembered: Will auto-select all videos next time${NC}"
+            fi
+            copy_videos_to_current "${sorted_videos[@]:0:$display_count}"
+            return 0
+            ;;
+        "r"|"R")
+            if [[ ${#recent_videos[@]} -gt 0 ]]; then
+                echo -e "\n${GREEN}✓ Selected ${#recent_videos[@]} recent videos!${NC}"
+                # Remember this choice if enabled
+                if [[ "$AI_DISCOVERY_REMEMBER_CHOICE" == "true" ]]; then
+                    AI_DISCOVERY_AUTO_SELECT="recent"
+                    save_settings --silent
+                    echo -e "  ${CYAN}💾 Remembered: Will auto-select recent videos next time${NC}"
+                fi
+                copy_videos_to_current "${recent_videos[@]}"
+                return 0
+            else
+                echo -e "\n${YELLOW}No recent videos found${NC}"
+                return 1
+            fi
+            ;;
+        [1-9]|[1-9][0-9])
+            if [[ $choice -le $display_count ]]; then
+                local selected_video="${sorted_videos[$((choice-1))]}"
+                echo -e "\n${GREEN}✓ Selected video #$choice!${NC}"
+                copy_videos_to_current "$selected_video"
+                return 0
+            else
+                echo -e "\n${RED}Invalid selection${NC}"
+                return 1
+            fi
+            ;;
+        "c"|"C")
+            echo -e "\n${CYAN}Enter video numbers to copy (e.g., 1,3,5 or 1-5): ${NC}"
+            read -r range_input
+            copy_videos_by_range "$range_input" "${sorted_videos[@]:0:$display_count}"
+            return $?
+            ;;
+        "w"|"W")
+            echo -e "\n${BLUE}${BOLD}📂 Change Working Directory${NC}"
+            echo -e "${CYAN}Current: ${BOLD}$(pwd)${NC}"
+            echo -e "${YELLOW}Enter new directory path (or press Enter to browse): ${NC}"
+            read -r new_dir
+            
+            if [[ -z "$new_dir" ]]; then
+                # Show some common directory options
+                echo -e "\n${CYAN}Common directories:${NC}"
+                echo -e "  ${GREEN}[1]${NC} $HOME/Desktop"
+                echo -e "  ${GREEN}[2]${NC} $HOME/Downloads"
+                echo -e "  ${GREEN}[3]${NC} $HOME/Documents"
+                echo -e "  ${GREEN}[4]${NC} $HOME/Videos"
+                echo -e "  ${GREEN}[c]${NC} Custom path\n"
+                
+                read -r dir_choice
+                case "$dir_choice" in
+                    "1") new_dir="$HOME/Desktop" ;;
+                    "2") new_dir="$HOME/Downloads" ;;
+                    "3") new_dir="$HOME/Documents" ;;
+                    "4") new_dir="$HOME/Videos" ;;
+                    "c"|"C")
+                        echo -e "${YELLOW}Enter full directory path: ${NC}"
+                        read -r new_dir
+                        ;;
+                    *) 
+                        echo -e "${RED}Invalid choice${NC}"
+                        return 1
+                        ;;
+                esac
+            fi
+            
+            if [[ -d "$new_dir" ]]; then
+                cd "$new_dir" 2>/dev/null
+                echo -e "${GREEN}✓ Changed to: ${BOLD}$(pwd)${NC}"
+                echo -e "${CYAN}Restarting AI discovery in new location...${NC}\n"
+                ai_discover_videos
+                return $?
+            else
+                echo -e "${RED}❌ Directory does not exist: $new_dir${NC}"
+                return 1
+            fi
+            ;;
+        "s"|"S")
+            echo -e "\n${BLUE}${BOLD}💾 AI Discovery Preferences${NC}"
+            echo -e "${CYAN}Configure how AI should handle video discovery:${NC}\n"
+            
+            echo -e "  ${GREEN}[1]${NC} Ask me each time (current: $([ "$AI_DISCOVERY_AUTO_SELECT" = "ask" ] && echo "✓" || echo " "))"
+            echo -e "  ${GREEN}[2]${NC} Always auto-select recent videos (current: $([ "$AI_DISCOVERY_AUTO_SELECT" = "recent" ] && echo "✓" || echo " "))"
+            echo -e "  ${GREEN}[3]${NC} Always auto-select all videos (current: $([ "$AI_DISCOVERY_AUTO_SELECT" = "all" ] && echo "✓" || echo " "))"
+            echo -e "  ${GREEN}[4]${NC} Disable auto-selection (current: $([ "$AI_DISCOVERY_AUTO_SELECT" = "disabled" ] && echo "✓" || echo " "))\n"
+            
+            echo -e "  ${YELLOW}Remember choices: $(get_status_icon "$AI_DISCOVERY_REMEMBER_CHOICE")${NC}"
+            echo -e "  ${GREEN}[r]${NC} Toggle remember choices\n"
+            
+            read -r pref_choice
+            case "$pref_choice" in
+                "1") 
+                    AI_DISCOVERY_AUTO_SELECT="ask"
+                    echo -e "${GREEN}✓ Will ask for selection each time${NC}"
+                    ;;
+                "2") 
+                    AI_DISCOVERY_AUTO_SELECT="recent"
+                    echo -e "${GREEN}✓ Will auto-select recent videos${NC}"
+                    ;;
+                "3") 
+                    AI_DISCOVERY_AUTO_SELECT="all"
+                    echo -e "${GREEN}✓ Will auto-select all videos${NC}"
+                    ;;
+                "4") 
+                    AI_DISCOVERY_AUTO_SELECT="disabled"
+                    echo -e "${GREEN}✓ Auto-selection disabled${NC}"
+                    ;;
+                "r"|"R")
+                    AI_DISCOVERY_REMEMBER_CHOICE=$([[ "$AI_DISCOVERY_REMEMBER_CHOICE" == "true" ]] && echo "false" || echo "true")
+                    echo -e "${GREEN}✓ Remember choices: $(get_status_text "$AI_DISCOVERY_REMEMBER_CHOICE")${NC}"
+                    ;;
+                *)
+                    echo -e "${YELLOW}No changes made${NC}"
+                    return 0
+                    ;;
+            esac
+            
+            save_settings --silent
+            echo -e "${CYAN}💾 Preferences saved!${NC}"
+            echo -e "${YELLOW}Restarting discovery with new settings...${NC}\n"
+            ai_discover_videos
+            return $?
+            ;;
+        "n"|"N"|"")
+            echo -e "\n${YELLOW}AI discovery cancelled${NC}"
+            return 1
+            ;;
+        *)
+            echo -e "\n${RED}Invalid choice${NC}"
+            return 1
+            ;;
+    esac
+}
+
+# Helper function to display video options with AI analysis
+display_video_option() {
+    local video_info="$1"
+    local number="$2"
+    
+    local video_path="${video_info%%|*}"
+    local size="${video_info#*|}"; size="${size%|*}"
+    local modified="${video_info##*|}"
+    
+    local filename=$(basename "$video_path")
+    local dirname=$(dirname "$video_path")
+    local size_human=$(numfmt --to=iec $size 2>/dev/null || echo "${size}B")
+    local mod_date=$(date -d @$modified '+%Y-%m-%d %H:%M' 2>/dev/null || echo "unknown")
+    
+    # AI content prediction based on filename and size
+    local content_hint="🎬"
+    if [[ $filename == *"screen"* ]] || [[ $filename == *"record"* ]] || [[ $filename == *"capture"* ]]; then
+        content_hint="🖥️"
+    elif [[ $size -lt 10485760 ]]; then  # < 10MB
+        content_hint="🎥"  # likely a clip
+    elif [[ $size -gt 104857600 ]]; then  # > 100MB
+        content_hint="🎦"  # likely a movie
+    fi
+    
+    printf "    ${GREEN}[%2d]${NC} %s ${BOLD}%s${NC}\n" "$number" "$content_hint" "$filename"
+    printf "         ${GRAY}%s ${CYAN}%s${NC} ${YELLOW}%s${NC}\n" "$(basename "$dirname")" "$size_human" "$mod_date"
+}
+
+# Copy selected videos to current directory
+copy_videos_to_current() {
+    local selected_videos=("$@")
+    local copy_count=0
+    local current_dir="$(pwd)"
+    
+    echo -e "\n  ${BLUE}📎 Copying videos to conversion directory...${NC}"
+    echo -e "  ${CYAN}💾 Destination: ${BOLD}$current_dir${NC}"
+    echo -e "  ${YELLOW}ℹ️  Note: Both videos AND generated GIFs will be in this location${NC}\n"
+    
+    for video_info in "${selected_videos[@]}"; do
+        local video_path="${video_info%%|*}"
+        local filename=$(basename "$video_path")
+        
+        # Skip if already in current directory
+        if [[ "$(dirname "$video_path")" == "$current_dir" ]]; then
+            echo -e "    ${YELLOW}⚠️  Skipping $filename (already in current directory)${NC}"
+            continue
+        fi
+        
+        # Check if file already exists
+        if [[ -f "$current_dir/$filename" ]]; then
+            echo -e "    ${YELLOW}⚠️  Skipping $filename (already exists)${NC}"
+            continue
+        fi
+        
+        # Copy the file
+        if cp "$video_path" "$current_dir/" 2>/dev/null; then
+            echo -e "    ${GREEN}✓ Copied: $filename${NC}"
+            ((copy_count++))
+        else
+            echo -e "    ${RED}❌ Failed: $filename${NC}"
+        fi
+    done
+    
+    if [[ $copy_count -gt 0 ]]; then
+        echo -e "\n  ${GREEN}${BOLD}✨ Successfully copied $copy_count video(s) to conversion directory!${NC}"
+        echo -e "  ${BLUE}📁 Files are now in: ${BOLD}$current_dir${NC}"
+        echo -e "  ${CYAN}🚀 Ready to convert! GIFs will be generated in the same location.${NC}"
+        return 0
+    else
+        echo -e "\n  ${YELLOW}No videos were copied${NC}"
+        return 1
+    fi
+}
+
+# Copy videos by range selection
+copy_videos_by_range() {
+    local range_input="$1"
+    shift
+    local all_videos=("$@")
+    local selected_videos=()
+    
+    # Parse range input (e.g., "1,3,5" or "1-5")
+    IFS=',' read -ra ranges <<< "$range_input"
+    
+    for range in "${ranges[@]}"; do
+        if [[ $range == *"-"* ]]; then
+            # Handle range (e.g., "1-5")
+            local start="${range%-*}"
+            local end="${range#*-}"
+            for ((i=start; i<=end; i++)); do
+                if [[ $i -gt 0 && $i -le ${#all_videos[@]} ]]; then
+                    selected_videos+=("${all_videos[$((i-1))]}")
+                fi
+            done
+        else
+            # Handle single number
+            if [[ $range -gt 0 && $range -le ${#all_videos[@]} ]]; then
+                selected_videos+=("${all_videos[$((range-1))]}")
+            fi
+        fi
+    done
+    
+    if [[ ${#selected_videos[@]} -gt 0 ]]; then
+        echo -e "\n${GREEN}✓ Selected ${#selected_videos[@]} video(s)!${NC}"
+        copy_videos_to_current "${selected_videos[@]}"
+        return $?
+    else
+        echo -e "\n${RED}No valid selections${NC}"
+        return 1
+    fi
+}
+
 # 🔍 AI Preview Analysis (non-intrusive)
 ai_preview_analysis() {
     local file="$1"
+    
+    echo -e "  ${YELLOW}🔬 AI Preview Analysis in progress...${NC}"
+    
+    # Show analysis progress
+    local steps=("Extracting metadata" "Analyzing resolution" "Detecting content type" "Generating recommendations")
+    for i in "${!steps[@]}"; do
+        local step=$((i + 1))
+        local progress=$((step * 25))
+        local filled=$((progress * 20 / 100))
+        local empty=$((20 - filled))
+        
+        printf "\r  ${CYAN}Preview [${NC}"
+        for ((j=0; j<filled; j++)); do printf "${GREEN}█${NC}"; done
+        for ((j=0; j<empty; j++)); do printf "${GRAY}░${NC}"; done
+        printf "${CYAN}] ${BOLD}%3d%%${NC} ${BLUE}%s...${NC}" "$progress" "${steps[i]}"
+        
+        sleep 0.3  # Small delay for visual effect
+    done
     
     # Quick video info extraction for preview
     local duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$file" 2>/dev/null | cut -d. -f1)
@@ -1339,6 +1942,8 @@ ai_preview_analysis() {
         content_hint="clip"
     fi
     
+    # Clear progress line and show results
+    printf "\r  ${GREEN}✓ Preview analysis complete!${NC}\n"
     echo -e "  ${BLUE}📊 Input:${NC} ${width}x${height}, ${duration}s"
     echo -e "  ${BLUE}🔍 Predicted:${NC} $content_hint content"
     echo -e "  ${BLUE}🎯 AI will:${NC} Analyze motion, optimize colors, adjust framerate"
@@ -2168,10 +2773,11 @@ finish_script() {
     cleanup_ram_disk >/dev/null 2>&1
 }
 
-# 🔍 Advanced AI-Powered Duplicate Detection with Visual Similarity Analysis
+# 🔍 Hyper-Optimized AI-Powered Duplicate Detection with Multi-Threading
 detect_duplicate_gifs() {
-    echo -e "${BLUE}${BOLD}🤖 AI-Enhanced Duplicate Detection${NC}"
-    echo -e "${CYAN}🔬 Advanced analysis: Content fingerprinting + Visual similarity + Metadata comparison...${NC}"
+    echo -e "${BLUE}${BOLD}🚀 AI-Enhanced Parallel Duplicate Detection${NC}"
+    echo -e "${CYAN}🔬 Multi-threaded analysis: Content fingerprinting + Visual similarity + Metadata comparison...${NC}"
+    echo -e "${GREEN}⚡ Using ${BOLD}$AI_DUPLICATE_THREADS${NC}${GREEN} CPU threads for maximum performance!${NC}"
     
     local total_gifs=0
     local duplicate_count=0
@@ -2187,37 +2793,46 @@ detect_duplicate_gifs() {
     local temp_analysis_dir="$(mktemp -d)"
     trap "rm -rf '$temp_analysis_dir'" EXIT
     
-    echo -e "  ${BLUE}🧠 Stage 1: Content fingerprinting and metadata analysis...${NC}"
-    
-    # Find all GIF files in current directory and perform multi-stage analysis
+    # Count total GIF files first for progress calculation
+    local gif_files_list=()
     shopt -s nullglob
     for gif_file in *.gif; do
-        [[ -f "$gif_file" ]] || continue
-        
-        # Safety check: ensure we're only processing GIF files
-        if [[ "${gif_file##*.}" != "gif" ]]; then
-            echo -e "  ${YELLOW}⚠️  Skipping non-GIF file: $gif_file${NC}"
-            continue
-        fi
-        
-        ((total_gifs++))
+        [[ -f "$gif_file" && "${gif_file##*.}" == "gif" ]] && gif_files_list+=("$gif_file")
+    done
+    shopt -u nullglob
+    
+    local total_files=${#gif_files_list[@]}
+    if [[ $total_files -eq 0 ]]; then
+        echo -e "  ${CYAN}ℹ️  No existing GIF files found${NC}"
+        return 0
+    fi
+    
+    echo -e "  ${BLUE}${BOLD}🧠 Stage 1: Parallel content fingerprinting (${AI_DUPLICATE_THREADS} threads)...${NC}"
+    echo -e "  ${GRAY}Processing $total_files GIF files in parallel...${NC}"
+    
+    # Parallel analysis function for individual GIF files
+    analyze_gif_parallel() {
+        local gif_file="$1"
+        local temp_dir="$2"
+        local result_file="$3"
         
         # Stage 1: Traditional checksum (fast)
         local checksum=$(md5sum "$gif_file" 2>/dev/null | cut -d' ' -f1)
         local size=$(stat -c%s "$gif_file" 2>/dev/null || echo "0")
         
-        # Stage 2: Content fingerprinting (medium speed)
+        # Stage 2: Content fingerprinting (medium speed) - optimized FFprobe calls
         local frame_count=$(ffprobe -v error -select_streams v:0 -count_frames -show_entries stream=nb_frames -of csv=p=0 "$gif_file" 2>/dev/null || echo "0")
         local duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$gif_file" 2>/dev/null | cut -d. -f1 || echo "0")
         local fps=$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 "$gif_file" 2>/dev/null | cut -d'/' -f1 || echo "0")
         local resolution=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$gif_file" 2>/dev/null | tr ',' 'x' || echo "0x0")
         
-        # Stage 3: Visual similarity hash (slower but more accurate)
+        # Stage 3: Visual similarity hash (optimized with faster scaling)
         local visual_hash=""
         if command -v ffmpeg >/dev/null 2>&1; then
-            # Extract key frames for visual comparison
-            local temp_frame="$temp_analysis_dir/${gif_file%.*}_frame.png"
-            if ffmpeg -v error -i "$gif_file" -vf "select='eq(n,5)',scale=64:64" -frames:v 1 -y "$temp_frame" >/dev/null 2>&1; then
+            # Extract key frames for visual comparison - use fastest algorithm
+            local temp_frame="$temp_dir/${gif_file%.*}_$($$)_frame.png"
+            # Use faster scaling algorithm and threading for FFmpeg
+            if ffmpeg -v error -threads 1 -i "$gif_file" -vf "select='eq(n,5)',scale=32:32:flags=fast_bilinear" -frames:v 1 -y "$temp_frame" >/dev/null 2>&1; then
                 # Generate perceptual hash from middle frame
                 visual_hash=$(md5sum "$temp_frame" 2>/dev/null | cut -d' ' -f1)
                 rm -f "$temp_frame"
@@ -2227,18 +2842,75 @@ detect_duplicate_gifs() {
         # Create composite fingerprint
         local content_fingerprint="${frame_count}:${duration}:${fps}:${resolution}"
         
-        # Store all analysis data
+        # Write results to temporary file (thread-safe)
+        echo "$gif_file|$checksum|$size|$content_fingerprint|$visual_hash|$frame_count|$duration" >> "$result_file"
+    }
+    
+    # Export function for parallel execution
+    export -f analyze_gif_parallel
+    
+    # Create results file for collecting parallel output
+    local results_file="$temp_analysis_dir/analysis_results.txt"
+    : > "$results_file"  # Initialize empty file
+    
+    # Process files in parallel batches with progress tracking
+    local batch_size=$AI_ANALYSIS_BATCH_SIZE
+    local processed_files=0
+    
+    for ((i=0; i<total_files; i+=batch_size)); do
+        local batch_end=$((i + batch_size))
+        [[ $batch_end -gt $total_files ]] && batch_end=$total_files
+        
+        local batch_files=("${gif_files_list[@]:$i:$batch_size}")
+        local batch_pids=()
+        
+        # Start parallel jobs for this batch
+        for gif_file in "${batch_files[@]}"; do
+            analyze_gif_parallel "$gif_file" "$temp_analysis_dir" "$results_file" &
+            batch_pids+=("$!")
+            
+            # Limit concurrent jobs
+            if [[ ${#batch_pids[@]} -ge $AI_DUPLICATE_THREADS ]]; then
+                # Wait for some jobs to complete
+                wait "${batch_pids[0]}" 2>/dev/null || true
+                batch_pids=("${batch_pids[@]:1}")  # Remove first PID
+            fi
+        done
+        
+        # Wait for all jobs in this batch to complete
+        for pid in "${batch_pids[@]}"; do
+            wait "$pid" 2>/dev/null || true
+        done
+        
+        processed_files=$batch_end
+        update_parallel_progress "$processed_files" "$total_files" "Analyzing GIFs" 30
+    done
+    
+    # Process results from parallel analysis
+    while IFS='|' read -r gif_file checksum size content_fingerprint visual_hash frame_count duration; do
+        [[ -z "$gif_file" ]] && continue  # Skip empty lines
+        
         gif_checksums["$gif_file"]="$checksum"
         gif_sizes["$gif_file"]="$size"
         gif_fingerprints["$gif_file"]="$content_fingerprint"
         gif_visual_hashes["$gif_file"]="$visual_hash"
         gif_frame_counts["$gif_file"]="$frame_count"
         gif_durations["$gif_file"]="$duration"
-    done
-    shopt -u nullglob
+        ((total_gifs++))
+    done < "$results_file"
     
-    echo -e "  ${GREEN}✓ Analyzed $total_gifs GIF files${NC}"
-    echo -e "  ${BLUE}🔍 Stage 2: Multi-level duplicate detection...${NC}"
+    # Clear progress line and show completion
+    printf "\r  ${GREEN}✓ Parallel content analysis complete! Processed $total_gifs GIF files using ${BOLD}$AI_DUPLICATE_THREADS threads${NC}\n"
+    
+    echo -e "  ${BLUE}${BOLD}🔍 Stage 2: Multi-level duplicate detection...${NC}"
+    
+    # Calculate total comparisons for progress tracking
+    local total_comparisons=$(( (total_gifs * (total_gifs - 1)) / 2 ))
+    local current_comparison=0
+    
+    if [[ $total_comparisons -gt 0 ]]; then
+        echo -e "  ${GRAY}Performing $total_comparisons pairwise comparisons...${NC}"
+    fi
     
     # Advanced duplicate detection with multiple similarity levels
     local gif_files=("${!gif_checksums[@]}")
@@ -2246,6 +2918,19 @@ detect_duplicate_gifs() {
         local file1="${gif_files[i]}"
         for ((j=i+1; j<${#gif_files[@]}; j++)); do
             local file2="${gif_files[j]}"
+            ((current_comparison++))
+            
+            # Display progress for stage 2
+            if [[ $total_comparisons -gt 5 ]]; then  # Only show progress bar if significant work
+                local progress=$((current_comparison * 100 / total_comparisons))
+                local filled=$((progress * 25 / 100))  # Shorter bar for comparison stage
+                local empty=$((25 - filled))
+                
+                printf "\r  ${MAGENTA}Compare [${NC}"
+                for ((k=0; k<filled; k++)); do printf "${BLUE}█${NC}"; done
+                for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
+                printf "${MAGENTA}] ${BOLD}%3d%%${NC} ${YELLOW}%s ↔ %s${NC}" "$progress" "$(basename "${file1:0:12}")..." "$(basename "${file2:0:12}")..."
+            fi
             
             local is_duplicate=false
             local similarity_reason=""
@@ -2310,6 +2995,14 @@ detect_duplicate_gifs() {
         done
     done
     
+    # Clear Stage 2 progress line and show completion
+    if [[ $total_comparisons -gt 5 ]]; then
+        printf "\r  ${GREEN}✓ Duplicate analysis complete! Compared $total_comparisons file pairs${NC}\n"
+    fi
+    
+    # Stage 3: Results summary
+    echo -e "  ${YELLOW}${BOLD}📊 Stage 3: Analysis results and recommendations...${NC}"
+    
     # Clean up temporary analysis directory
     rm -rf "$temp_analysis_dir"
     
@@ -2318,11 +3011,16 @@ detect_duplicate_gifs() {
         return 0
     fi
     
-    echo -e "  ${GREEN}✓ Scanned $total_gifs GIF files${NC}"
+    # Final progress summary
+    echo -e "  ${GREEN}✓ AI Analysis Summary:${NC}"
+    echo -e "    ${CYAN}• Analyzed: ${BOLD}$total_gifs${NC} ${CYAN}GIF files${NC}"
+    echo -e "    ${CYAN}• Performed: ${BOLD}$total_comparisons${NC} ${CYAN}similarity comparisons${NC}"
+    echo -e "    ${CYAN}• Detection methods: ${BOLD}Binary + Visual + Fingerprint + Metadata${NC}"
     
     if [[ $duplicate_count -eq 0 ]]; then
-        echo -e "  ${GREEN}${BOLD}✨ Excellent! No duplicate GIFs found${NC}"
+        echo -e "\n  ${GREEN}${BOLD}✨ Excellent! No duplicate GIFs found${NC}"
         echo -e "  ${BLUE}🚀 Your collection is already optimized!${NC}"
+        echo -e "  ${GRAY}AI checked for exact matches, visual similarity, and content fingerprints${NC}"
         return 0
     fi
     
@@ -5064,13 +5762,26 @@ quick_convert_mode() {
     
     if [[ ${#video_files[@]} -eq 0 ]]; then
         echo -e "${RED}❌ No video files found in current directory${NC}\n"
-        echo -e "${BLUE}📝 ${BOLD}How to fix this:${NC}"
-        echo -e "  ${CYAN}•${NC} Place video files in: ${BOLD}$(pwd)${NC}"
-        echo -e "  ${CYAN}•${NC} Supported formats: ${GREEN}.mp4 .avi .mov .mkv .webm${NC}"
-        echo -e "  ${CYAN}•${NC} Or use: ${YELLOW}--file /path/to/video.mp4${NC}"
-        echo -e "\n${YELLOW}Press any key to return to main menu...${NC}"
-        read -rsn1
-        return
+        echo -e "${BLUE}🤖 ${BOLD}AI Video Discovery - Let me help you find videos!${NC}"
+        
+        # AI-powered video search
+        ai_discover_videos
+        local discovery_result=$?
+        
+        if [[ $discovery_result -eq 0 ]]; then
+            # Videos were found and user selected some - restart the function
+            quick_convert_mode
+            return
+        else
+            # No videos found or user declined
+            echo -e "\n${BLUE}📝 ${BOLD}Manual options:${NC}"
+            echo -e "  ${CYAN}•${NC} Place video files in: ${BOLD}$(pwd)${NC}"
+            echo -e "  ${CYAN}•${NC} Supported formats: ${GREEN}.mp4 .avi .mov .mkv .webm${NC}"
+            echo -e "  ${CYAN}•${NC} Or use: ${YELLOW}--file /path/to/video.mp4${NC}"
+            echo -e "\n${YELLOW}Press any key to return to main menu...${NC}"
+            read -rsn1
+            return
+        fi
     fi
     
     echo -e "${BLUE}📹 Found ${BOLD}${#video_files[@]}${NC}${BLUE} video files${NC}"
@@ -5201,9 +5912,10 @@ configure_ai_mode() {
     
     echo -e "${CYAN}${BOLD}🤖 AI AUTO FEATURES:${NC}"
     echo -e "  ${GREEN}[10]${NC} 🎯 Auto Quality: $(get_status_icon "$AI_AUTO_QUALITY")"
-    echo -e "  ${GREEN}[11]${NC} 🔍 Content Fingerprint: $(get_status_icon "$AI_CONTENT_FINGERPRINT")\n"
+    echo -e "  ${GREEN}[11]${NC} 🔍 Content Fingerprint: $(get_status_icon "$AI_CONTENT_FINGERPRINT")"
+    echo -e "  ${GREEN}[12]${NC} 🔍 Video Discovery: $(get_status_icon "$AI_DISCOVERY_ENABLED") (Mode: $AI_DISCOVERY_AUTO_SELECT)\n"
     
-    echo -e "${MAGENTA}Select option [1-11] or Enter to finish: ${NC}"
+    echo -e "${MAGENTA}Select option [1-12] or Enter to finish: ${NC}"
     read -r ai_choice
     
     case "$ai_choice" in
@@ -6569,6 +7281,16 @@ MAX_RETRIES="$MAX_RETRIES"
 AI_ENABLED="$AI_ENABLED"
 AI_MODE="$AI_MODE"
 AI_CONFIDENCE_THRESHOLD="$AI_CONFIDENCE_THRESHOLD"
+AI_AUTO_QUALITY="$AI_AUTO_QUALITY"
+AI_SCENE_ANALYSIS="$AI_SCENE_ANALYSIS"
+AI_VISUAL_SIMILARITY="$AI_VISUAL_SIMILARITY"
+AI_SMART_CROP="$AI_SMART_CROP"
+AI_DYNAMIC_FRAMERATE="$AI_DYNAMIC_FRAMERATE"
+AI_QUALITY_SCALING="$AI_QUALITY_SCALING"
+AI_CONTENT_FINGERPRINT="$AI_CONTENT_FINGERPRINT"
+AI_DISCOVERY_ENABLED="$AI_DISCOVERY_ENABLED"
+AI_DISCOVERY_AUTO_SELECT="$AI_DISCOVERY_AUTO_SELECT"
+AI_DISCOVERY_REMEMBER_CHOICE="$AI_DISCOVERY_REMEMBER_CHOICE"
 MAX_GIF_SIZE_MB="$MAX_GIF_SIZE_MB"
 AUTO_REDUCE_QUALITY="$AUTO_REDUCE_QUALITY"
 SMART_SIZE_DOWN="$SMART_SIZE_DOWN"
@@ -6620,6 +7342,16 @@ load_settings() {
                 AI_ENABLED) AI_ENABLED="$value" ;;
                 AI_MODE) AI_MODE="$value" ;;
                 AI_CONFIDENCE_THRESHOLD) AI_CONFIDENCE_THRESHOLD="$value" ;;
+                AI_AUTO_QUALITY) AI_AUTO_QUALITY="$value" ;;
+                AI_SCENE_ANALYSIS) AI_SCENE_ANALYSIS="$value" ;;
+                AI_VISUAL_SIMILARITY) AI_VISUAL_SIMILARITY="$value" ;;
+                AI_SMART_CROP) AI_SMART_CROP="$value" ;;
+                AI_DYNAMIC_FRAMERATE) AI_DYNAMIC_FRAMERATE="$value" ;;
+                AI_QUALITY_SCALING) AI_QUALITY_SCALING="$value" ;;
+                AI_CONTENT_FINGERPRINT) AI_CONTENT_FINGERPRINT="$value" ;;
+                AI_DISCOVERY_ENABLED) AI_DISCOVERY_ENABLED="$value" ;;
+                AI_DISCOVERY_AUTO_SELECT) AI_DISCOVERY_AUTO_SELECT="$value" ;;
+                AI_DISCOVERY_REMEMBER_CHOICE) AI_DISCOVERY_REMEMBER_CHOICE="$value" ;;
             esac
         done < "$settings_file"
         
