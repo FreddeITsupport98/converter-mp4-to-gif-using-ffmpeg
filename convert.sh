@@ -326,6 +326,40 @@ update_parallel_progress() {
     printf "${CYAN}] ${BOLD}%3d%%${NC} (${BOLD}%d${NC}/${BOLD}%d${NC})" "$progress" "$current" "$total"
 }
 
+# 📊 Progress tracker with current file display
+update_file_progress() {
+    local current="$1"
+    local total="$2"
+    local current_file="${3:-}"
+    local operation="${4:-Processing}"
+    local bar_length="${5:-25}"
+    
+    # Ensure current doesn't exceed total to prevent overshooting
+    [[ $current -gt $total ]] && current=$total
+    
+    local progress=$(( current * 100 / total ))
+    # Cap progress at 100% to prevent overshooting
+    [[ $progress -gt 100 ]] && progress=100
+    
+    local filled=$(( progress * bar_length / 100 ))
+    local empty=$(( bar_length - filled ))
+    
+    # Truncate filename if too long
+    local display_file="$current_file"
+    if [[ ${#display_file} -gt 40 ]]; then
+        display_file="...${display_file: -37}"
+    fi
+    
+    printf "\r  ${CYAN}%s [${NC}" "$operation"
+    for ((i=0; i<filled; i++)); do printf "${GREEN}█${NC}"; done
+    for ((i=0; i<empty; i++)); do printf "${GRAY}░${NC}"; done
+    printf "${CYAN}] ${BOLD}%3d%%${NC} (${BOLD}%d${NC}/${BOLD}%d${NC})" "$progress" "$current" "$total"
+    if [[ -n "$current_file" ]]; then
+        printf "\n  ${GRAY}📄 Analyzing: ${BOLD}%s${NC}" "$display_file"
+        printf "\r\033[1A"  # Move cursor back up to progress line
+    fi
+}
+
 # 🗄️ AI Smart Cache Management System (Corruption-Proof)
 # =================================================================
 
@@ -1067,18 +1101,30 @@ make_clickable_path() {
     # Convert ~ back to full path for the hyperlink
     local full_path="$(echo "$file_path" | sed "s|^~|$HOME|g")"
     
-    # Check if terminal supports hyperlinks and if we're in an interactive terminal
+    # Enhanced terminal and hyperlink support detection
+    local supports_hyperlinks=false
+    
+    # Check for terminals that support OSC 8 hyperlinks
     if [[ -n "$TERM" && "$TERM" != "dumb" && -t 1 ]]; then
+        # Warp terminal always supports hyperlinks
+        if [[ "$TERM_PROGRAM" == "WarpTerminal" ]]; then
+            supports_hyperlinks=true
+        # Other modern terminals
+        elif [[ "$TERM_PROGRAM" =~ ^(iTerm\.app|vscode|Terminal\.app)$ ]]; then
+            supports_hyperlinks=true
+        # Standard terminal types that support hyperlinks
+        elif [[ "$TERM" =~ ^(xterm|screen|tmux) ]]; then
+            supports_hyperlinks=true
+        fi
+    fi
+    
+    if [[ "$supports_hyperlinks" == "true" ]]; then
         # Use OSC 8 hyperlink escape sequence
         # Format: \033]8;;file://path\033\\text\033]8;;\033\\
         printf "\033]8;;file://%s\033\\%s\033]8;;\033\\" "$full_path" "$display_text"
     else
-        # Fallback: show both display text and full path if different
-        if [[ "$display_text" != "$file_path" && "$display_text" =~ ^~ ]]; then
-            echo "$display_text ($full_path)"
-        else
-            echo "$display_text"
-        fi
+        # Fallback: show only display text (no parentheses)
+        echo "$display_text"
     fi
 }
 
@@ -1276,6 +1322,247 @@ show_ai_status() {
     echo -e "  ${BLUE}•${NC} Use interactive menu options to manage AI settings"
     echo -e "  ${BLUE}•${NC} Click on file paths above to open them in your file manager"
     echo -e "  ${BLUE}•${NC} Settings are automatically saved when changed"
+}
+
+# 🦺 AI File Health Detection & Learning System
+# ===============================================
+
+# Analyze file health using AI with learning capabilities
+ai_analyze_file_health() {
+    local file="$1"
+    local context="$2"  # md5_failed, analysis_timeout, suspicious_size, etc.
+    
+    # SAFETY: Only analyze GIF files - never touch video sources
+    if [[ "${file##*.}" != "gif" ]]; then
+        echo "SKIP_NON_GIF"  # Don't analyze non-GIF files
+        return 0
+    fi
+    
+    # Refuse to analyze video files (double safety check)
+    if [[ "$file" =~ \.(mp4|avi|mov|mkv|webm|MP4|AVI|MOV|MKV|WEBM)$ ]]; then
+        echo "SKIP_VIDEO_FILE"  # Never analyze video files
+        return 0
+    fi
+    
+    # Quick validation
+    [[ -z "$file" || ! -f "$file" ]] && echo "CORRUPTED" && return 1
+    
+    # Get file characteristics for AI analysis
+    local file_size=$(stat -c%s "$file" 2>/dev/null || echo "0")
+    local file_age=$(stat -c%Y "$file" 2>/dev/null || echo "0")
+    local current_time=$(date +%s)
+    local age_days=$(( (current_time - file_age) / 86400 ))
+    
+    # Create feature signature for AI analysis
+    local feature_signature="${context}:${file_size}:${age_days}"
+    
+    # Check if we have learned patterns for this type of issue
+    local ai_confidence=$(query_ai_health_model "$feature_signature")
+    local health_verdict="UNCERTAIN"
+    
+    # AI decision making based on context and learned patterns
+    case "$context" in
+        "md5_failed")
+            # MD5 failure is usually serious
+            if [[ $file_size -eq 0 ]]; then
+                health_verdict="CORRUPTED"  # Empty file
+            elif [[ $file_size -gt 104857600 ]]; then
+                health_verdict="COMPLEX"    # Very large file might cause MD5 issues
+            elif [[ $age_days -lt 1 && $file_size -gt 1024 ]]; then
+                health_verdict="COMPLEX"    # Recent file with reasonable size might be OK
+            else
+                health_verdict="CORRUPTED"  # Default to corrupted for MD5 failures
+            fi
+            ;;
+        "analysis_timeout")
+            # Timeouts can indicate complexity or corruption
+            if [[ $file_size -gt 52428800 ]]; then  # > 50MB
+                health_verdict="COMPLEX"    # Large files legitimately take time
+            elif [[ $file_size -lt 1024 ]]; then
+                health_verdict="CORRUPTED"  # Very small files shouldn't timeout
+            elif [[ $age_days -gt 30 ]]; then
+                health_verdict="CORRUPTED"  # Old files with timeouts likely corrupted
+            else
+                # Use AI confidence if available
+                if [[ -n "$ai_confidence" && "$ai_confidence" != "0" ]]; then
+                    local confidence_num=${ai_confidence%.*}  # Remove decimal part
+                    confidence_num=${confidence_num:-0}
+                    if [[ $confidence_num -gt 70 ]]; then
+                        health_verdict="COMPLEX"
+                    elif [[ $confidence_num -lt 30 ]]; then
+                        health_verdict="CORRUPTED"
+                    else
+                        health_verdict="UNCERTAIN"
+                    fi
+                else
+                    health_verdict="COMPLEX"  # Default to complex for reasonable files
+                fi
+            fi
+            ;;
+        "suspicious_size")
+            # Size-based analysis
+            if [[ $file_size -eq 0 ]]; then
+                health_verdict="CORRUPTED"
+            elif [[ $file_size -lt 100 ]]; then
+                health_verdict="CORRUPTED"  # Too small to be valid GIF
+            else
+                health_verdict="COMPLEX"
+            fi
+            ;;
+        *)
+            # Default analysis for unknown contexts
+            if [[ $file_size -eq 0 ]]; then
+                health_verdict="CORRUPTED"
+            elif [[ $file_size -gt 209715200 ]]; then  # > 200MB
+                health_verdict="COMPLEX"
+            else
+                health_verdict="UNCERTAIN"
+            fi
+            ;;
+    esac
+    
+    echo "$health_verdict"
+}
+
+# Query AI health model for learned patterns
+query_ai_health_model() {
+    local feature_signature="$1"
+    
+    if [[ "$AI_TRAINING_ENABLED" != "true" || ! -f "$AI_MODEL_FILE" ]]; then
+        echo "50"  # Default neutral confidence (as integer)
+        return 1
+    fi
+    
+    # Search for similar patterns in the AI model
+    local pattern_match=$(grep "^health_pattern:$feature_signature" "$AI_MODEL_FILE" 2>/dev/null | tail -1)
+    if [[ -n "$pattern_match" ]]; then
+        # Extract confidence score: health_pattern:signature|verdict|confidence|samples|timestamp
+        local confidence=$(echo "$pattern_match" | cut -d'|' -f3)
+        # Convert to integer percentage
+        local confidence_int=$(echo "$confidence * 100" | bc 2>/dev/null | cut -d. -f1 2>/dev/null || echo "50")
+        echo "${confidence_int:-50}"
+    else
+        # Look for partial matches (same context)
+        local context="${feature_signature%%:*}"
+        local partial_matches=$(grep "^health_pattern:$context:" "$AI_MODEL_FILE" 2>/dev/null | wc -l)
+        if [[ $partial_matches -gt 0 ]]; then
+            # Calculate average confidence for this context
+            local avg_confidence=$(grep "^health_pattern:$context:" "$AI_MODEL_FILE" 2>/dev/null | \
+                cut -d'|' -f3 | awk '{sum+=$1; count++} END {if(count>0) printf "%.0f", sum*100/count; else print "50"}')
+            echo "${avg_confidence:-50}"
+        else
+            echo "50"  # No learned patterns, neutral confidence
+        fi
+    fi
+}
+
+# Train AI model with file health patterns
+train_ai_file_health() {
+    local file="$1"
+    local verdict="$2"      # corrupted, complex, suspicious, uncertain
+    local context="$3"      # md5_failed, analysis_timeout, etc.
+    local outcome="$4"      # confirmed, legitimate, learning
+    
+    # SAFETY: Only train on GIF files - never video files
+    if [[ "${file##*.}" != "gif" ]]; then
+        return 0  # Skip training for non-GIF files
+    fi
+    
+    # Double safety: refuse video files
+    if [[ "$file" =~ \.(mp4|avi|mov|mkv|webm|MP4|AVI|MOV|MKV|WEBM)$ ]]; then
+        return 0  # Never train on video files
+    fi
+    
+    if [[ "$AI_TRAINING_ENABLED" != "true" ]]; then
+        return 0
+    fi
+    
+    # Get file characteristics
+    local file_size=$(stat -c%s "$file" 2>/dev/null || echo "0")
+    local file_age=$(stat -c%Y "$file" 2>/dev/null || echo "0")
+    local current_time=$(date +%s)
+    local age_days=$(( (current_time - file_age) / 86400 ))
+    
+    # Create feature signature
+    local feature_signature="${context}:${file_size}:${age_days}"
+    
+    # Calculate outcome score for training
+    local outcome_score
+    case "$outcome" in
+        "confirmed") outcome_score="1.0" ;;    # High confidence
+        "legitimate") outcome_score="0.8" ;;   # Good confidence
+        "learning") outcome_score="0.5" ;;     # Neutral for learning
+        "uncertain") outcome_score="0.3" ;;    # Low confidence
+        *) outcome_score="0.5" ;;
+    esac
+    
+    # Log training event
+    local timestamp=$(date +%s)
+    atomic_append_training_log "$timestamp|health_train|$feature_signature|$verdict|$outcome|$outcome_score"
+    
+    # Update AI health model
+    atomic_update_health_model "$feature_signature" "$verdict" "$outcome_score"
+}
+
+# Update AI health model with new patterns
+atomic_update_health_model() {
+    local feature_signature="$1"
+    local verdict="$2"
+    local outcome_score="$3"
+    
+    # Ensure model file integrity
+    if ! validate_ai_model; then
+        rebuild_ai_model
+    fi
+    
+    local temp_model="${AI_MODEL_FILE}.health.$$"
+    local updated=false
+    local timestamp=$(date +%s)
+    
+    # Create backup
+    cp "$AI_MODEL_FILE" "${AI_MODEL_FILE}.health_backup" 2>/dev/null || true
+    
+    # Copy existing model
+    cp "$AI_MODEL_FILE" "$temp_model" 2>/dev/null || {
+        echo "# AI Health Model - Auto-generated" > "$temp_model"
+    }
+    
+    # Look for existing health pattern
+    local pattern_key="health_pattern:$feature_signature"
+    if grep -q "^$pattern_key" "$temp_model" 2>/dev/null; then
+        # Update existing pattern using adaptive learning
+        local current_line=$(grep "^$pattern_key" "$temp_model" | tail -1)
+        local current_confidence=$(echo "$current_line" | cut -d'|' -f3 2>/dev/null || echo "0.5")
+        local current_samples=$(echo "$current_line" | cut -d'|' -f4 2>/dev/null || echo "1")
+        
+        # Calculate new confidence with learning rate
+        local new_samples=$((current_samples + 1))
+        local new_confidence
+        if command -v bc >/dev/null 2>&1; then
+            new_confidence=$(echo "scale=3; ($current_confidence * $current_samples + $outcome_score * $AI_LEARNING_RATE) / $new_samples" | bc 2>/dev/null || echo "$outcome_score")
+        else
+            new_confidence="$outcome_score"  # Fallback if bc not available
+        fi
+        
+        # Remove old pattern and add updated one
+        grep -v "^$pattern_key" "$temp_model" > "${temp_model}.tmp"
+        echo "$pattern_key|$verdict|$new_confidence|$new_samples|$timestamp" >> "${temp_model}.tmp"
+        mv "${temp_model}.tmp" "$temp_model"
+        updated=true
+    else
+        # Add new health pattern
+        echo "$pattern_key|$verdict|$outcome_score|1|$timestamp" >> "$temp_model"
+        updated=true
+    fi
+    
+    # Replace model file atomically
+    if [[ "$updated" == "true" ]] && [[ -s "$temp_model" ]]; then
+        mv "$temp_model" "$AI_MODEL_FILE"
+        rm -f "${AI_MODEL_FILE}.health_backup"
+    else
+        rm -f "$temp_model"
+        [[ -f "${AI_MODEL_FILE}.health_backup" ]] && mv "${AI_MODEL_FILE}.health_backup" "$AI_MODEL_FILE"
+    fi
 }
 
 # Legacy function for backward compatibility
@@ -3851,19 +4138,38 @@ detect_duplicate_gifs() {
     local temp_analysis_dir="$(mktemp -d)"
     trap "rm -rf '$temp_analysis_dir'" EXIT
     
-    # Count total GIF files first for progress calculation
+    # Count total GIF files first for progress calculation (avoid duplicates)
     local gif_files_list=()
+    declare -A seen_files  # Track files to avoid duplicates
+    
     shopt -s nullglob
     for gif_file in *.gif; do
-        [[ -f "$gif_file" && "${gif_file##*.}" == "gif" ]] && gif_files_list+=("$gif_file")
+        if [[ -f "$gif_file" && "${gif_file##*.}" == "gif" && -z "${seen_files["$gif_file"]}" ]]; then
+            gif_files_list+=("$gif_file")
+            seen_files["$gif_file"]=1
+        fi
     done
     shopt -u nullglob
+    
+    # Remove any duplicates from the array
+    local unique_files_list=()
+    declare -A dedup_tracker
+    for gif_file in "${gif_files_list[@]}"; do
+        if [[ -z "${dedup_tracker["$gif_file"]}" ]]; then
+            unique_files_list+=("$gif_file")
+            dedup_tracker["$gif_file"]=1
+        fi
+    done
+    gif_files_list=("${unique_files_list[@]}")
     
     local total_files=${#gif_files_list[@]}
     if [[ $total_files -eq 0 ]]; then
         echo -e "  ${CYAN}ℹ️  No existing GIF files found${NC}"
         return 0
     fi
+    
+    # Debug: Show some sample files being processed
+    echo -e "  ${GRAY}Sample files: $(printf '%s, ' "${gif_files_list[@]:0:3}")...${NC}"
     
     echo -e "  ${BLUE}${BOLD}🧠 Stage 1: Parallel content fingerprinting (${AI_DUPLICATE_THREADS} threads)...${NC}"
     echo -e "  ${GRAY}Processing $total_files GIF files in parallel...${NC}"
@@ -3873,7 +4179,9 @@ detect_duplicate_gifs() {
         local gif_file="$1"
         local temp_dir="$2"
         local result_file="$3"
-        local timeout_seconds=30  # 30 second timeout per file
+        local current_index="$4"     # Current file index for progress
+        local total_files="$5"       # Total file count for progress
+        local timeout_seconds=60     # Increased to 60 seconds per file - more reasonable for complex GIFs
         
         # Check if file exists and is readable
         if [[ ! -f "$gif_file" ]]; then
@@ -3896,74 +4204,95 @@ detect_duplicate_gifs() {
             return 0
         fi
         
-        # Cache miss - perform fresh analysis with timeout protection
+        # Simplified analysis using MD5 hash - much faster and reliable
         {
-            # Stage 1: Traditional checksum (fast)
-            local checksum=$(timeout 10 md5sum "$gif_file" 2>/dev/null | cut -d' ' -f1 || echo "TIMEOUT")
-            local size=$(stat -c%s "$gif_file" 2>/dev/null || echo "0")
-            
-            # Skip analysis for very large files that might cause hangs
-            if [[ $size -gt 104857600 ]]; then  # 100MB limit
-                local size_mb=$((size / 1024 / 1024))
-                local warning_msg="Skipping large file analysis: $gif_file (${size_mb}MB > 100MB limit)"
-                log_error "$warning_msg" "$gif_file" "Large file skipped to prevent system hangs" "analyze_gif_parallel"
-                echo -e "  ${YELLOW}⚠️ Skipped large file: $(basename "$gif_file") (${size_mb}MB)${NC}" >&2
-                echo "$gif_file|LARGE_FILE|$size|0:0:0:0x0||0|0" >> "$result_file"
-                return 0
+            # Display progress for current file
+            if [[ -n "$current_index" && -n "$total_files" ]]; then
+                update_file_progress "$current_index" "$total_files" "$(basename "$gif_file")" "Analyzing GIFs" 30
             fi
             
-            # Stage 2: Content fingerprinting with timeout
-            local frame_count=$(timeout 15 ffprobe -v error -select_streams v:0 -count_frames -show_entries stream=nb_frames -of csv=p=0 "$gif_file" 2>/dev/null || echo "0")
-            local duration=$(timeout 10 ffprobe -v error -show_entries format=duration -of csv=p=0 "$gif_file" 2>/dev/null | cut -d. -f1 || echo "0")
-            local fps=$(timeout 10 ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 "$gif_file" 2>/dev/null | cut -d'/' -f1 || echo "0")
-            local resolution=$(timeout 10 ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$gif_file" 2>/dev/null | tr ',' 'x' || echo "0x0")
+            # Stage 1: Fast MD5 checksum with timeout to prevent hanging on corrupted files
+            echo -e "  ${CYAN}📋 Computing hash: $(basename "$gif_file")${NC}" >&2
+            local checksum
+            if checksum=$(timeout 10 md5sum "$gif_file" 2>/dev/null | cut -d' ' -f1); then
+                [[ -z "$checksum" ]] && checksum="ERROR"
+            else
+                checksum="TIMEOUT_MD5"
+                echo -e "  ${YELLOW}⏰ MD5 timeout: $(basename "$gif_file")${NC}" >&2
+            fi
+            local size=$(stat -c%s "$gif_file" 2>/dev/null || echo "0")
             
-            # Clean up any malformed data
-            frame_count=${frame_count//[^0-9]/}; [[ -z "$frame_count" ]] && frame_count="0"
-            duration=${duration//[^0-9]/}; [[ -z "$duration" ]] && duration="0"
-            fps=${fps//[^0-9]/}; [[ -z "$fps" ]] && fps="0"
-            
-            # Stage 3: Visual similarity hash (with timeout and error handling)
-            local visual_hash=""
-            if command -v ffmpeg >/dev/null 2>&1 && [[ "$checksum" != "TIMEOUT" ]]; then
-                local temp_frame="$temp_dir/${gif_file%.*}_$$_frame.png"
-                # Use timeout and simpler extraction for problematic files
-                if timeout 20 ffmpeg -v error -threads 1 -i "$gif_file" -vf "select='eq(n,min(n\,5))',scale=32:32:flags=fast_bilinear" -frames:v 1 -y "$temp_frame" >/dev/null 2>&1; then
-                    visual_hash=$(md5sum "$temp_frame" 2>/dev/null | cut -d' ' -f1 || echo "")
-                    rm -f "$temp_frame" 2>/dev/null
+            # Check if MD5 calculation failed or timed out (likely corruption)
+            if [[ "$checksum" == "ERROR" || "$checksum" == "TIMEOUT_MD5" ]]; then
+                local failure_reason
+                if [[ "$checksum" == "TIMEOUT_MD5" ]]; then
+                    failure_reason="MD5 calculation timed out - likely severely corrupted file"
+                    echo -e "  ${RED}🚫 Corrupted file (MD5 timeout): $(basename "$gif_file")${NC}" >&2
+                else
+                    failure_reason="MD5 calculation failed - file may be corrupted"
+                fi
+                
+                # Use AI to verify if this is truly corrupted or just a permission issue
+                local ai_health_verdict=$(ai_analyze_file_health "$gif_file" "md5_failed")
+                if [[ "$ai_health_verdict" == "SKIP_NON_GIF" || "$ai_health_verdict" == "SKIP_VIDEO_FILE" ]]; then
+                    # AI skipped - treat as regular MD5 failure
+                    local error_msg="Cannot calculate MD5 hash: $gif_file ($failure_reason)"
+                    log_error "$error_msg" "$gif_file" "$failure_reason"
+                    echo "$gif_file|CORRUPTED|$size|unknown||0|0" >> "$result_file"
+                    return 1
+                elif [[ "$ai_health_verdict" == "CORRUPTED" ]]; then
+                    # SAFETY: AI corruption detection NEVER triggers automatic deletion
+                    # Only log and mark for manual review
+                    local error_msg="AI detected potential corruption: $gif_file (MD5 failed, AI analysis suggests corruption)"
+                    log_error "$error_msg" "$gif_file" "AI corruption detection - file marked for manual review, NOT auto-deleted"
+                    echo "$gif_file|AI_CORRUPTED_REVIEW|$size|unknown||0|0" >> "$result_file"
+                    # Train AI model with this corruption pattern
+                    train_ai_file_health "$gif_file" "corrupted" "md5_failed" "confirmed"
+                    echo -e "  ${YELLOW}🔍 AI flagged for review: $(basename "$gif_file") (potential corruption)${NC}" >&2
+                    return 1
+                else
+                    # AI thinks file might be OK despite MD5 failure - mark as suspicious
+                    local error_msg="Suspicious file (MD5 failed but AI uncertain): $gif_file"
+                    log_error "$error_msg" "$gif_file" "MD5 failed but AI analysis suggests possible false positive"
+                    echo "$gif_file|AI_SUSPICIOUS|$size|unknown||0|0" >> "$result_file"
+                    # Train AI model with this edge case
+                    train_ai_file_health "$gif_file" "suspicious" "md5_failed" "uncertain"
+                    return 1
                 fi
             fi
             
-            # Create composite fingerprint
-            local content_fingerprint="${frame_count}:${duration}:${fps}:${resolution}"
+            # Stage 2: Fast file metadata (no FFmpeg analysis to avoid timeouts)
+            local frame_count="0"
+            local duration="0" 
+            local resolution="unknown"
             
-            # Prepare analysis data
-            local analysis_data="$gif_file|$checksum|$size|$content_fingerprint|$visual_hash|$frame_count|$duration"
+            # Get basic file info without FFmpeg (much faster, no timeouts)
+            # Use file command and stat for basic validation
+            local file_info=$(file "$gif_file" 2>/dev/null || echo "unknown")
+            if [[ "$file_info" == *"GIF"* ]]; then
+                # Valid GIF detected by file command
+                resolution="valid_gif"
+            elif [[ "$file_info" == *"data"* ]] && [[ $size -gt 1024 ]]; then
+                # Might be GIF but file command uncertain
+                resolution="possible_gif"
+            else
+                # Likely not a valid GIF
+                resolution="invalid_format"
+            fi
+            
+            # Create simple content fingerprint based on size and format only
+            local content_fingerprint="${size}:${resolution}"
+            
+            # Prepare analysis data - MD5 is the primary identifier  
+            local analysis_data="$gif_file|$checksum|$size|$content_fingerprint||$frame_count|$duration"
             
             # Save to cache for future runs
             save_to_ai_cache "$gif_file" "$analysis_data" 2>/dev/null || true
             
-            # Write results atomically
+            # Write results atomically (no background processing - keep it simple and fast)
             echo "$analysis_data" >> "$result_file"
             
-        } &
-        
-        # Wait for analysis with timeout
-        local analysis_pid=$!
-        if ! timeout $timeout_seconds bash -c "wait $analysis_pid" 2>/dev/null; then
-            # Kill the analysis if it times out
-            kill -9 $analysis_pid 2>/dev/null || true
-            wait $analysis_pid 2>/dev/null || true
-            
-            # Log timeout error
-            local timeout_msg="File analysis timed out after ${timeout_seconds}s: $gif_file"
-            log_error "$timeout_msg" "$gif_file" "FFprobe/FFmpeg analysis timed out - possibly corrupted or complex file" "analyze_gif_parallel"
-            echo -e "  ${RED}⚠️ Timeout: $(basename "$gif_file") (${timeout_seconds}s)${NC}" >&2
-            
-            # Write timeout result
-            echo "$gif_file|TIMEOUT|0|0:0:0:0x0||0|0" >> "$result_file"
-            return 1
-        fi
+        } # No background process - execute immediately to avoid timeout issues
         
         return 0
     }
@@ -3975,63 +4304,197 @@ detect_duplicate_gifs() {
     local results_file="$temp_analysis_dir/analysis_results.txt"
     : > "$results_file"  # Initialize empty file
     
-    # Process files in parallel batches with progress tracking
-    local batch_size=$AI_ANALYSIS_BATCH_SIZE
+    # Process files sequentially with minimal parallelism to avoid timeout cascades
     local processed_files=0
+    local auto_fixed_files=0
+    local auto_deleted_files=0
+    local auto_skipped_files=0
+    declare -a fixed_files_list
+    declare -a deleted_files_list
+    declare -a skipped_files_list
     
-    for ((i=0; i<total_files; i+=batch_size)); do
-        local batch_end=$((i + batch_size))
-        [[ $batch_end -gt $total_files ]] && batch_end=$total_files
+    echo -e "  ${BLUE}🚀 Processing $total_files GIF files (sequential mode for stability)${NC}"
+    echo -e "  ${GRAY}🛈 Press Ctrl+C if analysis gets stuck on a corrupted file${NC}"
+    
+    # Emergency break mechanism to prevent infinite loops
+    declare -A processed_files_tracker
+    local emergency_break=false
+    local consecutive_loop_detections=0
+    
+    # Clear any previous state that might cause loops
+    unset processed_files_tracker
+    declare -A processed_files_tracker
+    
+    # Use simple while loop with unique variable name to avoid conflicts
+    local loop_idx=0
+    while [[ $loop_idx -lt $total_files ]]; do
+        local gif_file="${gif_files_list[$loop_idx]}"
+        processed_files=$((loop_idx + 1))
         
-        local batch_files=("${gif_files_list[@]:$i:$batch_size}")
-        local batch_pids=()
+        # Update progress bar every iteration
+        if [[ $((loop_idx % 5)) -eq 0 ]] || [[ $loop_idx -eq 0 ]]; then
+            update_file_progress "$processed_files" "$total_files" "$(basename "$gif_file")" "Analyzing GIFs" 30
+        fi
         
-        # Start parallel jobs for this batch with improved error handling
-        for gif_file in "${batch_files[@]}"; do
-            # Skip problematic files that might cause hangs
-            if [[ ! -r "$gif_file" ]]; then
-                local error_msg="File not readable in batch processing: $gif_file"
-                log_error "$error_msg" "$gif_file" "Permission denied during batch duplicate detection"
-                echo -e "  ${RED}⚠️ Unreadable: $(basename "$gif_file")${NC}" >&2
-                echo "$gif_file|UNREADABLE|0|0:0:0:0x0||0|0" >> "$results_file"
+        # Emergency break: If we've seen this EXACT file before in THIS session
+        # This should NEVER happen in a proper loop, so it indicates array has duplicates
+        if [[ -n "${processed_files_tracker["$gif_file"]}" ]]; then
+            # Increment the detection count for THIS SPECIFIC FILE
+            local file_detection_count=${processed_files_tracker["$gif_file"]}
+            file_detection_count=$((file_detection_count + 1))
+            processed_files_tracker["$gif_file"]=$file_detection_count
+            
+            echo -e "  ${RED}⚠️ Emergency break: Duplicate processing detected for $(basename "$gif_file") (seen $file_detection_count times)${NC}" >&2
+            
+            # If this SPECIFIC file has been seen too many times, skip it
+            if [[ $file_detection_count -ge 3 ]]; then
+                echo -e "  ${RED}🛑 Skipping problematic file after $file_detection_count attempts${NC}" >&2
+                log_conversion "EMERGENCY_SKIP" "$gif_file" "" "File appeared multiple times in loop - systematic issue"
                 continue
             fi
             
-            analyze_gif_parallel "$gif_file" "$temp_analysis_dir" "$results_file" &
-            batch_pids+=("$!")
+            # Count consecutive different files being flagged
+            consecutive_loop_detections=$((consecutive_loop_detections + 1))
             
-            # Limit concurrent jobs and handle job cleanup
-            if [[ ${#batch_pids[@]} -ge $AI_DUPLICATE_THREADS ]]; then
-                # Wait for the first job with timeout
-                local first_pid="${batch_pids[0]}"
-                if ! timeout 45 bash -c "wait $first_pid" 2>/dev/null; then
-                    # Log batch timeout
-                    local batch_error="Batch job timed out after 45s (PID: $first_pid)"
-                    log_error "$batch_error" "batch_processing" "Parallel analysis job stuck during duplicate detection"
-                    echo -e "  ${RED}⚠️ Killed stuck analysis job (PID: $first_pid)${NC}" >&2
-                    # Force kill stuck process
-                    kill -9 "$first_pid" 2>/dev/null || true
+            # If many DIFFERENT files are being flagged, abort entire analysis
+            if [[ $consecutive_loop_detections -ge 5 ]]; then
+                echo -e "  ${RED}🛑 ABORTING: Too many different files flagged - likely systematic issue${NC}" >&2
+                echo -e "  ${YELLOW}💡 Try restarting the script or check for file system issues${NC}" >&2
+                emergency_break=true
+                break
+            fi
+            
+            log_conversion "EMERGENCY_SKIP" "$gif_file" "" "Duplicate file in processing queue - skipping"
+            echo -e "  ${YELLOW}⏭️ Skipping duplicate queue entry: $(basename "$gif_file")${NC}" >&2
+            ((loop_idx++))  # Increment before continue
+            continue  # Skip this file and continue with next
+        fi
+        
+        # Mark file as seen (first time = 1)
+        processed_files_tracker["$gif_file"]=1
+        
+        # Reset consecutive counter on successful new file processing
+        consecutive_loop_detections=0
+        
+        # Get file size immediately to handle problematic files early
+        local size=$(stat -c%s "$gif_file" 2>/dev/null || echo "0")
+        
+        # Update progress at start of processing
+        update_file_progress "$processed_files" "$total_files" "$(basename "$gif_file")" "Analyzing GIFs" 30
+        
+        # Skip unreadable files immediately and ensure we continue to next file
+        if [[ ! -r "$gif_file" ]]; then
+            echo "$gif_file|UNREADABLE|0|unknown||0|0" >> "$results_file"
+            echo -e "  ${RED}⚠️ Skipped unreadable: $(basename "$gif_file") (${processed_files}/${total_files})${NC}" >&2
+            log_conversion "AUTO_SKIP" "$gif_file" "" "File not readable - permission denied"
+            update_file_progress "$processed_files" "$total_files" "$(basename "$gif_file")" "Analyzing GIFs" 30
+            ((loop_idx++))  # Increment before continue
+            continue  # This should advance to next iteration
+        fi
+        # Process file directly (no background jobs to avoid timeout issues)
+        # Automatically handle problematic files without user intervention
+        
+        # Fix double extensions automatically
+        if [[ "$gif_file" == *".gif.gif" ]]; then
+            local corrected_name="${gif_file%.gif}"
+            if [[ ! -f "$corrected_name" ]]; then
+                if mv "$gif_file" "$corrected_name" 2>/dev/null; then
+                    echo -e "  ${GREEN}✓ Auto-fixed: $(basename "$gif_file") → $(basename "$corrected_name")${NC}" >&2
+                    # Log the automatic fix
+                    log_conversion "AUTO_FIXED" "$gif_file" "$corrected_name" "Extension: .gif.gif → .gif"
+                    
+                    # CRITICAL FIX: Mark the renamed file as processed AND skip it
+                    # The corrected file will be processed when we reach it naturally in the array
+                    processed_files_tracker["$gif_file"]=1
+                    processed_files_tracker["$corrected_name"]=1
+                    
+                    # Check if corrected name exists later in array - it will be processed then
+                    local check_idx
+                    local found_later=false
+                    for ((check_idx=loop_idx+1; check_idx<total_files; check_idx++)); do
+                        if [[ "${gif_files_list[$check_idx]}" == "$corrected_name" ]]; then
+                            found_later=true
+                            echo -e "  ${CYAN}ℹ️ Corrected file will be processed at position $check_idx${NC}" >&2
+                            break
+                        fi
+                    done
+                    
+                    # Skip processing this renamed file now - it will be processed later if it's in the array
+                    ((loop_idx++))
+                    continue
+                else
+                    echo -e "  ${YELLOW}⚠️ Auto-skip: Cannot fix $(basename "$gif_file")${NC}" >&2
+                    log_conversion "AUTO_SKIP" "$gif_file" "" "Cannot fix double extension"
+                    echo "$gif_file|AUTO_SKIP|$size|double_extension_unfixable||0|0" >> "$results_file"
+                    ((loop_idx++))  # Increment before continue
+                    continue  # Skip to next file in loop
                 fi
-                # Remove completed/killed PID from tracking
-                batch_pids=("${batch_pids[@]:1}")
+            else
+                echo -e "  ${BLUE}🔄 Auto-skip: $(basename "$gif_file") (corrected version exists)${NC}" >&2
+                log_conversion "AUTO_SKIP" "$gif_file" "" "Corrected version already exists"
+                echo "$gif_file|AUTO_SKIP|$size|duplicate_extension||0|0" >> "$results_file"
+                ((loop_idx++))  # Increment before continue
+                continue
             fi
-        done
+        fi
         
-        # Wait for all remaining jobs in this batch with timeout
-        for pid in "${batch_pids[@]}"; do
-            if ! timeout 45 bash -c "wait $pid" 2>/dev/null; then
-                # Log final batch cleanup timeout
-                local cleanup_error="Final batch cleanup timed out after 45s (PID: $pid)"
-                log_error "$cleanup_error" "batch_cleanup" "Parallel analysis job stuck during batch cleanup"
-                echo -e "  ${RED}⚠️ Killed remaining stuck job (PID: $pid)${NC}" >&2
-                # Kill stuck processes
-                kill -9 "$pid" 2>/dev/null || true
-            fi
-        done
+        # Delete 0-byte files immediately - they're always broken
+        if [[ $size -eq 0 ]]; then
+            echo -e "  ${RED}🗑️ Auto-delete: $(basename "$gif_file") (0 bytes - empty file)${NC}" >&2
+            rm -f "$gif_file" 2>/dev/null || true
+            log_conversion "AUTO_DELETED" "$gif_file" "" "Empty file (0 bytes) - automatically removed"
+            echo "$gif_file|AUTO_DELETED|0|empty_file||0|0" >> "$results_file"
+            ((loop_idx++))  # Increment before continue
+            continue
+        fi
         
-        processed_files=$batch_end
-        update_parallel_progress "$processed_files" "$total_files" "Analyzing GIFs" 30
+        # Process the (potentially corrected) file
+        analyze_gif_parallel "$gif_file" "$temp_analysis_dir" "$results_file" $processed_files $total_files
+        
+        # Small delay to prevent system overload
+        sleep 0.01
+        
+        # Increment loop counter at end of iteration
+        ((loop_idx++))
     done
+    
+    # Check if we hit emergency break
+    if [[ "$emergency_break" == "true" ]]; then
+        echo -e "\n  ${RED}🛑 ANALYSIS ABORTED DUE TO INFINITE LOOP DETECTION${NC}"
+        echo -e "  ${YELLOW}💡 This usually indicates file system corruption or permission issues${NC}"
+        echo -e "  ${BLUE}🔗 Try: Check file permissions, restart script, or run fsck${NC}"
+        return 1
+    fi
+    
+    # Final progress update to ensure we show 100%
+    printf "\r  ${GREEN}✓ Analysis complete! Processed $total_files GIF files ${NC}\n"
+    
+    # Show file maintenance summary
+    local auto_actions_count=$(grep -E "AUTO_(FIXED|DELETED|SKIP)" "$results_file" 2>/dev/null | wc -l)
+    if [[ $auto_actions_count -gt 0 ]]; then
+        echo -e "\n  ${CYAN}${BOLD}🔧 AUTOMATIC FILE MAINTENANCE SUMMARY:${NC}"
+        
+        # Count and report fixed files
+        local fixed_count=$(grep "AUTO_FIXED" "$results_file" 2>/dev/null | wc -l)
+        if [[ $fixed_count -gt 0 ]]; then
+            echo -e "    ${GREEN}✓ Fixed $fixed_count file(s) with double extensions (.gif.gif → .gif)${NC}"
+        fi
+        
+        # Count and report deleted files
+        local deleted_count=$(grep "AUTO_DELETED" "$results_file" 2>/dev/null | wc -l)
+        if [[ $deleted_count -gt 0 ]]; then
+            echo -e "    ${RED}🗑️ Deleted $deleted_count empty file(s) (0 bytes)${NC}"
+        fi
+        
+        # Count and report skipped files
+        local skipped_count=$(grep "AUTO_SKIP" "$results_file" 2>/dev/null | wc -l)
+        if [[ $skipped_count -gt 0 ]]; then
+            echo -e "    ${YELLOW}⚠️ Skipped $skipped_count problematic file(s)${NC}"
+        fi
+        
+        echo -e "    ${BLUE}📄 All actions logged in: ${BOLD}$(basename "$CONVERSION_LOG")${NC}"
+        echo -e "    ${GRAY}🔍 View details: tail -20 \"$CONVERSION_LOG\"${NC}"
+    fi
     
     # Process results from parallel analysis and count errors
     local error_files=0
@@ -4049,9 +4512,31 @@ detect_duplicate_gifs() {
                 ((error_files++))
                 ((unreadable_files++))
                 ;;
-            "TIMEOUT")
+            "TIMEOUT"|"SLOW_ANALYSIS"|"CORRUPTED"|"AI_CORRUPTED")
                 ((error_files++))
                 ((timeout_files++))
+                ;;
+            "AI_SUSPICIOUS"|"AI_LEARNING")
+                # AI learning cases - include in analysis but flag as uncertain
+                gif_checksums["$gif_file"]="AI_UNCERTAIN_${size}"
+                gif_sizes["$gif_file"]="$size"
+                gif_fingerprints["$gif_file"]="$content_fingerprint"
+                gif_visual_hashes["$gif_file"]="$visual_hash"
+                gif_frame_counts["$gif_file"]="$frame_count"
+                gif_durations["$gif_file"]="$duration"
+                ((total_gifs++))
+                ((successful_files++))
+                ;;
+            "AI_COMPLEX")
+                # AI confirmed complex but valid files
+                gif_checksums["$gif_file"]="AI_COMPLEX_${size}"
+                gif_sizes["$gif_file"]="$size"
+                gif_fingerprints["$gif_file"]="$content_fingerprint"
+                gif_visual_hashes["$gif_file"]="$visual_hash"
+                gif_frame_counts["$gif_file"]="$frame_count"
+                gif_durations["$gif_file"]="$duration"
+                ((total_gifs++))
+                ((successful_files++))
                 ;;
             "LARGE_FILE")
                 ((large_files++))
@@ -4073,16 +4558,44 @@ detect_duplicate_gifs() {
     local final_cache_stats=$(get_cache_stats)
     printf "\r  ${GREEN}✓ Parallel content analysis complete! ${NC}\n"
     
-    # Show detailed analysis summary
-    echo -e "  ${CYAN}${BOLD}📈 ANALYSIS SUMMARY:${NC}"
+    # Show detailed analysis summary with AI insights
+    echo -e "  ${CYAN}${BOLD}📈 AI-ENHANCED ANALYSIS SUMMARY:${NC}"
     echo -e "    ${GREEN}✓ Successfully analyzed: ${BOLD}$successful_files${NC} ${GREEN}files${NC}"
+    
+    # Count AI-enhanced categories
+    local ai_complex_files=0
+    local ai_suspicious_files=0
+    local ai_corrupted_files=0
+    
+    # Count AI categories from results
+    while IFS='|' read -r gif_file checksum size content_fingerprint visual_hash frame_count duration; do
+        [[ -z "$gif_file" ]] && continue
+        case "$checksum" in
+            "AI_CORRUPTED") ((ai_corrupted_files++)) ;;
+            "AI_COMPLEX") ((ai_complex_files++)) ;;
+            "AI_SUSPICIOUS"|"AI_LEARNING") ((ai_suspicious_files++)) ;;
+        esac
+    done < "$results_file"
+    
+    # Show AI analysis results
+    if [[ $ai_complex_files -gt 0 ]]; then
+        echo -e "    ${CYAN}🧠 AI identified complex files: ${BOLD}$ai_complex_files${NC} ${CYAN}(legitimate but slow)${NC}"
+    fi
+    
+    if [[ $ai_suspicious_files -gt 0 ]]; then
+        echo -e "    ${YELLOW}🤖 AI learning from: ${BOLD}$ai_suspicious_files${NC} ${YELLOW}uncertain files${NC}"
+    fi
+    
+    if [[ $ai_corrupted_files -gt 0 ]]; then
+        echo -e "    ${RED}🚫 AI detected corruption: ${BOLD}$ai_corrupted_files${NC} ${RED}files${NC}"
+    fi
     
     if [[ $large_files -gt 0 ]]; then
         echo -e "    ${YELLOW}⚠️ Skipped large files: ${BOLD}$large_files${NC} ${YELLOW}files (>100MB)${NC}"
     fi
     
     if [[ $timeout_files -gt 0 ]]; then
-        echo -e "    ${RED}⚠️ Timed out: ${BOLD}$timeout_files${NC} ${RED}files (check error log)${NC}"
+        echo -e "    ${RED}⚠️ Analysis issues: ${BOLD}$timeout_files${NC} ${RED}files (see error log)${NC}"
     fi
     
     if [[ $unreadable_files -gt 0 ]]; then
@@ -4090,9 +4603,9 @@ detect_duplicate_gifs() {
     fi
     
     if [[ $error_files -gt 0 ]]; then
-        echo -e "    ${RED}${BOLD}⚠️ Total errors: $error_files files${NC}"
+        echo -e "    ${RED}${BOLD}⚠️ Total issues: $error_files files${NC}"
         echo -e "    ${BLUE}📄 Check error log: ${BOLD}$(basename "$ERROR_LOG")${NC}"
-        echo -e "    ${GRAY}Error details have been logged for investigation${NC}"
+        echo -e "    ${GRAY}🤖 AI is learning from these patterns to improve future detection${NC}"
     fi
     
     echo -e "  ${BLUE}🗄️ Cache updated: $final_cache_stats${NC}"
@@ -6678,10 +7191,46 @@ show_main_menu() {
         local video_count=$(find . -maxdepth 1 -name "*.mp4" -o -name "*.avi" -o -name "*.mov" -o -name "*.mkv" -o -name "*.webm" 2>/dev/null | wc -l)
         local gif_count=$(find . -maxdepth 1 -name "*.gif" 2>/dev/null | wc -l)
         
-        echo -e "${BLUE}📂 Current Directory: ${BOLD}$(pwd | sed "s|$HOME|~|g")${NC}"
+        # Create clickable directory links for easy navigation
+        local current_dir_path="$(pwd)"
+        local current_dir_display="$(pwd | sed "s|$HOME|~|g")"
+        local clickable_current_dir=$(make_clickable_path "$current_dir_path" "$current_dir_display")
+        
+        echo -e "${BLUE}📂 Current Directory: ${BOLD}$clickable_current_dir${NC}"
         echo -e "${YELLOW}📹 Video Files: ${BOLD}$video_count${NC} | ${GREEN}🎬 GIF Files: ${BOLD}$gif_count${NC}"
-    local ai_status=$([[ "$AI_ENABLED" == true ]] && echo "ON" || echo "OFF")
-    echo -e "${MAGENTA}⚙️  Current Settings: ${QUALITY} quality, ${ASPECT_RATIO} aspect ratio, AI:${ai_status}${NC}\n"
+        
+        # Quick access links section - script's settings directory
+        local settings_dir="$HOME/.smart-gif-converter"
+        
+        # Ensure settings directory exists before creating clickable link
+        if [[ ! -d "$settings_dir" ]]; then
+            mkdir -p "$settings_dir" 2>/dev/null || true
+        fi
+        
+        local quick_links="$(make_clickable_path "$settings_dir" "~/.smart-gif-converter/")"
+        
+        # Add cache link if enabled
+        if [[ "$AI_CACHE_ENABLED" == "true" ]]; then
+            quick_links="$quick_links | $(make_clickable_path "$AI_CACHE_DIR" "🗫 Cache")"
+        fi
+        
+        # Add training folder link if AI training enabled
+        if [[ "$AI_TRAINING_ENABLED" == "true" ]]; then
+            quick_links="$quick_links | $(make_clickable_path "$AI_TRAINING_DIR" "🧠 AI Training")"
+        fi
+        
+        # Add parent directory link for easy navigation up
+        local parent_dir="$(dirname "$(pwd)")"
+        quick_links="$quick_links | $(make_clickable_path "$parent_dir" "⬆️ Parent")"
+        
+        # Add home directory link
+        quick_links="$quick_links | $(make_clickable_path "$HOME" "🏠 Home")"
+        
+        echo -e "${CYAN}🔗 Quick Links: ${NC}$quick_links"
+        
+        # Current settings with status
+        local ai_status=$([[ "$AI_ENABLED" == true ]] && echo "ON" || echo "OFF")
+        echo -e "${MAGENTA}⚙️  Current Settings: ${QUALITY} quality, ${ASPECT_RATIO} aspect ratio, AI:${ai_status}${NC}\n"
         
         echo -e "${CYAN}${BOLD}🎯 MAIN MENU${NC}"
         echo -e "${YELLOW}🎹 Navigation: ${GREEN}w${NC}=Up ${GREEN}s${NC}=Down ${GREEN}Enter${NC}=Select ${GREEN}q${NC}=Quit ${GREEN}h${NC}=Help${NC}\n"
