@@ -207,6 +207,24 @@ AI_MAX_PARALLEL_JOBS="$(( CPU_CORES > 8 ? 8 : CPU_CORES ))"  # Cap at 8 for memo
 AI_DUPLICATE_THREADS="$(( CPU_CORES > 4 ? CPU_CORES - 1 : CPU_CORES ))"  # Leave 1 core free on high-core systems
 AI_ANALYSIS_BATCH_SIZE="$(( CPU_CORES * 2 ))"  # Process 2x CPU cores worth in each batch
 
+# 🗄️ AI Cache System Configuration
+AI_CACHE_DIR="$LOG_DIR/ai_cache"
+AI_CACHE_INDEX="$AI_CACHE_DIR/analysis_cache.db"
+AI_CACHE_VERSION="2.0"  # Increment to invalidate old cache
+AI_CACHE_ENABLED=true
+AI_CACHE_MAX_AGE_DAYS=30  # Cache entries older than this are cleaned up
+
+# 🧠 AI Training & Learning System Configuration
+AI_TRAINING_ENABLED=true
+AI_TRAINING_DIR="$LOG_DIR/ai_training"
+AI_MODEL_FILE="$AI_TRAINING_DIR/smart_model.db"
+AI_TRAINING_LOG="$AI_TRAINING_DIR/training_history.log"
+AI_MODEL_VERSION="1.0"  # Increment to reset training model
+AI_GENERATION=1          # Current AI generation (increments with model rebuilds)
+AI_LEARNING_RATE=0.1    # How quickly AI adapts (0.1 = moderate learning)
+AI_CONFIDENCE_MIN=0.3    # Minimum confidence threshold for AI decisions
+AI_TRAINING_MIN_SAMPLES=5  # Minimum samples before AI makes confident predictions
+
 # 🚀 Parallel Processing Utility Functions
 # =====================================================
 
@@ -306,6 +324,974 @@ update_parallel_progress() {
     for ((i=0; i<filled; i++)); do printf "${GREEN}█${NC}"; done
     for ((i=0; i<empty; i++)); do printf "${GRAY}░${NC}"; done
     printf "${CYAN}] ${BOLD}%3d%%${NC} (${BOLD}%d${NC}/${BOLD}%d${NC})" "$progress" "$current" "$total"
+}
+
+# 🗄️ AI Smart Cache Management System (Corruption-Proof)
+# =================================================================
+
+# Initialize AI cache system with corruption protection
+init_ai_cache() {
+    if [[ "$AI_CACHE_ENABLED" != "true" ]]; then
+        return 0
+    fi
+    
+    # Create cache directory structure
+    mkdir -p "$AI_CACHE_DIR" 2>/dev/null || {
+        echo -e "${YELLOW}⚠️  Warning: Cannot create AI cache directory, disabling cache${NC}" >&2
+        AI_CACHE_ENABLED=false
+        return 1
+    }
+    
+    # Initialize or validate cache index
+    if ! validate_cache_index; then
+        echo -e "${YELLOW}🔄 Cache corruption detected, rebuilding index...${NC}" >&2
+        rebuild_cache_index
+    fi
+    
+    # Create backup of cache index
+    create_cache_backup
+    
+    # Clean up old cache entries
+    cleanup_ai_cache
+}
+
+# Validate cache index integrity
+validate_cache_index() {
+    # Check if cache index exists
+    [[ -f "$AI_CACHE_INDEX" ]] || return 1
+    
+    # Check if file is readable
+    [[ -r "$AI_CACHE_INDEX" ]] || return 1
+    
+    # Check if file has proper header
+    local header_line=$(head -n 1 "$AI_CACHE_INDEX" 2>/dev/null || echo "")
+    [[ "$header_line" =~ ^#.*Version ]] || return 1
+    
+    # Check if file structure is valid (no broken lines)
+    local line_count=0
+    local corrupted_lines=0
+    
+    while IFS= read -r line; do
+        ((line_count++))
+        [[ $line_count -le 3 ]] && continue  # Skip header
+        
+        # Skip empty lines and comments
+        [[ -z "$line" || "$line" =~ ^# ]] && continue
+        
+        # Check line format: should have 5+ fields separated by |
+        local field_count=$(echo "$line" | tr -cd '|' | wc -c)
+        if [[ $field_count -lt 4 ]]; then
+            ((corrupted_lines++))
+            # If more than 10% of lines are corrupted, fail validation
+            if [[ $corrupted_lines -gt 10 ]] && [[ $((corrupted_lines * 10)) -gt $line_count ]]; then
+                return 1
+            fi
+        fi
+    done < "$AI_CACHE_INDEX" 2>/dev/null || return 1
+    
+    return 0
+}
+
+# Rebuild corrupted cache index
+rebuild_cache_index() {
+    local backup_file="${AI_CACHE_INDEX}.backup.$(date +%s)"
+    
+    # Backup corrupted file for analysis
+    [[ -f "$AI_CACHE_INDEX" ]] && cp "$AI_CACHE_INDEX" "$backup_file" 2>/dev/null
+    
+    # Create fresh index
+    cat > "$AI_CACHE_INDEX" << EOF
+# AI Analysis Cache Index - Version $AI_CACHE_VERSION (Rebuilt)
+# Format: filename|md5hash|filesize|timestamp|analysis_data
+# Rebuilt: $(date)
+EOF
+    
+    # Try to recover valid entries from backup
+    if [[ -f "$backup_file" ]]; then
+        local recovered=0
+        while IFS= read -r line; do
+            # Skip header and empty lines
+            [[ -z "$line" || "$line" =~ ^# ]] && continue
+            
+            # Validate line format
+            local field_count=$(echo "$line" | tr -cd '|' | wc -c)
+            if [[ $field_count -ge 4 ]]; then
+                echo "$line" >> "$AI_CACHE_INDEX"
+                ((recovered++))
+            fi
+        done < "$backup_file" 2>/dev/null || true
+        
+        if [[ $recovered -gt 0 ]]; then
+            echo -e "${GREEN}✅ Recovered $recovered cache entries${NC}" >&2
+        fi
+        
+        # Keep backup for a while, then clean up
+        (sleep 300 && rm -f "$backup_file") &
+    fi
+}
+
+# Create atomic backup of cache index
+create_cache_backup() {
+    if [[ -f "$AI_CACHE_INDEX" ]]; then
+        local backup_file="${AI_CACHE_INDEX}.safe"
+        cp "$AI_CACHE_INDEX" "$backup_file" 2>/dev/null || true
+    fi
+}
+
+# Clean up old cache entries
+cleanup_ai_cache() {
+    if [[ "$AI_CACHE_ENABLED" != "true" || ! -f "$AI_CACHE_INDEX" ]]; then
+        return 0
+    fi
+    
+    local cutoff_time=$(($(date +%s) - (AI_CACHE_MAX_AGE_DAYS * 86400)))
+    local temp_index="$(mktemp)"
+    
+    # Keep header and recent entries
+    head -n 3 "$AI_CACHE_INDEX" > "$temp_index"
+    
+    # Filter out old entries
+    local cleaned_count=0
+    while IFS='|' read -r filename md5hash filesize timestamp analysis_data; do
+        [[ "$filename" =~ ^# ]] && continue  # Skip comments
+        [[ -z "$filename" ]] && continue     # Skip empty lines
+        
+        if [[ $timestamp -gt $cutoff_time ]]; then
+            echo "$filename|$md5hash|$filesize|$timestamp|$analysis_data" >> "$temp_index"
+        else
+            ((cleaned_count++))
+        fi
+    done < <(tail -n +4 "$AI_CACHE_INDEX")
+    
+    mv "$temp_index" "$AI_CACHE_INDEX"
+    
+    if [[ $cleaned_count -gt 0 ]]; then
+        echo -e "${BLUE}🧹 Cleaned up $cleaned_count old cache entries${NC}" >&2
+    fi
+}
+
+# Get file fingerprint for change detection
+get_file_fingerprint() {
+    local file="$1"
+    
+    if [[ ! -f "$file" ]]; then
+        echo "MISSING"
+        return 1
+    fi
+    
+    # Use MD5 hash and file size for robust change detection
+    local md5hash=$(md5sum "$file" 2>/dev/null | cut -d' ' -f1 || echo "ERROR")
+    local filesize=$(stat -c%s "$file" 2>/dev/null || echo "0")
+    
+    echo "${md5hash}:${filesize}"
+}
+
+# Check if file analysis is cached and valid (with corruption protection)
+check_ai_cache() {
+    local file="$1"
+    
+    if [[ "$AI_CACHE_ENABLED" != "true" ]]; then
+        return 1
+    fi
+    
+    # Validate cache integrity first
+    if ! validate_cache_index; then
+        echo -e "${YELLOW}🔄 Cache corrupted during read, rebuilding...${NC}" >&2
+        rebuild_cache_index
+        return 1
+    fi
+    
+    local current_fingerprint=$(get_file_fingerprint "$file")
+    [[ "$current_fingerprint" == "MISSING" || "$current_fingerprint" == "ERROR:0" ]] && return 1
+    
+    # Search for cached entry with error handling
+    local cached_line
+    if ! cached_line=$(grep -F "$(basename "$file")|" "$AI_CACHE_INDEX" 2>/dev/null | tail -n 1); then
+        return 1
+    fi
+    
+    if [[ -n "$cached_line" ]]; then
+        # Validate cached line format
+        local field_count=$(echo "$cached_line" | tr -cd '|' | wc -c)
+        if [[ $field_count -lt 4 ]]; then
+            # Corrupted cache entry, ignore
+            return 1
+        fi
+        
+        local cached_fingerprint=$(echo "$cached_line" | cut -d'|' -f2-3 | tr '|' ':')
+        
+        if [[ "$cached_fingerprint" == "$current_fingerprint" ]]; then
+            # Cache hit - return cached analysis
+            local analysis_data=$(echo "$cached_line" | cut -d'|' -f5-)
+            # Validate analysis data is not empty
+            [[ -n "$analysis_data" ]] && echo "$analysis_data" && return 0
+        fi
+    fi
+    
+    return 1
+}
+
+# Save analysis results to cache (atomic operation)
+save_to_ai_cache() {
+    local file="$1"
+    local analysis_data="$2"
+    
+    if [[ "$AI_CACHE_ENABLED" != "true" ]]; then
+        return 0
+    fi
+    
+    # Validate cache before write
+    if ! validate_cache_index; then
+        echo -e "${YELLOW}🔄 Cache corrupted during write, rebuilding...${NC}" >&2
+        rebuild_cache_index
+    fi
+    
+    local fingerprint=$(get_file_fingerprint "$file")
+    [[ "$fingerprint" == "MISSING" || "$fingerprint" == "ERROR:0" ]] && return 1
+    
+    local md5hash=$(echo "$fingerprint" | cut -d':' -f1)
+    local filesize=$(echo "$fingerprint" | cut -d':' -f2)
+    local timestamp=$(date +%s)
+    local filename=$(basename "$file")
+    
+    # Validate data before saving
+    if [[ -z "$analysis_data" || ${#analysis_data} -gt 10000 ]]; then
+        echo -e "${YELLOW}⚠️  Invalid analysis data, skipping cache save${NC}" >&2
+        return 1
+    fi
+    
+    # Atomic write operation using temporary file
+    local temp_entry="$(mktemp)"
+    local cache_entry="$filename|$md5hash|$filesize|$timestamp|$analysis_data"
+    
+    # Write to temp file first
+    if echo "$cache_entry" > "$temp_entry" 2>/dev/null; then
+        # Atomic append from temp file
+        if cat "$temp_entry" >> "$AI_CACHE_INDEX" 2>/dev/null; then
+            rm -f "$temp_entry"
+            return 0
+        fi
+    fi
+    
+    # Cleanup on failure
+    rm -f "$temp_entry" 2>/dev/null || true
+    return 1
+}
+
+# Get cache statistics
+get_cache_stats() {
+    if [[ "$AI_CACHE_ENABLED" != "true" || ! -f "$AI_CACHE_INDEX" ]]; then
+        echo "Cache disabled"
+        return
+    fi
+    
+    local total_entries=$(grep -v '^#' "$AI_CACHE_INDEX" | grep -c '|' || echo "0")
+    local cache_size=$(du -h "$AI_CACHE_DIR" 2>/dev/null | cut -f1 || echo "0")
+    
+    echo "$total_entries entries, ${cache_size}B"
+}
+
+# Save AI analysis results to cache
+save_ai_analysis_to_cache() {
+    local file="$1"
+    
+    if [[ "$AI_CACHE_ENABLED" != "true" ]]; then
+        return 0
+    fi
+    
+    # Prepare AI analysis data for caching
+    local ai_data="FRAMERATE=$FRAMERATE|DITHER_MODE=$DITHER_MODE|MAX_COLORS=$MAX_COLORS"
+    ai_data="$ai_data|CROP_FILTER=${CROP_FILTER:-none}|AI_CONTENT_CACHE=${AI_CONTENT_CACHE:-none}"
+    
+    save_to_ai_cache "$file" "AI_ANALYSIS:$ai_data"
+}
+
+# Restore AI analysis variables from cache
+restore_ai_analysis_from_cache() {
+    local cached_data="$1"
+    
+    # Check if this is AI analysis data
+    if [[ "$cached_data" =~ ^AI_ANALYSIS: ]]; then
+        # Remove prefix and parse variables
+        local ai_vars="${cached_data#AI_ANALYSIS:}"
+        
+        # Parse each variable
+        IFS='|' read -ra VAR_ARRAY <<< "$ai_vars"
+        for var_assignment in "${VAR_ARRAY[@]}"; do
+            case "$var_assignment" in
+                FRAMERATE=*) FRAMERATE="${var_assignment#*=}" ;;
+                DITHER_MODE=*) DITHER_MODE="${var_assignment#*=}" ;;
+                MAX_COLORS=*) MAX_COLORS="${var_assignment#*=}" ;;
+                CROP_FILTER=*) 
+                    local crop_val="${var_assignment#*=}"
+                    [[ "$crop_val" != "none" ]] && CROP_FILTER="$crop_val" || CROP_FILTER=""
+                    ;;
+                AI_CONTENT_CACHE=*) 
+                    local cache_val="${var_assignment#*=}"
+                    [[ "$cache_val" != "none" ]] && AI_CONTENT_CACHE="$cache_val" || AI_CONTENT_CACHE=""
+                    ;;
+            esac
+        done
+        return 0
+    fi
+    
+    return 1
+}
+
+# 🧠 AI Training & Learning System
+# =======================================
+
+# Initialize AI training system (corruption-proof)
+init_ai_training() {
+    if [[ "$AI_TRAINING_ENABLED" != "true" ]]; then
+        return 0
+    fi
+    
+    # Create training directory structure
+    mkdir -p "$AI_TRAINING_DIR" 2>/dev/null || {
+        echo -e "${YELLOW}⚠️  Warning: Cannot create AI training directory, disabling training${NC}" >&2
+        AI_TRAINING_ENABLED=false
+        return 1
+    }
+    
+    # Validate or rebuild model file
+    if ! validate_ai_model; then
+        echo -e "${YELLOW}🔄 AI model corruption detected, rebuilding...${NC}" >&2
+        rebuild_ai_model
+    fi
+    
+    # Validate or rebuild training log
+    if ! validate_training_log; then
+        echo -e "${YELLOW}🔄 Training log corruption detected, rebuilding...${NC}" >&2
+        rebuild_training_log
+    fi
+    
+    # Create backups
+    create_training_backups
+    
+    # Clean up old training data if version changed
+    local current_version=$(head -n 1 "$AI_MODEL_FILE" 2>/dev/null | grep -o 'Version [0-9.]*' | cut -d' ' -f2 2>/dev/null || echo "")
+    if [[ "$current_version" != "$AI_MODEL_VERSION" ]]; then
+        echo -e "${BLUE}🔄 AI Model version updated, reinitializing training data${NC}" >&2
+        rebuild_ai_model
+        rebuild_training_log
+    fi
+}
+
+# Validate AI model file integrity
+validate_ai_model() {
+    # Check if model file exists and is readable
+    [[ -f "$AI_MODEL_FILE" && -r "$AI_MODEL_FILE" ]] || return 1
+    
+    # Check proper header
+    local header=$(head -n 1 "$AI_MODEL_FILE" 2>/dev/null || echo "")
+    [[ "$header" =~ ^#.*AI.*Model.*Version ]] || return 1
+    
+    # Try to load AI generation from model file if available
+    local model_generation=$(head -n 5 "$AI_MODEL_FILE" 2>/dev/null | grep "^# AI Generation:" | sed 's/^# AI Generation: //' | head -n 1)
+    if [[ -n "$model_generation" && "$model_generation" =~ ^[0-9]+$ ]]; then
+        AI_GENERATION="$model_generation"
+    fi
+    
+    # Validate structure (no corrupted lines)
+    local corrupted=0
+    local total=0
+    while IFS= read -r line; do
+        ((total++))
+        [[ $total -le 4 ]] && continue  # Skip header
+        [[ -z "$line" || "$line" =~ ^# ]] && continue
+        
+        # Check format: feature_pattern|settings|confidence|samples|timestamp
+        local fields=$(echo "$line" | tr -cd '|' | wc -c)
+        [[ $fields -eq 4 ]] || ((corrupted++))
+        
+        # Fail if >20% corrupted
+        [[ $corrupted -gt 5 && $((corrupted * 5)) -gt $total ]] && return 1
+    done < "$AI_MODEL_FILE" 2>/dev/null || return 1
+    
+    return 0
+}
+
+# Validate training log integrity
+validate_training_log() {
+    # Check if log exists and is readable
+    [[ -f "$AI_TRAINING_LOG" && -r "$AI_TRAINING_LOG" ]] || return 1
+    
+    # Check proper header
+    local header=$(head -n 1 "$AI_TRAINING_LOG" 2>/dev/null || echo "")
+    [[ "$header" =~ ^#.*Training.*History ]] || return 1
+    
+    # Basic structure validation (at least readable)
+    head -n 10 "$AI_TRAINING_LOG" >/dev/null 2>&1 || return 1
+    
+    return 0
+}
+
+# Rebuild corrupted AI model
+rebuild_ai_model() {
+    local backup="${AI_MODEL_FILE}.backup.$(date +%s)"
+    [[ -f "$AI_MODEL_FILE" ]] && cp "$AI_MODEL_FILE" "$backup" 2>/dev/null
+    
+    # Increment AI generation on rebuild
+    AI_GENERATION=$((AI_GENERATION + 1))
+    
+    # Save updated generation to settings
+    save_settings --silent 2>/dev/null || true
+    
+    # Create fresh model file
+    cat > "$AI_MODEL_FILE" << EOF
+# AI Smart Model Database - Version $AI_MODEL_VERSION (Rebuilt)
+# AI Generation: $AI_GENERATION
+# Format: feature_pattern|optimal_settings|confidence|sample_count|last_updated
+# Features: content_type:resolution:duration:motion_level:complexity
+# Settings: framerate:dither:colors:crop
+# Rebuilt: $(date)
+EOF
+    
+    # Try to recover valid entries
+    if [[ -f "$backup" ]]; then
+        local recovered=0
+        while IFS= read -r line; do
+            [[ -z "$line" || "$line" =~ ^# ]] && continue
+            local fields=$(echo "$line" | tr -cd '|' | wc -c)
+            if [[ $fields -eq 4 ]]; then
+                echo "$line" >> "$AI_MODEL_FILE"
+                ((recovered++))
+            fi
+        done < "$backup" 2>/dev/null || true
+        
+        [[ $recovered -gt 0 ]] && echo -e "${GREEN}✅ Recovered $recovered model entries${NC}" >&2
+        (sleep 300 && rm -f "$backup") &
+    fi
+}
+
+# Rebuild corrupted training log
+rebuild_training_log() {
+    local backup="${AI_TRAINING_LOG}.backup.$(date +%s)"
+    [[ -f "$AI_TRAINING_LOG" ]] && cp "$AI_TRAINING_LOG" "$backup" 2>/dev/null
+    
+    # Create fresh training log
+    cat > "$AI_TRAINING_LOG" << EOF
+# AI Training History - Version $AI_MODEL_VERSION (Rebuilt)
+# Format: timestamp|action|feature_pattern|settings|outcome|confidence
+# Rebuilt: $(date)
+EOF
+    
+    # Optionally recover recent entries (last 100 lines)
+    if [[ -f "$backup" ]]; then
+        local recovered=0
+        tail -n 100 "$backup" 2>/dev/null | while IFS= read -r line; do
+            [[ -z "$line" || "$line" =~ ^# ]] && continue
+            local fields=$(echo "$line" | tr -cd '|' | wc -c)
+            if [[ $fields -ge 4 ]]; then
+                echo "$line" >> "$AI_TRAINING_LOG"
+                ((recovered++))
+            fi
+        done
+        
+        (sleep 300 && rm -f "$backup") &
+    fi
+}
+
+# Create training system backups
+create_training_backups() {
+    if [[ -f "$AI_MODEL_FILE" ]]; then
+        cp "$AI_MODEL_FILE" "${AI_MODEL_FILE}.safe" 2>/dev/null || true
+    fi
+    if [[ -f "$AI_TRAINING_LOG" ]]; then
+        cp "$AI_TRAINING_LOG" "${AI_TRAINING_LOG}.safe" 2>/dev/null || true
+    fi
+}
+
+# Extract feature pattern from video characteristics
+extract_feature_pattern() {
+    local content_type="$1"
+    local width="$2"
+    local height="$3"
+    local duration="$4"
+    local motion_level="$5"
+    local complexity="$6"
+    
+    # Normalize resolution into categories
+    local resolution_class
+    local total_pixels=$((width * height))
+    if [[ $total_pixels -ge 8294400 ]]; then
+        resolution_class="4k"
+    elif [[ $total_pixels -ge 2073600 ]]; then
+        resolution_class="1080p"
+    elif [[ $total_pixels -ge 921600 ]]; then
+        resolution_class="720p"
+    else
+        resolution_class="sd"
+    fi
+    
+    # Normalize duration into categories
+    local duration_class
+    if [[ $duration -lt 10 ]]; then
+        duration_class="short"
+    elif [[ $duration -lt 60 ]]; then
+        duration_class="medium"
+    elif [[ $duration -lt 300 ]]; then
+        duration_class="long"
+    else
+        duration_class="movie"
+    fi
+    
+    # Create feature pattern
+    echo "${content_type}:${resolution_class}:${duration_class}:${motion_level}:${complexity}"
+}
+
+# Predict optimal settings using AI training data
+ai_predict_settings() {
+    local feature_pattern="$1"
+    
+    if [[ "$AI_TRAINING_ENABLED" != "true" || ! -f "$AI_MODEL_FILE" ]]; then
+        return 1
+    fi
+    
+    # Search for exact match first
+    local exact_match=$(grep "^$feature_pattern|" "$AI_MODEL_FILE" | tail -n 1)
+    if [[ -n "$exact_match" ]]; then
+        local confidence=$(echo "$exact_match" | cut -d'|' -f3)
+        local sample_count=$(echo "$exact_match" | cut -d'|' -f4)
+        
+        # Only use prediction if we have enough samples and confidence
+        if [[ $(echo "$confidence > $AI_CONFIDENCE_MIN" | bc -l 2>/dev/null || echo 0) -eq 1 ]] && \
+           [[ $sample_count -ge $AI_TRAINING_MIN_SAMPLES ]]; then
+            local settings=$(echo "$exact_match" | cut -d'|' -f2)
+            echo "EXACT:$confidence:$settings"
+            return 0
+        fi
+    fi
+    
+    # Try partial matches with similarity scoring
+    local best_match=""
+    local best_score=0
+    local best_confidence=0
+    
+    while IFS='|' read -r pattern settings confidence samples timestamp; do
+        [[ "$pattern" =~ ^# ]] && continue  # Skip comments
+        [[ -z "$pattern" ]] && continue     # Skip empty lines
+        
+        # Calculate similarity score
+        local similarity=$(calculate_pattern_similarity "$feature_pattern" "$pattern")
+        local weighted_score=$(echo "$similarity * $confidence" | bc -l 2>/dev/null || echo "0")
+        
+        if [[ $(echo "$weighted_score > $best_score" | bc -l 2>/dev/null || echo 0) -eq 1 ]] && \
+           [[ $samples -ge $AI_TRAINING_MIN_SAMPLES ]]; then
+            best_match="$settings"
+            best_score="$weighted_score"
+            best_confidence="$confidence"
+        fi
+    done < <(tail -n +4 "$AI_MODEL_FILE")
+    
+    if [[ -n "$best_match" && $(echo "$best_score > $AI_CONFIDENCE_MIN" | bc -l 2>/dev/null || echo 0) -eq 1 ]]; then
+        echo "SIMILAR:$best_confidence:$best_match"
+        return 0
+    fi
+    
+    return 1
+}
+
+# Calculate similarity between feature patterns
+calculate_pattern_similarity() {
+    local pattern1="$1"
+    local pattern2="$2"
+    
+    IFS=':' read -ra features1 <<< "$pattern1"
+    IFS=':' read -ra features2 <<< "$pattern2"
+    
+    local matches=0
+    local total=${#features1[@]}
+    
+    for ((i=0; i<total; i++)); do
+        if [[ "${features1[i]}" == "${features2[i]}" ]]; then
+            ((matches++))
+        fi
+    done
+    
+    # Return similarity as decimal (0.0 to 1.0)
+    echo "scale=2; $matches / $total" | bc -l 2>/dev/null || echo "0"
+}
+
+# Train AI model with successful conversion results
+train_ai_model() {
+    local file="$1"
+    local content_type="$2"
+    local width="$3"
+    local height="$4"
+    local duration="$5"
+    local motion_level="$6"
+    local complexity="$7"
+    local final_framerate="$8"
+    local final_dither="$9"
+    local final_colors="${10}"
+    local final_crop="${11:-none}"
+    local outcome="${12:-success}"  # success, partial, failure
+    
+    if [[ "$AI_TRAINING_ENABLED" != "true" ]]; then
+        return 0
+    fi
+    
+    local feature_pattern=$(extract_feature_pattern "$content_type" "$width" "$height" "$duration" "$motion_level" "$complexity")
+    local settings_pattern="${final_framerate}:${final_dither}:${final_colors}:${final_crop}"
+    local timestamp=$(date +%s)
+    
+    # Calculate outcome score
+    local outcome_score
+    case "$outcome" in
+        "success") outcome_score=1.0 ;;
+        "partial") outcome_score=0.6 ;;
+        "failure") outcome_score=0.1 ;;
+        *) outcome_score=0.5 ;;
+    esac
+    
+    # Log training event (atomic)
+    atomic_append_training_log "$timestamp|train|$feature_pattern|$settings_pattern|$outcome|$outcome_score"
+    
+    # Update or create model entry (atomic)
+    atomic_update_model_entry "$feature_pattern" "$settings_pattern" "$outcome_score"
+}
+
+# Atomic append to training log
+atomic_append_training_log() {
+    local log_entry="$1"
+    [[ -z "$log_entry" ]] && return 1
+    
+    # Validate log integrity before writing
+    if ! validate_training_log; then
+        echo -e "${YELLOW}🔄 Training log corrupted, rebuilding...${NC}" >&2
+        rebuild_training_log
+    fi
+    
+    local temp_log="${AI_TRAINING_LOG}.append.$$"
+    
+    # Copy existing log and append new entry atomically
+    if [[ -f "$AI_TRAINING_LOG" ]]; then
+        cp "$AI_TRAINING_LOG" "$temp_log" 2>/dev/null || return 1
+        echo "$log_entry" >> "$temp_log" 2>/dev/null || {
+            rm -f "$temp_log"
+            return 1
+        }
+        mv "$temp_log" "$AI_TRAINING_LOG"
+    else
+        echo "$log_entry" > "$AI_TRAINING_LOG"
+    fi
+}
+
+# Atomic update AI model entry with new training data
+atomic_update_model_entry() {
+    local feature_pattern="$1"
+    local settings_pattern="$2"
+    local outcome_score="$3"
+    
+    # Validate inputs
+    if [[ "${#feature_pattern}" -gt 500 || "${#settings_pattern}" -gt 200 ]]; then
+        echo -e "${YELLOW}⚠️  Warning: Training data too large, skipping save${NC}" >&2
+        return 1
+    fi
+    
+    # Ensure model file integrity before modification
+    if ! validate_ai_model; then
+        echo -e "${YELLOW}🔄 Model corrupted before update, rebuilding...${NC}" >&2
+        rebuild_ai_model
+    fi
+    
+    local temp_model="${AI_MODEL_FILE}.atomic.$$"
+    local updated=false
+    local timestamp=$(date +%s)
+    
+    # Create backup before modification
+    cp "$AI_MODEL_FILE" "${AI_MODEL_FILE}.preupdate" 2>/dev/null || true
+    
+    # Copy header first
+    head -n 4 "$AI_MODEL_FILE" 2>/dev/null > "$temp_model" || {
+        cat > "$temp_model" << EOF
+# AI Smart Model Database - Version $AI_MODEL_VERSION
+# Format: feature_pattern|optimal_settings|confidence|sample_count|last_updated
+# Features: content_type:resolution:duration:motion_level:complexity
+# Settings: framerate:dither:colors:crop
+EOF
+    }
+    
+    # Process existing entries
+    while IFS='|' read -r pattern settings confidence samples last_updated; do
+        [[ "$pattern" =~ ^# ]] && continue  # Skip comments
+        [[ -z "$pattern" ]] && continue     # Skip empty lines
+        
+        # Validate entry format before processing
+        local fields=$(echo "$pattern|$settings|$confidence|$samples|$last_updated" | tr -cd '|' | wc -c)
+        [[ $fields -ne 4 ]] && continue
+        
+        if [[ "$pattern" == "$feature_pattern" ]]; then
+            # Update existing entry using adaptive learning
+            local new_samples=$((samples + 1))
+            local new_confidence=$(echo "scale=3; ($confidence * $samples + $outcome_score * $AI_LEARNING_RATE) / $new_samples" | bc -l 2>/dev/null || echo "$confidence")
+            
+            # Prefer settings with higher success rate
+            local updated_settings="$settings_pattern"
+            if [[ $(echo "$outcome_score > 0.7" | bc -l 2>/dev/null || echo 0) -eq 1 ]]; then
+                updated_settings="$settings_pattern"  # Use new successful settings
+            fi
+            
+            echo "$pattern|$updated_settings|$new_confidence|$new_samples|$timestamp" >> "$temp_model"
+            updated=true
+        else
+            echo "$pattern|$settings|$confidence|$samples|$last_updated" >> "$temp_model"
+        fi
+    done < <(tail -n +5 "$AI_MODEL_FILE" 2>/dev/null || true)
+    
+    # Add new entry if not updated
+    if [[ "$updated" == "false" ]]; then
+        echo "$feature_pattern|$settings_pattern|$outcome_score|1|$timestamp" >> "$temp_model"
+    fi
+    
+    # Validate new file before replacing
+    if [[ -s "$temp_model" ]] && head -n 1 "$temp_model" | grep -q "^#.*AI.*Model"; then
+        mv "$temp_model" "$AI_MODEL_FILE"
+        rm -f "${AI_MODEL_FILE}.preupdate"
+    else
+        echo -e "${YELLOW}⚠️  Warning: Failed to create valid model file, rolling back${NC}" >&2
+        rm -f "$temp_model"
+        [[ -f "${AI_MODEL_FILE}.preupdate" ]] && mv "${AI_MODEL_FILE}.preupdate" "$AI_MODEL_FILE"
+        return 1
+    fi
+}
+
+# Get AI training statistics
+# 🔗 Create clickable file path with terminal hyperlink
+make_clickable_path() {
+    local file_path="$1"
+    local display_text="${2:-$file_path}"
+    
+    # Convert ~ back to full path for the hyperlink
+    local full_path="$(echo "$file_path" | sed "s|^~|$HOME|g")"
+    
+    # Check if terminal supports hyperlinks and if we're in an interactive terminal
+    if [[ -n "$TERM" && "$TERM" != "dumb" && -t 1 ]]; then
+        # Use OSC 8 hyperlink escape sequence
+        # Format: \033]8;;file://path\033\\text\033]8;;\033\\
+        printf "\033]8;;file://%s\033\\%s\033]8;;\033\\" "$full_path" "$display_text"
+    else
+        # Fallback: show both display text and full path if different
+        if [[ "$display_text" != "$file_path" && "$display_text" =~ ^~ ]]; then
+            echo "$display_text ($full_path)"
+        else
+            echo "$display_text"
+        fi
+    fi
+}
+
+# 🤖 Comprehensive AI System Status Display
+show_ai_status() {
+    echo -e "${CYAN}${BOLD}🤖 AI SYSTEM COMPREHENSIVE STATUS${NC}\\n"
+    
+    # Display main settings location prominently at the top
+    local settings_display_path="$(echo "$SETTINGS_FILE" | sed "s|$HOME|~|g")"
+    local clickable_settings=$(make_clickable_path "$SETTINGS_FILE" "$settings_display_path")
+    echo -e "${YELLOW}📁 Settings Location: ${BOLD}$clickable_settings${NC}"
+    if [[ -f "$SETTINGS_FILE" ]]; then
+        local mod_time=$(stat -c %Y "$SETTINGS_FILE" 2>/dev/null || echo "0")
+        local readable_time=$(date -d "@$mod_time" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "Unknown")
+        echo -e "${GRAY}   Last updated: $readable_time${NC}"
+    else
+        echo -e "${GRAY}   (will be created on first use)${NC}"
+    fi
+    echo ""
+    
+    # Basic AI Configuration
+    echo -e "${BLUE}📊 AI Configuration:${NC}"
+    echo -e "  🔧 AI Enabled: $([[ "$AI_ENABLED" == true ]] && echo "${GREEN}✓ YES${NC}" || echo "${RED}✗ NO${NC}")"
+    echo -e "  🧠 AI Mode: ${BOLD}$AI_MODE${NC} (smart/content/motion/quality)"
+    echo -e "  🎯 Confidence Threshold: ${BOLD}$AI_CONFIDENCE_THRESHOLD${NC}%"
+    echo -e "  ⚡ Auto Quality: $([[ "$AI_AUTO_QUALITY" == true ]] && echo "${GREEN}✓ ON${NC}" || echo "${YELLOW}OFF${NC}")"
+    echo -e "  🎬 Scene Analysis: $([[ "$AI_SCENE_ANALYSIS" == true ]] && echo "${GREEN}✓ ON${NC}" || echo "${YELLOW}OFF${NC}")"
+    echo -e "  👀 Visual Similarity: $([[ "$AI_VISUAL_SIMILARITY" == true ]] && echo "${GREEN}✓ ON${NC}" || echo "${YELLOW}OFF${NC}")"
+    echo -e "  ✂️  Smart Crop: $([[ "$AI_SMART_CROP" == true ]] && echo "${GREEN}✓ ON${NC}" || echo "${YELLOW}OFF${NC}")"
+    echo -e "  🎞️  Dynamic Framerate: $([[ "$AI_DYNAMIC_FRAMERATE" == true ]] && echo "${GREEN}✓ ON${NC}" || echo "${YELLOW}OFF${NC}")"
+    echo ""
+    
+    # AI Cache System Status
+    echo -e "${BLUE}💾 AI Cache System:${NC}"
+    local cache_display_path="$(echo "$AI_CACHE_DIR" | sed "s|$HOME|~|g")"
+    local clickable_cache_dir=$(make_clickable_path "$AI_CACHE_DIR" "$cache_display_path")
+    echo -e "  📁 Cache Directory: ${BOLD}$clickable_cache_dir${NC}"
+    echo -e "  🔧 Cache Enabled: $([[ "$AI_CACHE_ENABLED" == true ]] && echo "${GREEN}✓ YES${NC}" || echo "${RED}✗ NO${NC}")"
+    echo -e "  📋 Cache Version: ${BOLD}$AI_CACHE_VERSION${NC}"
+    echo -e "  🗓️  Max Age: ${BOLD}$AI_CACHE_MAX_AGE_DAYS${NC} days"
+    
+    # Cache file status
+    if [[ -f "$AI_CACHE_INDEX" ]]; then
+        local cache_size=$(stat -c%s "$AI_CACHE_INDEX" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "?")
+        local cache_entries=$(grep -v '^#' "$AI_CACHE_INDEX" 2>/dev/null | grep -c '|' 2>/dev/null || echo "0")
+        echo -e "  📈 Cache Status: ${GREEN}✓ Active${NC} ($cache_entries entries, $cache_size)"
+        
+        # Cache validation status
+        if validate_cache_index; then
+            echo -e "  ✅ Cache Integrity: ${GREEN}✓ Valid${NC}"
+        else
+            echo -e "  ⚠️  Cache Integrity: ${YELLOW}! Needs rebuild${NC}"
+        fi
+    else
+        echo -e "  📈 Cache Status: ${YELLOW}! Not initialized${NC}"
+    fi
+    echo ""
+    
+    # AI Training System Status
+    echo -e "${BLUE}🧠 AI Training System:${NC}"
+    echo -e "  🎓 Training Enabled: $([[ "$AI_TRAINING_ENABLED" == true ]] && echo "${GREEN}✓ YES${NC}" || echo "${RED}✗ NO${NC}")"
+    local training_display_path="$(echo "$AI_TRAINING_DIR" | sed "s|$HOME|~|g")"
+    local clickable_training_dir=$(make_clickable_path "$AI_TRAINING_DIR" "$training_display_path")
+    echo -e "  📁 Training Directory: ${BOLD}$clickable_training_dir${NC}"
+    echo -e "  📊 Model Version: ${BOLD}$AI_MODEL_VERSION${NC}"
+    echo -e "  🤖 AI Generation: ${BOLD}$AI_GENERATION${NC}"
+    echo -e "  📈 Learning Rate: ${BOLD}$AI_LEARNING_RATE${NC}"
+    echo -e "  🎯 Confidence Min: ${BOLD}$AI_CONFIDENCE_MIN${NC}"
+    echo -e "  📋 Min Samples: ${BOLD}$AI_TRAINING_MIN_SAMPLES${NC}"
+    
+    # Training data status
+    if [[ "$AI_TRAINING_ENABLED" == true ]]; then
+        if [[ -f "$AI_MODEL_FILE" ]]; then
+            local model_size=$(stat -c%s "$AI_MODEL_FILE" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "?")
+            local total_patterns=$(grep -v '^#' "$AI_MODEL_FILE" 2>/dev/null | grep -c '|' 2>/dev/null || echo "0")
+            local avg_confidence="0.00"
+            
+            if [[ $total_patterns -gt 0 ]]; then
+                avg_confidence=$(awk -F'|' 'NR>4 && NF>=3 {sum+=$3; count++} END {if(count>0) printf "%.2f", sum/count; else print "0.00"}' "$AI_MODEL_FILE" 2>/dev/null || echo "0.00")
+            fi
+            
+            echo -e "  📊 Model Status: ${GREEN}✓ Active${NC} ($total_patterns patterns, $model_size)"
+            echo -e "  📈 Average Confidence: ${BOLD}$avg_confidence${NC}"
+            
+            # Model validation status
+            if validate_ai_model; then
+                echo -e "  ✅ Model Integrity: ${GREEN}✓ Valid${NC}"
+            else
+                echo -e "  ⚠️  Model Integrity: ${YELLOW}! Needs rebuild${NC}"
+            fi
+        else
+            echo -e "  📊 Model Status: ${YELLOW}! Not initialized${NC}"
+        fi
+        
+        if [[ -f "$AI_TRAINING_LOG" ]]; then
+            local log_size=$(stat -c%s "$AI_TRAINING_LOG" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "?")
+            local training_events=$(grep -v '^#' "$AI_TRAINING_LOG" 2>/dev/null | grep -c '|' 2>/dev/null || echo "0")
+            echo -e "  📜 Training Log: ${GREEN}✓ Active${NC} ($training_events sessions, $log_size)"
+            
+            # Training log validation
+            if validate_training_log; then
+                echo -e "  ✅ Log Integrity: ${GREEN}✓ Valid${NC}"
+            else
+                echo -e "  ⚠️  Log Integrity: ${YELLOW}! Needs rebuild${NC}"
+            fi
+        else
+            echo -e "  📜 Training Log: ${YELLOW}! Not found${NC}"
+        fi
+    else
+        echo -e "  📊 Training Status: ${GRAY}Disabled${NC}"
+    fi
+    echo ""
+    
+    # AI Performance Settings
+    echo -e "${BLUE}⚡ AI Performance Settings:${NC}"
+    echo -e "  🧮 CPU Cores: ${BOLD}$CPU_CORES${NC} total, ${BOLD}$CPU_PHYSICAL_CORES${NC} physical"
+    echo -e "  🔄 Max Parallel Jobs: ${BOLD}$AI_MAX_PARALLEL_JOBS${NC}"
+    echo -e "  🕸️  Duplicate Detection Threads: ${BOLD}$AI_DUPLICATE_THREADS${NC}"
+    echo -e "  📦 Analysis Batch Size: ${BOLD}$AI_ANALYSIS_BATCH_SIZE${NC}"
+    echo -e "  🧵 Optimal Threads: ${BOLD}$AI_THREADS_OPTIMAL${NC}"
+    echo -e "  🧠 Memory Optimization: ${BOLD}$AI_MEMORY_OPT${NC}"
+    echo ""
+    
+    # Recent AI Activity (if available)
+    echo -e "${BLUE}📊 Recent AI Activity:${NC}"
+    if [[ -f "$AI_TRAINING_LOG" && "$AI_TRAINING_ENABLED" == true ]]; then
+        local recent_sessions=$(tail -n 5 "$AI_TRAINING_LOG" 2>/dev/null | grep -v '^#' | wc -l)
+        if [[ $recent_sessions -gt 0 ]]; then
+            echo -e "  📈 Last 5 Training Sessions:"
+            tail -n 5 "$AI_TRAINING_LOG" 2>/dev/null | grep -v '^#' | while IFS='|' read -r timestamp action pattern settings outcome confidence; do
+                local status_icon
+                case "$outcome" in
+                    "success") status_icon="${GREEN}✓${NC}" ;;
+                    "partial") status_icon="${YELLOW}~${NC}" ;;
+                    "failure") status_icon="${RED}✗${NC}" ;;
+                    *) status_icon="${BLUE}?${NC}" ;;
+                esac
+                echo -e "    $status_icon $(echo "$pattern" | cut -d':' -f1-2) → conf:$confidence"
+            done
+        else
+            echo -e "  ${GRAY}No recent training activity${NC}"
+        fi
+    else
+        echo -e "  ${GRAY}Training disabled or no log available${NC}"
+    fi
+    echo ""
+    
+    # AI Health Check
+    echo -e "${BLUE}🏥 AI System Health Check:${NC}"
+    local health_issues=0
+    
+    # Check cache health
+    if [[ "$AI_CACHE_ENABLED" == true ]]; then
+        if [[ ! -d "$AI_CACHE_DIR" ]]; then
+            echo -e "  ⚠️  Cache directory missing"
+            ((health_issues++))
+        elif ! validate_cache_index 2>/dev/null; then
+            echo -e "  ⚠️  Cache index corrupted"
+            ((health_issues++))
+        fi
+    fi
+    
+    # Check training health
+    if [[ "$AI_TRAINING_ENABLED" == true ]]; then
+        if [[ ! -d "$AI_TRAINING_DIR" ]]; then
+            echo -e "  ⚠️  Training directory missing"
+            ((health_issues++))
+        elif [[ -f "$AI_MODEL_FILE" ]] && ! validate_ai_model 2>/dev/null; then
+            echo -e "  ⚠️  AI model corrupted"
+            ((health_issues++))
+        elif [[ -f "$AI_TRAINING_LOG" ]] && ! validate_training_log 2>/dev/null; then
+            echo -e "  ⚠️  Training log corrupted"
+            ((health_issues++))
+        fi
+    fi
+    
+    # Check dependencies
+    if ! command -v bc >/dev/null 2>&1; then
+        echo -e "  ⚠️  'bc' command missing (needed for AI calculations)"
+        ((health_issues++))
+    fi
+    
+    if [[ $health_issues -eq 0 ]]; then
+        echo -e "  ${GREEN}✅ All systems healthy${NC}"
+    else
+        echo -e "  ${YELLOW}⚠️  $health_issues issue(s) detected${NC}"
+        echo -e "  💡 Run the script to auto-repair most issues"
+    fi
+    
+    echo -e "\n${CYAN}💡 Tips:${NC}"
+    echo -e "  ${BLUE}•${NC} Use interactive menu options to manage AI settings"
+    echo -e "  ${BLUE}•${NC} Click on file paths above to open them in your file manager"
+    echo -e "  ${BLUE}•${NC} Settings are automatically saved when changed"
+}
+
+# Legacy function for backward compatibility
+get_ai_training_stats() {
+    if [[ "$AI_TRAINING_ENABLED" != "true" || ! -f "$AI_MODEL_FILE" ]]; then
+        echo "Training disabled"
+        return
+    fi
+    
+    local total_patterns=$(grep -v '^#' "$AI_MODEL_FILE" | grep -c '|' || echo "0")
+    local total_training_events=$(grep -v '^#' "$AI_TRAINING_LOG" | grep -c '|' || echo "0")
+    local avg_confidence
+    
+    if [[ $total_patterns -gt 0 ]]; then
+        avg_confidence=$(awk -F'|' 'NR>4 && NF>=3 {sum+=$3; count++} END {if(count>0) printf "%.2f", sum/count; else print "0.00"}' "$AI_MODEL_FILE")
+    else
+        avg_confidence="0.00"
+    fi
+    
+    echo "$total_patterns patterns, $total_training_events sessions, ${avg_confidence} avg confidence"
 }
 RAM_OPTIMIZATION=true
 RAM_CACHE_SIZE="auto"
@@ -656,6 +1642,23 @@ ai_smart_analyze() {
     
     echo -e "  🧠 ${CYAN}Advanced AI Analysis Starting (${BOLD}$AI_MAX_PARALLEL_JOBS threads${NC}${CYAN})...${NC}"
     
+    # Initialize AI training system
+    init_ai_training
+    local training_stats=$(get_ai_training_stats)
+    echo -e "  🧠 AI Training: $training_stats"
+    
+    # Check cache first for AI analysis
+    local cached_ai_analysis=$(check_ai_cache "$file" 2>/dev/null)
+    if [[ $? -eq 0 && -n "$cached_ai_analysis" ]]; then
+        echo -e "  🗄️ ${GREEN}Using cached AI analysis${NC}"
+        # Parse cached analysis and restore AI variables
+        restore_ai_analysis_from_cache "$cached_ai_analysis"
+        echo -e "  ✅ ${GREEN}AI Analysis Complete (from cache)${NC}"
+        return 0
+    fi
+    
+    echo -e "  🔄 ${YELLOW}Performing fresh AI analysis...${NC}"
+    
     # Get basic video properties first
     local video_info=$(get_video_properties "$file")
     local duration=$(echo "$video_info" | cut -d'|' -f1)
@@ -663,6 +1666,11 @@ ai_smart_analyze() {
     local height=$(echo "$video_info" | cut -d'|' -f3)
     local fps=$(echo "$video_info" | cut -d'|' -f4)
     local bitrate=$(echo "$video_info" | cut -d'|' -f5)
+    
+    # Store original settings for training comparison
+    local original_framerate="$FRAMERATE"
+    local original_dither="$DITHER_MODE"
+    local original_colors="$MAX_COLORS"
     
     # Multi-dimensional analysis based on AI_MODE
     case "$AI_MODE" in
@@ -690,6 +1698,9 @@ ai_smart_analyze() {
         echo "[$ai_log_ts] AI-OUTPUT: framerate=$FRAMERATE dither=$DITHER_MODE crop=${CROP_FILTER:-none} max_colors=$MAX_COLORS"
         [[ -n "$AI_CONTENT_CACHE" ]] && echo "[$ai_log_ts] AI-DETECTED: $AI_CONTENT_CACHE"
     } >> "$ERROR_LOG" 2>/dev/null || true
+    
+    # Save analysis results to cache for future runs
+    save_ai_analysis_to_cache "$file"
     
     echo -e "  ✅ ${GREEN}AI Analysis Complete${NC}"
 }
@@ -741,6 +1752,35 @@ ai_smart_analysis() {
     # 3. Visual Complexity Analysis  
     local complexity_score=$(analyze_visual_complexity "$file")
     AI_CONTENT_CACHE+=" complexity=$complexity_score"
+    
+    # 4. AI-Powered Prediction (NEW!)
+    local feature_pattern=$(extract_feature_pattern "$content_type" "$width" "$height" "$duration" "$motion_level" "$complexity_score")
+    local ai_prediction=$(ai_predict_settings "$feature_pattern" 2>/dev/null)
+    
+    if [[ $? -eq 0 && -n "$ai_prediction" ]]; then
+        local prediction_type=$(echo "$ai_prediction" | cut -d':' -f1)
+        local confidence=$(echo "$ai_prediction" | cut -d':' -f2)
+        local settings=$(echo "$ai_prediction" | cut -d':' -f3)
+        
+        echo -e "    🤖 ${GREEN}AI Prediction ($prediction_type, confidence: $confidence):${NC}"
+        
+        # Parse and apply AI-recommended settings
+        IFS=':' read -ra ai_settings <<< "$settings"
+        if [[ ${#ai_settings[@]} -ge 3 ]]; then
+            echo -e "      🎯 Applying AI-learned settings..."
+            FRAMERATE="${ai_settings[0]}"
+            DITHER_MODE="${ai_settings[1]}"
+            MAX_COLORS="${ai_settings[2]}"
+            if [[ -n "${ai_settings[3]}" && "${ai_settings[3]}" != "none" ]]; then
+                CROP_FILTER="${ai_settings[3]}"
+            fi
+            AI_CONTENT_CACHE+=" ai_applied=true"
+            echo -e "      ✅ ${GREEN}AI settings applied: ${FRAMERATE}fps, ${DITHER_MODE} dither, ${MAX_COLORS} colors${NC}"
+        fi
+    else
+        echo -e "    🤖 ${YELLOW}No AI prediction available (learning mode)${NC}"
+        AI_CONTENT_CACHE+=" ai_applied=false"
+    fi
     
     # 4. Intelligent Cropping
     local crop_result=$(intelligent_crop_detection "$file" "$width" "$height")
@@ -2779,6 +3819,14 @@ detect_duplicate_gifs() {
     echo -e "${CYAN}🔬 Multi-threaded analysis: Content fingerprinting + Visual similarity + Metadata comparison...${NC}"
     echo -e "${GREEN}⚡ Using ${BOLD}$AI_DUPLICATE_THREADS${NC}${GREEN} CPU threads for maximum performance!${NC}"
     
+    # Initialize AI cache and training systems
+    init_ai_cache
+    init_ai_training
+    local cache_stats=$(get_cache_stats)
+    local training_stats=$(get_ai_training_stats)
+    echo -e "${BLUE}🗄️ AI Cache: $cache_stats${NC}"
+    echo -e "${GREEN}🧠 AI Training: $training_stats${NC}"
+    
     local total_gifs=0
     local duplicate_count=0
     local duplicate_pairs=()
@@ -2816,7 +3864,16 @@ detect_duplicate_gifs() {
         local temp_dir="$2"
         local result_file="$3"
         
-        # Stage 1: Traditional checksum (fast)
+        # Check cache first
+        local cached_analysis=$(check_ai_cache "$gif_file" 2>/dev/null)
+        if [[ $? -eq 0 && -n "$cached_analysis" ]]; then
+            # Cache hit - use cached results
+            echo "$cached_analysis" >> "$result_file"
+            return 0
+        fi
+        
+        # Cache miss - perform fresh analysis
+        # Stage 1: Traditional checksum (fast) - reuse for cache fingerprinting
         local checksum=$(md5sum "$gif_file" 2>/dev/null | cut -d' ' -f1)
         local size=$(stat -c%s "$gif_file" 2>/dev/null || echo "0")
         
@@ -2830,7 +3887,7 @@ detect_duplicate_gifs() {
         local visual_hash=""
         if command -v ffmpeg >/dev/null 2>&1; then
             # Extract key frames for visual comparison - use fastest algorithm
-            local temp_frame="$temp_dir/${gif_file%.*}_$($$)_frame.png"
+            local temp_frame="$temp_dir/${gif_file%.*}_$RANDOM$RANDOM_frame.png"
             # Use faster scaling algorithm and threading for FFmpeg
             if ffmpeg -v error -threads 1 -i "$gif_file" -vf "select='eq(n,5)',scale=32:32:flags=fast_bilinear" -frames:v 1 -y "$temp_frame" >/dev/null 2>&1; then
                 # Generate perceptual hash from middle frame
@@ -2842,8 +3899,14 @@ detect_duplicate_gifs() {
         # Create composite fingerprint
         local content_fingerprint="${frame_count}:${duration}:${fps}:${resolution}"
         
+        # Prepare analysis data for caching and output
+        local analysis_data="$gif_file|$checksum|$size|$content_fingerprint|$visual_hash|$frame_count|$duration"
+        
+        # Save to cache for future runs
+        save_to_ai_cache "$gif_file" "$analysis_data" 2>/dev/null || true
+        
         # Write results to temporary file (thread-safe)
-        echo "$gif_file|$checksum|$size|$content_fingerprint|$visual_hash|$frame_count|$duration" >> "$result_file"
+        echo "$analysis_data" >> "$result_file"
     }
     
     # Export function for parallel execution
@@ -2900,7 +3963,9 @@ detect_duplicate_gifs() {
     done < "$results_file"
     
     # Clear progress line and show completion
+    local final_cache_stats=$(get_cache_stats)
     printf "\r  ${GREEN}✓ Parallel content analysis complete! Processed $total_gifs GIF files using ${BOLD}$AI_DUPLICATE_THREADS threads${NC}\n"
+    echo -e "  ${BLUE}🗄️ Cache updated: $final_cache_stats${NC}"
     
     echo -e "  ${BLUE}${BOLD}🔍 Stage 2: Multi-level duplicate detection...${NC}"
     
@@ -5465,6 +6530,7 @@ show_main_menu() {
         "🚀 AI-Powered Quick Mode (Speed Optimized)"
         "⚙️  Configure Settings & Convert (Advanced)"
         "📊 View Conversion Statistics"
+        "🤖 AI System Status & Diagnostics"
         "📁 Manage Log Files"
         "🔧 System Information"
         "🔫 Kill FFmpeg Processes"
@@ -5524,11 +6590,12 @@ show_main_menu() {
             0) help_text=$(get_responsive_help_text "AI Quick Mode - just pick quality!" "Just select quality level - AI handles everything else automatically!" $layout_mode) ;;
             1) help_text=$(get_responsive_help_text "Configure 15+ settings" "Fine-tune all 15+ settings for perfect results and control" $layout_mode) ;;
             2) help_text=$(get_responsive_help_text "View conversion stats" "View your conversion history and success rates with details" $layout_mode) ;;
-            3) help_text=$(get_responsive_help_text "Manage log files" "Manage error logs and conversion history files safely" $layout_mode) ;;
-            4) help_text=$(get_responsive_help_text "System info" "Check CPU, GPU, and system capabilities for optimization" $layout_mode) ;;
-            5) help_text=$(get_responsive_help_text "Kill processes" "Stop any stuck or runaway FFmpeg processes safely" $layout_mode) ;;
-            6) help_text=$(get_responsive_help_text "Help & docs" "Complete usage guide with examples and feature docs" $layout_mode) ;;
-            7) help_text=$(get_responsive_help_text "Exit" "Save your current settings and exit gracefully" $layout_mode) ;;
+            3) help_text=$(get_responsive_help_text "AI system diagnostics" "Check AI cache, training data, health status, and performance" $layout_mode) ;;
+            4) help_text=$(get_responsive_help_text "Manage log files" "Manage error logs and conversion history files safely" $layout_mode) ;;
+            5) help_text=$(get_responsive_help_text "System info" "Check CPU, GPU, and system capabilities for optimization" $layout_mode) ;;
+            6) help_text=$(get_responsive_help_text "Kill processes" "Stop any stuck or runaway FFmpeg processes safely" $layout_mode) ;;
+            7) help_text=$(get_responsive_help_text "Help & docs" "Complete usage guide with examples and feature docs" $layout_mode) ;;
+            8) help_text=$(get_responsive_help_text "Exit" "Save your current settings and exit gracefully" $layout_mode) ;;
         esac
         
         # Calculate actual content width by measuring the longest menu option
@@ -5732,19 +6799,26 @@ execute_menu_option() {
         2) # Statistics
             show_conversion_stats
             ;;
-        3) # Manage Logs
+        3) # AI Status & Diagnostics
+            clear
+            print_header
+            show_ai_status
+            echo -e "\n${YELLOW}Press any key to return to main menu...${NC}"
+            read -rsn1
+            ;;
+        4) # Manage Logs
             manage_log_files
             ;;
-        4) # System Info
+        5) # System Info
             show_system_info
             ;;
-        5) # Kill FFmpeg
+        6) # Kill FFmpeg
             kill_ffmpeg_processes
             ;;
-        6) # Help
+        7) # Help
             show_interactive_help
             ;;
-        7) # Exit
+        8) # Exit
             echo -e "\n${YELLOW}👋 Goodbye!${NC}"
             exit 0
             ;;
@@ -7198,6 +8272,8 @@ ${YELLOW}ADVANCED OPTIONS:${NC}
 
 ${YELLOW}SMART FEATURES:${NC}
     --auto-detect       Auto-detect optimal settings per video
+    --ai-status         Show AI cache, training, and health diagnostics
+    --ai-stats          Same as --ai-status
     --batch-optimize    Optimize all files after conversion
     --size-limit MB     Target file size limit
     --duration-limit S  Maximum GIF duration (clips longer videos)
@@ -7295,6 +8371,13 @@ AI_CONTENT_FINGERPRINT="$AI_CONTENT_FINGERPRINT"
 AI_DISCOVERY_ENABLED="$AI_DISCOVERY_ENABLED"
 AI_DISCOVERY_AUTO_SELECT="$AI_DISCOVERY_AUTO_SELECT"
 AI_DISCOVERY_REMEMBER_CHOICE="$AI_DISCOVERY_REMEMBER_CHOICE"
+AI_CACHE_ENABLED="$AI_CACHE_ENABLED"
+AI_CACHE_MAX_AGE_DAYS="$AI_CACHE_MAX_AGE_DAYS"
+AI_TRAINING_ENABLED="$AI_TRAINING_ENABLED"
+AI_GENERATION="$AI_GENERATION"
+AI_LEARNING_RATE="$AI_LEARNING_RATE"
+AI_CONFIDENCE_MIN="$AI_CONFIDENCE_MIN"
+AI_TRAINING_MIN_SAMPLES="$AI_TRAINING_MIN_SAMPLES"
 MAX_GIF_SIZE_MB="$MAX_GIF_SIZE_MB"
 AUTO_REDUCE_QUALITY="$AUTO_REDUCE_QUALITY"
 SMART_SIZE_DOWN="$SMART_SIZE_DOWN"
@@ -7356,6 +8439,13 @@ load_settings() {
                 AI_DISCOVERY_ENABLED) AI_DISCOVERY_ENABLED="$value" ;;
                 AI_DISCOVERY_AUTO_SELECT) AI_DISCOVERY_AUTO_SELECT="$value" ;;
                 AI_DISCOVERY_REMEMBER_CHOICE) AI_DISCOVERY_REMEMBER_CHOICE="$value" ;;
+                AI_CACHE_ENABLED) AI_CACHE_ENABLED="$value" ;;
+                AI_CACHE_MAX_AGE_DAYS) AI_CACHE_MAX_AGE_DAYS="$value" ;;
+                AI_TRAINING_ENABLED) AI_TRAINING_ENABLED="$value" ;;
+                AI_GENERATION) AI_GENERATION="$value" ;;
+                AI_LEARNING_RATE) AI_LEARNING_RATE="$value" ;;
+                AI_CONFIDENCE_MIN) AI_CONFIDENCE_MIN="$value" ;;
+                AI_TRAINING_MIN_SAMPLES) AI_TRAINING_MIN_SAMPLES="$value" ;;
             esac
         done < "$settings_file"
         
@@ -8132,6 +9222,7 @@ _convert_video_internal() {
         # AI-lite: analyze content once per file (first attempt only)
         if [[ "$AI_ENABLED" == true && $retry_count -eq 0 ]]; then
             echo -e "  ${CYAN}🤖 AI: analyzing content for smart defaults...${NC}"
+            echo -e "  ${BLUE}🤖 Using AI generation: ${BOLD}$AI_GENERATION${NC}"
             ai_smart_analyze "$file"
         fi
         
@@ -8647,7 +9738,27 @@ _convert_video_internal() {
         # Step 5: Move completed GIF from temp to final location
         echo -e "  ${BLUE}📦 Moving completed GIF to final location...${NC}"
         if mv "$temp_output_file" "$final_output_file" 2>/dev/null; then
-            echo -e "  ${GREEN}✓ GIF saved: $(basename "$final_output_file")${NC}"
+        echo -e "  ${GREEN}✓ GIF saved: $(basename "$final_output_file")${NC}"
+        
+        # 🧠 AI Training: Learn from successful conversion
+        if [[ "$AI_ENABLED" == true ]]; then
+            local content_type="$(echo "$AI_CONTENT_CACHE" | grep -o 'content_type=[^[:space:]]*' | cut -d'=' -f2 || echo 'unknown')"
+            local motion_level="$(echo "$AI_CONTENT_CACHE" | grep -o 'motion=[^[:space:]]*' | cut -d'=' -f2 || echo 'medium')"
+            local complexity_score="$(echo "$AI_CONTENT_CACHE" | grep -o 'complexity=[^[:space:]]*' | cut -d'=' -f2 || echo '50')"
+            
+            # Get video properties for training
+            local video_info=$(get_video_properties "$file")
+            local duration=$(echo "$video_info" | cut -d'|' -f1)
+            local width=$(echo "$video_info" | cut -d'|' -f2)
+            local height=$(echo "$video_info" | cut -d'|' -f3)
+            
+            # Train AI with successful settings
+            train_ai_model "$file" "$content_type" "$width" "$height" "$duration" \
+                          "$motion_level" "$complexity_score" "$FRAMERATE" \
+                          "$DITHER_MODE" "$MAX_COLORS" "${CROP_FILTER:-none}" "success"
+            
+            echo -e "  🧠 ${GREEN}AI learned from successful conversion${NC}"
+        fi
         else
             echo -e "  ${RED}❌ Failed to move GIF to final location${NC}"
             cleanup_temp_files "${file%.*}"
@@ -9209,10 +10320,19 @@ main() {
                 fi
                 exit 0
                 ;;
+            --ai-status|--ai-stats)
+                echo -e "${CYAN}${BOLD}🤖 AI SYSTEM STATUS${NC}\\\\n"
+                show_ai_status
+                exit 0
+                ;;
             --show-settings)
-                echo -e "${CYAN}${BOLD}🔧 CURRENT SETTINGS${NC}\\n"
-                echo -e "${YELLOW}Settings Location:${NC} $SETTINGS_FILE"
-                echo -e "${YELLOW}Backup Config:${NC} $CONFIG_FILE\n"
+                echo -e "${CYAN}${BOLD}🔧 CURRENT SETTINGS${NC}\\\\n"
+                local settings_display="$(echo "$SETTINGS_FILE" | sed "s|$HOME|~|g")"
+                local config_display="$(echo "$CONFIG_FILE" | sed "s|$HOME|~|g")"
+                local clickable_settings=$(make_clickable_path "$SETTINGS_FILE" "$settings_display")
+                local clickable_config=$(make_clickable_path "$CONFIG_FILE" "$config_display")
+                echo -e "${YELLOW}Settings Location:${NC} $clickable_settings"
+                echo -e "${YELLOW}Backup Config:${NC} $clickable_config\\n"
                 
                 echo -e "${GREEN}${BOLD}Quality & Output:${NC}"
                 echo -e "  ${BLUE}Quality Preset:${NC} $QUALITY"
@@ -9297,10 +10417,16 @@ main() {
                 ;;
             --show-logs)
                 init_log_directory >/dev/null 2>&1
-                echo -e "${CYAN}${BOLD}📁 LOG DIRECTORY INFORMATION:${NC}\n"
-                echo -e "${YELLOW}Log Directory:${NC} $LOG_DIR"
-                echo -e "${YELLOW}Error Log:${NC} $ERROR_LOG"
-                echo -e "${YELLOW}Conversion Log:${NC} $CONVERSION_LOG\n"
+                echo -e "${CYAN}${BOLD}📁 LOG DIRECTORY INFORMATION:${NC}\\n"
+                local log_dir_display="$(echo "$LOG_DIR" | sed "s|$HOME|~|g")"
+                local error_log_display="$(echo "$ERROR_LOG" | sed "s|$HOME|~|g")"
+                local conv_log_display="$(echo "$CONVERSION_LOG" | sed "s|$HOME|~|g")"
+                local clickable_log_dir=$(make_clickable_path "$LOG_DIR" "$log_dir_display")
+                local clickable_error_log=$(make_clickable_path "$ERROR_LOG" "$error_log_display")
+                local clickable_conv_log=$(make_clickable_path "$CONVERSION_LOG" "$conv_log_display")
+                echo -e "${YELLOW}Log Directory:${NC} $clickable_log_dir"
+                echo -e "${YELLOW}Error Log:${NC} $clickable_error_log"
+                echo -e "${YELLOW}Conversion Log:${NC} $clickable_conv_log\\n"
                 
                 if [[ -f "$ERROR_LOG" ]]; then
                     local error_lines=$(wc -l < "$ERROR_LOG")
