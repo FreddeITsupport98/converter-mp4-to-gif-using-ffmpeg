@@ -6528,6 +6528,7 @@ show_main_menu() {
     local selected=0
     local options=(
         "🚀 AI-Powered Quick Mode (Speed Optimized)"
+        "🎛️  Smart AI Configuration (Balanced Control)"
         "⚙️  Configure Settings & Convert (Advanced)"
         "📊 View Conversion Statistics"
         "🤖 AI System Status & Diagnostics"
@@ -6588,14 +6589,15 @@ show_main_menu() {
         local help_text
         case $selected in
             0) help_text=$(get_responsive_help_text "AI Quick Mode - just pick quality!" "Just select quality level - AI handles everything else automatically!" $layout_mode) ;;
-            1) help_text=$(get_responsive_help_text "Configure 15+ settings" "Fine-tune all 15+ settings for perfect results and control" $layout_mode) ;;
-            2) help_text=$(get_responsive_help_text "View conversion stats" "View your conversion history and success rates with details" $layout_mode) ;;
-            3) help_text=$(get_responsive_help_text "AI system diagnostics" "Check AI cache, training data, health status, and performance" $layout_mode) ;;
-            4) help_text=$(get_responsive_help_text "Manage log files" "Manage error logs and conversion history files safely" $layout_mode) ;;
-            5) help_text=$(get_responsive_help_text "System info" "Check CPU, GPU, and system capabilities for optimization" $layout_mode) ;;
-            6) help_text=$(get_responsive_help_text "Kill processes" "Stop any stuck or runaway FFmpeg processes safely" $layout_mode) ;;
-            7) help_text=$(get_responsive_help_text "Help & docs" "Complete usage guide with examples and feature docs" $layout_mode) ;;
-            8) help_text=$(get_responsive_help_text "Exit" "Save your current settings and exit gracefully" $layout_mode) ;;
+            1) help_text=$(get_responsive_help_text "Smart AI Config - balanced control" "Choose key AI features and settings without overwhelming complexity" $layout_mode) ;;
+            2) help_text=$(get_responsive_help_text "Configure 15+ settings" "Fine-tune all 15+ settings for perfect results and control" $layout_mode) ;;
+            3) help_text=$(get_responsive_help_text "View conversion stats" "View your conversion history and success rates with details" $layout_mode) ;;
+            4) help_text=$(get_responsive_help_text "AI system diagnostics" "Check AI cache, training data, health status, and performance" $layout_mode) ;;
+            5) help_text=$(get_responsive_help_text "Manage log files" "Manage error logs and conversion history files safely" $layout_mode) ;;
+            6) help_text=$(get_responsive_help_text "System info" "Check CPU, GPU, and system capabilities for optimization" $layout_mode) ;;
+            7) help_text=$(get_responsive_help_text "Kill processes" "Stop any stuck or runaway FFmpeg processes safely" $layout_mode) ;;
+            8) help_text=$(get_responsive_help_text "Help & docs" "Complete usage guide with examples and feature docs" $layout_mode) ;;
+            9) help_text=$(get_responsive_help_text "Exit" "Save your current settings and exit gracefully" $layout_mode) ;;
         esac
         
         # Calculate actual content width by measuring the longest menu option
@@ -6791,34 +6793,39 @@ execute_menu_option() {
             sleep 1
             quick_convert_mode
             ;;
-        1) # Advanced Mode
+        1) # Smart AI Configuration Mode
+            echo -e "\n${CYAN}🎛️  Entering Smart AI Configuration...${NC}"
+            sleep 1
+            smart_ai_config_mode
+            ;;
+        2) # Advanced Mode
             echo -e "\n${BLUE}⚙️  Entering Advanced Configuration...${NC}"
             sleep 1
             advanced_convert_mode
             ;;
-        2) # Statistics
+        3) # Statistics
             show_conversion_stats
             ;;
-        3) # AI Status & Diagnostics
+        4) # AI Status & Diagnostics
             clear
             print_header
             show_ai_status
             echo -e "\n${YELLOW}Press any key to return to main menu...${NC}"
             read -rsn1
             ;;
-        4) # Manage Logs
+        5) # Manage Logs
             manage_log_files
             ;;
-        5) # System Info
+        6) # System Info
             show_system_info
             ;;
-        6) # Kill FFmpeg
+        7) # Kill FFmpeg
             kill_ffmpeg_processes
             ;;
-        7) # Help
+        8) # Help
             show_interactive_help
             ;;
-        8) # Exit
+        9) # Exit
             echo -e "\n${YELLOW}👋 Goodbye!${NC}"
             exit 0
             ;;
@@ -6921,6 +6928,1225 @@ quick_convert_mode() {
     echo -e "\n${YELLOW}Press any key to return to main menu...${NC}"
     read -rsn1
 }
+
+# 🎛️ Smart AI Configuration Mode with WASD Navigation
+smart_ai_config_mode() {
+    local video_files=()
+    shopt -s nullglob
+    for ext in mp4 avi mov mkv webm; do
+        video_files+=(*."$ext")
+    done
+    shopt -u nullglob
+    
+    if [[ ${#video_files[@]} -eq 0 ]]; then
+        clear
+        print_header
+        echo -e "${RED}❌ No video files found in current directory${NC}\n"
+        echo -e "${BLUE}📝 ${BOLD}Manual options:${NC}"
+        echo -e "  ${CYAN}•${NC} Place video files in: ${BOLD}$(pwd)${NC}"
+        echo -e "  ${CYAN}•${NC} Supported formats: ${GREEN}.mp4 .avi .mov .mkv .webm${NC}"
+        echo -e "  ${CYAN}•${NC} Or use: ${YELLOW}--file /path/to/video.mp4${NC}"
+        echo -e "\n${YELLOW}Press any key to return to main menu...${NC}"
+        read -rsn1
+        return
+    fi
+    
+    # Start the Smart AI Configuration with interactive navigation
+    show_smart_ai_menu
+}
+
+# 🎛️ Interactive Smart AI Configuration Menu with WASD Navigation
+show_smart_ai_menu() {
+    local selected=0
+    local options=(
+        "🎯 Quality & Resolution Settings"
+        "🤖 AI Feature Selection"
+        "⚡ Performance & Processing"
+        "📁 Output & File Management"
+        "🚀 Start Conversion with Current Settings"
+        "🔄 Reset to Smart Defaults"
+        "🔙 Return to Main Menu"
+    )
+    
+    while true; do
+        clear
+        print_header
+        
+        echo -e "${CYAN}${BOLD}🎛️  SMART AI CONFIGURATION${NC}\n"
+        echo -e "${BLUE}Perfect balance between simplicity and control${NC}"
+        echo -e "${GRAY}Choose key AI features and settings without overwhelming complexity${NC}\n"
+        
+        local video_count=$(find . -maxdepth 1 -name "*.mp4" -o -name "*.avi" -o -name "*.mov" -o -name "*.mkv" -o -name "*.webm" 2>/dev/null | wc -l)
+        echo -e "${BLUE}📹 Found ${BOLD}$video_count${NC}${BLUE} video files${NC}"
+        echo -e "${CYAN}🎛️ Configure key settings while AI handles the complexity${NC}\n"
+        
+        # Show current smart configuration in compact form
+        show_smart_ai_config_compact
+        
+        echo -e "\n${CYAN}${BOLD}🎛️ SMART CONFIGURATION OPTIONS${NC}"
+        echo -e "${YELLOW}🎹 Navigation: ${GREEN}w${NC}=Up ${GREEN}s${NC}=Down ${GREEN}Enter${NC}=Select ${GREEN}q${NC}=Quit ${GREEN}h${NC}=Help${NC}\n"
+        
+        # Get terminal dimensions for responsive design
+        local term_width=$(tput cols 2>/dev/null || echo 80)
+        local menu_width
+        
+        if [[ $term_width -lt 80 ]]; then
+            menu_width=$((term_width - 8))
+        else
+            menu_width=72
+        fi
+        
+        # Smart help text based on selected option
+        local help_text
+        case $selected in
+            0) help_text="Configure quality presets, resolution limits, and file size targets" ;;
+            1) help_text="Choose which AI features to enable: content detection, quality optimization, motion analysis" ;;
+            2) help_text="Set parallel processing, optimization level, and AI per-file decisions" ;;
+            3) help_text="Configure file naming, backup strategy, and validation level" ;;
+            4) help_text="Start Smart AI conversion with current settings" ;;
+            5) help_text="Reset all settings to recommended smart defaults" ;;
+            6) help_text="Return to main menu without making changes" ;;
+        esac
+        
+        # Draw the menu box
+        local box_width=$menu_width
+        local padding=$(((box_width - 30) / 2))
+        [[ $padding -lt 1 ]] && padding=1
+        
+        # Top border
+        printf "${CYAN}┌"
+        printf "─%.0s" $(seq 1 $((box_width - 2)))
+        printf "┐${NC}\n"
+        
+        # Menu options with highlighting
+        for i in "${!options[@]}"; do
+            local option="${options[$i]}"
+            if [[ $i -eq $selected ]]; then
+                printf "${CYAN}│${NC} ${GREEN}${BOLD}>>> %-*s <<<${NC} ${CYAN}│${NC}\n" $((box_width - 12)) "$option"
+            else
+                printf "${CYAN}│${NC} %-*s ${CYAN}│${NC}\n" $((box_width - 4)) "    $option"
+            fi
+        done
+        
+        # Separator
+        printf "${CYAN}├"
+        printf "─%.0s" $(seq 1 $((box_width - 2)))
+        printf "┤${NC}\n"
+        
+        # Help text
+        printf "${CYAN}│${NC} ${YELLOW}💡 %-*s${NC} ${CYAN}│${NC}\n" $((box_width - 8)) "$help_text"
+        
+        # Bottom border
+        printf "${CYAN}└"
+        printf "─%.0s" $(seq 1 $((box_width - 2)))
+        printf "┘${NC}\n\n"
+        
+        # Read user input
+        read -rsn1 key
+        
+        case "$key" in
+            $'\x1b')  # Escape sequence
+                read -rsn2 -t 0.1 key
+                case "$key" in
+                    '[A') # Up arrow
+                        selected=$((selected - 1))
+                        if [[ $selected -lt 0 ]]; then selected=$((${#options[@]}-1)); fi
+                        ;;
+                    '[B') # Down arrow
+                        selected=$((selected + 1))
+                        if [[ $selected -ge ${#options[@]} ]]; then selected=0; fi
+                        ;;
+                esac
+                ;;
+            'w'|'W')  # Up navigation (WASD)
+                selected=$((selected - 1))
+                if [[ $selected -lt 0 ]]; then selected=$((${#options[@]}-1)); fi
+                sleep 0.1
+                ;;
+            's'|'S')  # Down navigation (WASD)
+                selected=$((selected + 1))
+                if [[ $selected -ge ${#options[@]} ]]; then selected=0; fi
+                sleep 0.1
+                ;;
+            ''|' ')  # Enter or Space - Select option
+                execute_smart_ai_option $selected
+                if [[ $selected -ge 4 ]]; then  # If Start, Reset, or Return was selected
+                    return
+                fi
+                ;;
+            'q'|'Q')  # Quit
+                return
+                ;;
+            'h'|'H'|'?')  # Help
+                show_smart_ai_help
+                ;;
+            *)  # Invalid input - ignore
+                ;;
+        esac
+    done
+}
+
+# 📄 Show compact Smart AI configuration
+show_smart_ai_config_compact() {
+    echo -e "${CYAN}${BOLD}📄 CURRENT CONFIGURATION:${NC}"
+    
+    # AI Features (condensed)
+    local ai_features=""
+    [[ "${AI_CONTENT_DETECTION:-true}" == "true" ]] && ai_features+="Content "
+    [[ "${AI_QUALITY_OPTIMIZATION:-true}" == "true" ]] && ai_features+="Quality "
+    [[ "${AI_MOTION_ANALYSIS:-true}" == "true" ]] && ai_features+="Motion "
+    [[ -z "$ai_features" ]] && ai_features="None"
+    
+    echo -e "  ${MAGENTA}🤖 AI:${NC} $ai_features| ${YELLOW}🎯 Quality:${NC} $QUALITY | ${BLUE}⚡ Parallel:${NC} ${SMART_PARALLEL_JOBS:-auto}"
+    
+    local max_res_display=$([[ "$SMART_MAX_RESOLUTION" == "auto" ]] && echo "AI" || echo "$SMART_MAX_RESOLUTION")
+    local target_size_display=$([[ "$SMART_TARGET_SIZE" == "auto" ]] && echo "AI" || echo "${SMART_TARGET_SIZE}MB")
+    
+    echo -e "  ${GREEN}📁 Resolution:${NC} $max_res_display | ${GREEN}Size:${NC} $target_size_display | ${GREEN}Naming:${NC} ${SMART_NAMING:-ai}"
+}
+
+# 🎮 Execute Smart AI menu option
+execute_smart_ai_option() {
+    local option=$1
+    
+    case $option in
+        0) # Quality & Resolution Settings
+            show_smart_quality_menu
+            ;;
+        1) # AI Feature Selection
+            show_smart_ai_features_menu
+            ;;
+        2) # Performance & Processing
+            show_smart_performance_menu
+            ;;
+        3) # Output & File Management
+            show_smart_output_menu
+            ;;
+        4) # Start Conversion
+            clear
+            print_header
+            echo -e "${CYAN}🎛️ Starting Smart AI conversion...${NC}"
+            INTERACTIVE_MODE=false
+            
+            # Apply smart settings to core variables
+            apply_smart_settings_to_core
+            
+            if start_conversion; then
+                echo -e "\n${GREEN}🎉 Smart AI conversion completed successfully!${NC}"
+                echo -e "${BLUE}📦 Your GIF files are ready in the current directory!${NC}"
+                show_ai_summary 2>/dev/null || true
+            else
+                echo -e "\n${YELLOW}📋 Smart AI conversion completed (no action needed)${NC}"
+            fi
+            echo -e "\n${YELLOW}Press any key to return to main menu...${NC}"
+            read -rsn1
+            return
+            ;;
+        5) # Reset to Smart Defaults
+            reset_to_smart_defaults
+            clear
+            print_header
+            echo -e "${GREEN}${BOLD}✓ RESET COMPLETE${NC}\n"
+            echo -e "${BLUE}All settings have been reset to smart defaults:${NC}"
+            echo -e "  ${GREEN}•${NC} AI features enabled (Content, Quality, Motion)"
+            echo -e "  ${GREEN}•${NC} Quality preset: High with AI adjustments"
+            echo -e "  ${GREEN}•${NC} Resolution: Auto (AI decides)"
+            echo -e "  ${GREEN}•${NC} Processing: Auto parallel jobs"
+            echo -e "  ${GREEN}•${NC} Output: AI naming, originals backup"
+            echo -e "\n${YELLOW}Press any key to continue...${NC}"
+            read -rsn1
+            ;;
+        6) # Return to Main Menu
+            return
+            ;;
+    esac
+}
+
+# ⚙️ Apply smart settings to core variables
+apply_smart_settings_to_core() {
+    # AI settings
+    AI_ENABLED="true"
+    AI_MODE="smart"
+    
+    # Apply smart parallel jobs to core PARALLEL_JOBS
+    if [[ "$SMART_PARALLEL_JOBS" == "auto" ]]; then
+        PARALLEL_JOBS="auto"
+    else
+        PARALLEL_JOBS="$SMART_PARALLEL_JOBS"
+    fi
+    
+    # Apply optimization settings
+    case "$SMART_OPTIMIZATION" in
+        "light")
+            AUTO_OPTIMIZE="false"
+            OPTIMIZE_AGGRESSIVE="false"
+            ;;
+        "balanced")
+            AUTO_OPTIMIZE="true"
+            OPTIMIZE_AGGRESSIVE="false"
+            ;;
+        "aggressive")
+            AUTO_OPTIMIZE="true"
+            OPTIMIZE_AGGRESSIVE="true"
+            ;;
+    esac
+    
+    # Apply validation settings
+    case "$SMART_VALIDATION" in
+        "skip")
+            SKIP_VALIDATION="true"
+            ;;
+        "quick"|"thorough")
+            SKIP_VALIDATION="false"
+            ;;
+    esac
+    
+    # Apply backup settings
+    case "$SMART_BACKUP" in
+        "none")
+            BACKUP_ORIGINAL="false"
+            ;;
+        "originals"|"metadata")
+            BACKUP_ORIGINAL="true"
+            ;;
+    esac
+    
+    # Always enable progress bar for smart mode
+    PROGRESS_BAR="true"
+}
+
+# ❓ Show Smart AI Configuration help
+show_smart_ai_help() {
+    clear
+    print_header
+    echo -e "${BLUE}${BOLD}❓ SMART AI CONFIGURATION HELP${NC}\n"
+    
+    echo -e "${YELLOW}Navigation Controls:${NC}"
+    echo -e "  ${GREEN}w / ↑ Up Arrow${NC} - Navigate up"
+    echo -e "  ${GREEN}s / ↓ Down Arrow${NC} - Navigate down"
+    echo -e "  ${GREEN}Enter / Space${NC} - Select highlighted option"
+    echo -e "  ${GREEN}q${NC} - Quit and return to main menu"
+    echo -e "  ${GREEN}h / ?${NC} - Show this help\n"
+    
+    echo -e "${CYAN}Smart AI Configuration Sections:${NC}"
+    echo -e "  ${YELLOW}🎯 Quality & Resolution${NC} - Set quality presets, resolution limits, file size targets"
+    echo -e "  ${YELLOW}🤖 AI Feature Selection${NC} - Choose which AI features to enable or disable"
+    echo -e "  ${YELLOW}⚡ Performance & Processing${NC} - Configure parallel jobs and optimization levels"
+    echo -e "  ${YELLOW}📁 Output & File Management${NC} - Set naming, backup, and validation preferences\n"
+    
+    echo -e "${MAGENTA}What makes this 'Smart'?${NC}"
+    echo -e "  ${BLUE}•${NC} ${BOLD}Balanced Control${NC} - Key settings without overwhelming complexity"
+    echo -e "  ${BLUE}•${NC} ${BOLD}AI-Powered${NC} - Smart defaults that adapt to your content"
+    echo -e "  ${BLUE}•${NC} ${BOLD}Visual Feedback${NC} - See exactly what each setting does"
+    echo -e "  ${BLUE}•${NC} ${BOLD}Instant Reset${NC} - Return to recommended defaults anytime\n"
+    
+    echo -e "${GREEN}Tips:${NC}"
+    echo -e "  • Use WASD keys for smooth navigation like gaming controls"
+    echo -e "  • Arrow keys also work if you prefer traditional navigation"
+    echo -e "  • Each section has its own navigation for detailed configuration"
+    echo -e "  • Settings are applied immediately when you start conversion\n"
+    
+    echo -e "${YELLOW}Press any key to return to Smart AI Configuration...${NC}"
+    read -rsn1
+}
+
+# 🎯 Smart Quality & Resolution Menu with WASD Navigation
+show_smart_quality_menu() {
+    local selected=0
+    local options=(
+        "Quality Preset: $QUALITY"
+        "Max Resolution: ${SMART_MAX_RESOLUTION:-auto}"
+        "Target File Size: ${SMART_TARGET_SIZE:-auto}"
+        "Frame Rate Mode: ${SMART_FRAMERATE_MODE:-ai}"
+        "🔙 Back to Smart Configuration"
+    )
+    
+    while true; do
+        clear
+        print_header
+        echo -e "${YELLOW}${BOLD}🎯 QUALITY & RESOLUTION SETTINGS${NC}\n"
+        echo -e "${BLUE}Configure quality presets, resolution limits, and file size targets${NC}\n"
+        
+        echo -e "${CYAN}Current Settings:${NC}"
+        echo -e "  Quality Preset: ${BOLD}$QUALITY${NC} (with AI adjustments)"
+        echo -e "  Max Resolution: ${BOLD}${SMART_MAX_RESOLUTION:-auto}${NC}"
+        echo -e "  Target Size: ${BOLD}${SMART_TARGET_SIZE:-auto}${NC}"
+        echo -e "  Frame Rate: ${BOLD}${SMART_FRAMERATE_MODE:-ai}${NC}\n"
+        
+        echo -e "${YELLOW}🎹 Navigation: ${GREEN}w${NC}=Up ${GREEN}s${NC}=Down ${GREEN}Enter${NC}=Select ${GREEN}q${NC}=Back\n"
+        
+        # Draw menu options
+        for i in "${!options[@]}"; do
+            local option="${options[$i]}"
+            if [[ $i -eq $selected ]]; then
+                echo -e "  ${GREEN}${BOLD}>>> $option <<<${NC}"
+            else
+                echo -e "      $option"
+            fi
+        done
+        
+        echo -e "\n${YELLOW}💡 Tip: AI will optimize within your chosen limits${NC}"
+        
+        read -rsn1 key
+        case "$key" in
+            'w'|'W'|$'\x1b[A')  # Up
+                selected=$((selected - 1))
+                if [[ $selected -lt 0 ]]; then selected=$((${#options[@]}-1)); fi
+                ;;
+            's'|'S'|$'\x1b[B')  # Down
+                selected=$((selected + 1))
+                if [[ $selected -ge ${#options[@]} ]]; then selected=0; fi
+                ;;
+            ''|' ')  # Select
+                case $selected in
+                    0) select_quality_preset ;;
+                    1) configure_smart_max_resolution ;;
+                    2) configure_smart_target_size ;;
+                    3) configure_smart_framerate_mode ;;
+                    4) return ;;  # Back
+                esac
+                if [[ $selected -eq 4 ]]; then return; fi
+                # Update options array with new values
+                options[0]="Quality Preset: $QUALITY"
+                options[1]="Max Resolution: ${SMART_MAX_RESOLUTION:-auto}"
+                options[2]="Target File Size: ${SMART_TARGET_SIZE:-auto}"
+                options[3]="Frame Rate Mode: ${SMART_FRAMERATE_MODE:-ai}"
+                ;;
+            'q'|'Q')  # Quit
+                return
+                ;;
+        esac
+    done
+}
+
+# 🤖 Smart AI Features Menu with WASD Navigation
+show_smart_ai_features_menu() {
+    local selected=0
+    
+    while true; do
+        local content_status=$([[ "${AI_CONTENT_DETECTION:-true}" == "true" ]] && echo "${GREEN}✓ ON${NC}" || echo "${RED}✗ OFF${NC}")
+        local quality_status=$([[ "${AI_QUALITY_OPTIMIZATION:-true}" == "true" ]] && echo "${GREEN}✓ ON${NC}" || echo "${RED}✗ OFF${NC}")
+        local motion_status=$([[ "${AI_MOTION_ANALYSIS:-true}" == "true" ]] && echo "${GREEN}✓ ON${NC}" || echo "${RED}✗ OFF${NC}")
+        local duplicate_level="${AI_DUPLICATE_DETECTION:-visual}"
+        
+        local options=(
+            "Content Detection: $content_status"
+            "Quality Optimization: $quality_status"
+            "Motion Analysis: $motion_status"
+            "Duplicate Detection: $duplicate_level"
+            "🔙 Back to Smart Configuration"
+        )
+        
+        clear
+        print_header
+        echo -e "${MAGENTA}${BOLD}🤖 AI FEATURE SELECTION${NC}\n"
+        echo -e "${BLUE}Choose which AI features to enable for intelligent video processing${NC}\n"
+        
+        echo -e "${YELLOW}🎹 Navigation: ${GREEN}w${NC}=Up ${GREEN}s${NC}=Down ${GREEN}Enter${NC}=Toggle ${GREEN}q${NC}=Back\n"
+        
+        # Draw menu options with descriptions
+        for i in "${!options[@]}"; do
+            local option="${options[$i]}"
+            if [[ $i -eq $selected ]]; then
+                echo -e "  ${GREEN}${BOLD}>>> $option <<<${NC}"
+                # Show description for selected item
+                case $i in
+                    0) echo -e "      ${GRAY}Automatically detects animation, screencast, movie, or clip content${NC}" ;;
+                    1) echo -e "      ${GRAY}AI adjusts quality parameters based on source characteristics${NC}" ;;
+                    2) echo -e "      ${GRAY}Intelligent frame rate adjustments based on movement patterns${NC}" ;;
+                    3) echo -e "      ${GRAY}Choose detection level: basic/visual/advanced${NC}" ;;
+                esac
+            else
+                echo -e "      $option"
+            fi
+        done
+        
+        echo -e "\n${YELLOW}💡 Tip: More AI features = better results but slower processing${NC}"
+        
+        read -rsn1 key
+        case "$key" in
+            'w'|'W'|$'\x1b[A')  # Up
+                selected=$((selected - 1))
+                if [[ $selected -lt 0 ]]; then selected=$((${#options[@]}-1)); fi
+                ;;
+            's'|'S'|$'\x1b[B')  # Down
+                selected=$((selected + 1))
+                if [[ $selected -ge ${#options[@]} ]]; then selected=0; fi
+                ;;
+            ''|' ')  # Select
+                case $selected in
+                    0) AI_CONTENT_DETECTION=$([[ "${AI_CONTENT_DETECTION:-true}" == "true" ]] && echo "false" || echo "true") ;;
+                    1) AI_QUALITY_OPTIMIZATION=$([[ "${AI_QUALITY_OPTIMIZATION:-true}" == "true" ]] && echo "false" || echo "true") ;;
+                    2) AI_MOTION_ANALYSIS=$([[ "${AI_MOTION_ANALYSIS:-true}" == "true" ]] && echo "false" || echo "true") ;;
+                    3) configure_smart_duplicate_detection ;;
+                    4) return ;;  # Back
+                esac
+                if [[ $selected -eq 4 ]]; then return; fi
+                ;;
+            'q'|'Q')  # Quit
+                return
+                ;;
+        esac
+    done
+}
+
+# ⚡ Smart Performance Menu with WASD Navigation
+show_smart_performance_menu() {
+    local selected=0
+    local cpu_cores=$(nproc 2>/dev/null || echo "4")
+    
+    while true; do
+        local parallel_display=$([[ "${SMART_PARALLEL_JOBS:-auto}" == "auto" ]] && echo "Auto ($cpu_cores)" || echo "$SMART_PARALLEL_JOBS jobs")
+        local per_file_status=$([[ "${SMART_AI_PER_FILE:-true}" == "true" ]] && echo "${GREEN}✓ ON${NC}" || echo "${RED}✗ OFF${NC}")
+        local optimization_display="${SMART_OPTIMIZATION:-balanced}"
+        
+        local options=(
+            "Parallel Processing: $parallel_display"
+            "AI Per-File Decisions: $per_file_status"
+            "Optimization Level: $optimization_display"
+            "🔙 Back to Smart Configuration"
+        )
+        
+        clear
+        print_header
+        echo -e "${BLUE}${BOLD}⚡ PERFORMANCE & PROCESSING${NC}\n"
+        echo -e "${CYAN}System: $cpu_cores CPU cores detected${NC}"
+        echo -e "${BLUE}Configure processing speed and resource utilization${NC}\n"
+        
+        echo -e "${YELLOW}🎹 Navigation: ${GREEN}w${NC}=Up ${GREEN}s${NC}=Down ${GREEN}Enter${NC}=Select ${GREEN}q${NC}=Back\n"
+        
+        # Draw menu options with descriptions
+        for i in "${!options[@]}"; do
+            local option="${options[$i]}"
+            if [[ $i -eq $selected ]]; then
+                echo -e "  ${GREEN}${BOLD}>>> $option <<<${NC}"
+                case $i in
+                    0) echo -e "      ${GRAY}Number of videos to process simultaneously${NC}" ;;
+                    1) echo -e "      ${GRAY}Let AI choose different settings for each video${NC}" ;;
+                    2) echo -e "      ${GRAY}Balance between processing speed and file size${NC}" ;;
+                esac
+            else
+                echo -e "      $option"
+            fi
+        done
+        
+        echo -e "\n${YELLOW}💡 Tip: Higher parallel processing = faster conversion but more CPU usage${NC}"
+        
+        read -rsn1 key
+        case "$key" in
+            'w'|'W'|$'\x1b[A')  # Up
+                selected=$((selected - 1))
+                if [[ $selected -lt 0 ]]; then selected=$((${#options[@]}-1)); fi
+                ;;
+            's'|'S'|$'\x1b[B')  # Down
+                selected=$((selected + 1))
+                if [[ $selected -ge ${#options[@]} ]]; then selected=0; fi
+                ;;
+            ''|' ')  # Select
+                case $selected in
+                    0) configure_smart_parallel_jobs ;;
+                    1) SMART_AI_PER_FILE=$([[ "${SMART_AI_PER_FILE:-true}" == "true" ]] && echo "false" || echo "true") ;;
+                    2) configure_smart_optimization_level ;;
+                    3) return ;;  # Back
+                esac
+                if [[ $selected -eq 3 ]]; then return; fi
+                ;;
+            'q'|'Q')  # Quit
+                return
+                ;;
+        esac
+    done
+}
+
+# 📁 Smart Output Menu with WASD Navigation
+show_smart_output_menu() {
+    local selected=0
+    
+    while true; do
+        local naming_display="${SMART_NAMING:-ai}"
+        local backup_display="${SMART_BACKUP:-originals}"
+        local validation_display="${SMART_VALIDATION:-quick}"
+        
+        local options=(
+            "File Naming: $naming_display"
+            "Backup Strategy: $backup_display"
+            "Validation Level: $validation_display"
+            "🔙 Back to Smart Configuration"
+        )
+        
+        clear
+        print_header
+        echo -e "${GREEN}${BOLD}📁 OUTPUT & FILE MANAGEMENT${NC}\n"
+        echo -e "${BLUE}Configure how files are named, backed up, and validated${NC}\n"
+        
+        echo -e "${YELLOW}🎹 Navigation: ${GREEN}w${NC}=Up ${GREEN}s${NC}=Down ${GREEN}Enter${NC}=Select ${GREEN}q${NC}=Back\n"
+        
+        # Draw menu options with descriptions
+        for i in "${!options[@]}"; do
+            local option="${options[$i]}"
+            if [[ $i -eq $selected ]]; then
+                echo -e "  ${GREEN}${BOLD}>>> $option <<<${NC}"
+                case $i in
+                    0) echo -e "      ${GRAY}How to name output GIF files${NC}" ;;
+                    1) echo -e "      ${GRAY}What to backup before conversion${NC}" ;;
+                    2) echo -e "      ${GRAY}How thoroughly to check output files${NC}" ;;
+                esac
+            else
+                echo -e "      $option"
+            fi
+        done
+        
+        echo -e "\n${YELLOW}💡 Tip: AI naming creates descriptive filenames based on content analysis${NC}"
+        
+        read -rsn1 key
+        case "$key" in
+            'w'|'W'|$'\x1b[A')  # Up
+                selected=$((selected - 1))
+                if [[ $selected -lt 0 ]]; then selected=$((${#options[@]}-1)); fi
+                ;;
+            's'|'S'|$'\x1b[B')  # Down
+                selected=$((selected + 1))
+                if [[ $selected -ge ${#options[@]} ]]; then selected=0; fi
+                ;;
+            ''|' ')  # Select
+                case $selected in
+                    0) configure_smart_naming ;;
+                    1) configure_smart_backup ;;
+                    2) configure_smart_validation ;;
+                    3) return ;;  # Back
+                esac
+                if [[ $selected -eq 3 ]]; then return; fi
+                ;;
+            'q'|'Q')  # Quit
+                return
+                ;;
+        esac
+    done
+}
+
+# 🎨 Configure Smart Max Resolution
+configure_smart_max_resolution() {
+    clear
+    print_header
+    echo -e "${BLUE}${BOLD}📏 MAXIMUM RESOLUTION LIMIT${NC}\n"
+    echo -e "Current: ${BOLD}${SMART_MAX_RESOLUTION:-auto}${NC}\n"
+    
+    echo -e "${GREEN}[1]${NC} Auto - AI decides based on source quality"
+    echo -e "${GREEN}[2]${NC} 480p (854x480) - Small files, mobile-friendly"
+    echo -e "${GREEN}[3]${NC} 720p (1280x720) - Balanced quality"
+    echo -e "${GREEN}[4]${NC} 1080p (1920x1080) - High quality (recommended)"
+    echo -e "${GREEN}[5]${NC} 1440p (2560x1440) - Very high quality"
+    echo -e "${GREEN}[6]${NC} 4K (3840x2160) - Maximum quality\n"
+    
+    echo -e "${MAGENTA}Select resolution limit: ${NC}"
+    read -r res_choice
+    case "$res_choice" in
+        "1") SMART_MAX_RESOLUTION="auto" ;;
+        "2") SMART_MAX_RESOLUTION="480p" ;;
+        "3") SMART_MAX_RESOLUTION="720p" ;;
+        "4") SMART_MAX_RESOLUTION="1080p" ;;
+        "5") SMART_MAX_RESOLUTION="1440p" ;;
+        "6") SMART_MAX_RESOLUTION="4K" ;;
+        *) return ;;
+    esac
+    echo -e "${GREEN}✓ Max resolution set to: $SMART_MAX_RESOLUTION${NC}"
+    sleep 1
+}
+
+# 📆 Configure Smart Target Size
+configure_smart_target_size() {
+    clear
+    print_header
+    echo -e "${BLUE}${BOLD}📊 TARGET FILE SIZE${NC}\n"
+    echo -e "Current: ${BOLD}${SMART_TARGET_SIZE:-auto}${NC}\n"
+    
+    echo -e "${GREEN}[1]${NC} Auto - AI optimized for quality/size balance"
+    echo -e "${GREEN}[2]${NC} Small (1MB average) - Social media stories"
+    echo -e "${GREEN}[3]${NC} Medium (5MB average) - General use (recommended)"
+    echo -e "${GREEN}[4]${NC} Large (10MB average) - High quality sharing"
+    echo -e "${GREEN}[5]${NC} No limit - Quality focused\n"
+    
+    echo -e "${MAGENTA}Select target size: ${NC}"
+    read -r size_choice
+    case "$size_choice" in
+        "1") SMART_TARGET_SIZE="auto" ;;
+        "2") SMART_TARGET_SIZE="1" ;;
+        "3") SMART_TARGET_SIZE="5" ;;
+        "4") SMART_TARGET_SIZE="10" ;;
+        "5") SMART_TARGET_SIZE="none" ;;
+        *) return ;;
+    esac
+    echo -e "${GREEN}✓ Target size set to: $SMART_TARGET_SIZE${NC}"
+    sleep 1
+}
+
+# 🎦 Configure Smart Framerate Mode
+configure_smart_framerate_mode() {
+    clear
+    print_header
+    echo -e "${BLUE}${BOLD}🎬 FRAME RATE PREFERENCES${NC}\n"
+    echo -e "Current: ${BOLD}${SMART_FRAMERATE_MODE:-ai}${NC}\n"
+    
+    echo -e "${GREEN}[1]${NC} AI Decides (recommended) - Smart frame rate based on content"
+    echo -e "${GREEN}[2]${NC} Preserve Source - Keep original frame rate when possible"
+    echo -e "${GREEN}[3]${NC} Low (8-12 fps) - Static content, smaller files"
+    echo -e "${GREEN}[4]${NC} Medium (12-18 fps) - Balanced approach"
+    echo -e "${GREEN}[5]${NC} High (18-24 fps) - Smooth motion\n"
+    
+    echo -e "${MAGENTA}Select frame rate mode: ${NC}"
+    read -r fps_choice
+    case "$fps_choice" in
+        "1") SMART_FRAMERATE_MODE="ai" ;;
+        "2") SMART_FRAMERATE_MODE="preserve" ;;
+        "3") SMART_FRAMERATE_MODE="low" ;;
+        "4") SMART_FRAMERATE_MODE="medium" ;;
+        "5") SMART_FRAMERATE_MODE="high" ;;
+        *) return ;;
+    esac
+    echo -e "${GREEN}✓ Frame rate mode set to: $SMART_FRAMERATE_MODE${NC}"
+    sleep 1
+}
+
+# 🔍 Configure Smart Duplicate Detection
+configure_smart_duplicate_detection() {
+    clear
+    print_header
+    echo -e "${BLUE}${BOLD}🔍 DUPLICATE DETECTION LEVEL${NC}\n"
+    echo -e "Current: ${BOLD}${AI_DUPLICATE_DETECTION:-visual}${NC}\n"
+    
+    echo -e "${GREEN}[1]${NC} Basic - File name and size comparison (fast)"
+    echo -e "${GREEN}[2]${NC} Visual - Perceptual hashing for visual similarity (recommended)"
+    echo -e "${GREEN}[3]${NC} Advanced - Full content analysis (thorough but slower)\n"
+    
+    echo -e "${MAGENTA}Select detection level: ${NC}"
+    read -r dup_choice
+    case "$dup_choice" in
+        "1") AI_DUPLICATE_DETECTION="basic" ;;
+        "2") AI_DUPLICATE_DETECTION="visual" ;;
+        "3") AI_DUPLICATE_DETECTION="advanced" ;;
+        *) return ;;
+    esac
+    echo -e "${GREEN}✓ Duplicate detection set to: $AI_DUPLICATE_DETECTION${NC}"
+    sleep 1
+}
+
+# ⚡ Configure Smart Parallel Jobs
+configure_smart_parallel_jobs() {
+    local cpu_cores=$(nproc 2>/dev/null || echo "4")
+    clear
+    print_header
+    echo -e "${BLUE}${BOLD}⚡ PARALLEL PROCESSING${NC}\n"
+    echo -e "Current: ${BOLD}${SMART_PARALLEL_JOBS:-auto}${NC}"
+    echo -e "System: $cpu_cores CPU cores available\n"
+    
+    echo -e "${GREEN}[1]${NC} Auto - Let system decide (recommended)"
+    echo -e "${GREEN}[2]${NC} Low - 2 jobs (conservative, stable)"
+    echo -e "${GREEN}[3]${NC} Medium - 4 jobs (balanced performance)"
+    echo -e "${GREEN}[4]${NC} High - 8 jobs (aggressive, faster)"
+    echo -e "${GREEN}[5]${NC} Maximum - Use all $cpu_cores cores\n"
+    
+    echo -e "${MAGENTA}Select parallel processing level: ${NC}"
+    read -r parallel_choice
+    case "$parallel_choice" in
+        "1") SMART_PARALLEL_JOBS="auto" ;;
+        "2") SMART_PARALLEL_JOBS="2" ;;
+        "3") SMART_PARALLEL_JOBS="4" ;;
+        "4") SMART_PARALLEL_JOBS="8" ;;
+        "5") SMART_PARALLEL_JOBS="$cpu_cores" ;;
+        *) return ;;
+    esac
+    echo -e "${GREEN}✓ Parallel jobs set to: $SMART_PARALLEL_JOBS${NC}"
+    sleep 1
+}
+
+# 🚀 Configure Smart Optimization Level
+configure_smart_optimization_level() {
+    clear
+    print_header
+    echo -e "${BLUE}${BOLD}🚀 OPTIMIZATION LEVEL${NC}\n"
+    echo -e "Current: ${BOLD}${SMART_OPTIMIZATION:-balanced}${NC}\n"
+    
+    echo -e "${GREEN}[1]${NC} Light - Fast processing, larger files"
+    echo -e "${GREEN}[2]${NC} Balanced - Good balance of speed and size (recommended)"
+    echo -e "${GREEN}[3]${NC} Aggressive - Smallest files, slower processing\n"
+    
+    echo -e "${MAGENTA}Select optimization level: ${NC}"
+    read -r opt_choice
+    case "$opt_choice" in
+        "1") SMART_OPTIMIZATION="light" ;;
+        "2") SMART_OPTIMIZATION="balanced" ;;
+        "3") SMART_OPTIMIZATION="aggressive" ;;
+        *) return ;;
+    esac
+    echo -e "${GREEN}✓ Optimization level set to: $SMART_OPTIMIZATION${NC}"
+    sleep 1
+}
+
+# 🏷️ Configure Smart Naming
+configure_smart_naming() {
+    clear
+    print_header
+    echo -e "${BLUE}${BOLD}🏷️ FILE NAMING CONVENTION${NC}\n"
+    echo -e "Current: ${BOLD}${SMART_NAMING:-ai}${NC}\n"
+    
+    echo -e "${GREEN}[1]${NC} AI Suggests - Smart names based on content analysis"
+    echo -e "${GREEN}[2]${NC} Original Names - Keep video file names"
+    echo -e "${GREEN}[3]${NC} Timestamp - Add conversion timestamp"
+    echo -e "${GREEN}[4]${NC} Quality Suffix - Add quality level to names\n"
+    
+    echo -e "${MAGENTA}Select naming convention: ${NC}"
+    read -r naming_choice
+    case "$naming_choice" in
+        "1") SMART_NAMING="ai" ;;
+        "2") SMART_NAMING="original" ;;
+        "3") SMART_NAMING="timestamp" ;;
+        "4") SMART_NAMING="quality" ;;
+        *) return ;;
+    esac
+    echo -e "${GREEN}✓ Naming convention set to: $SMART_NAMING${NC}"
+    sleep 1
+}
+
+# 💾 Configure Smart Backup
+configure_smart_backup() {
+    clear
+    print_header
+    echo -e "${BLUE}${BOLD}💾 BACKUP STRATEGY${NC}\n"
+    echo -e "Current: ${BOLD}${SMART_BACKUP:-originals}${NC}\n"
+    
+    echo -e "${GREEN}[1]${NC} None - No backups (fastest, use with caution)"
+    echo -e "${GREEN}[2]${NC} Originals Only - Backup source videos (recommended)"
+    echo -e "${GREEN}[3]${NC} With Metadata - Backup with AI analysis data\n"
+    
+    echo -e "${MAGENTA}Select backup strategy: ${NC}"
+    read -r backup_choice
+    case "$backup_choice" in
+        "1") SMART_BACKUP="none" ;;
+        "2") SMART_BACKUP="originals" ;;
+        "3") SMART_BACKUP="metadata" ;;
+        *) return ;;
+    esac
+    echo -e "${GREEN}✓ Backup strategy set to: $SMART_BACKUP${NC}"
+    sleep 1
+}
+
+# ✓ Configure Smart Validation
+configure_smart_validation() {
+    clear
+    print_header
+    echo -e "${BLUE}${BOLD}✓ VALIDATION LEVEL${NC}\n"
+    echo -e "Current: ${BOLD}${SMART_VALIDATION:-quick}${NC}\n"
+    
+    echo -e "${GREEN}[1]${NC} Skip - No validation (fastest, less reliable)"
+    echo -e "${GREEN}[2]${NC} Quick Check - Basic file integrity (recommended)"
+    echo -e "${GREEN}[3]${NC} Thorough - Full validation and quality check\n"
+    
+    echo -e "${MAGENTA}Select validation level: ${NC}"
+    read -r validation_choice
+    case "$validation_choice" in
+        "1") SMART_VALIDATION="skip" ;;
+        "2") SMART_VALIDATION="quick" ;;
+        "3") SMART_VALIDATION="thorough" ;;
+        *) return ;;
+    esac
+    echo -e "${GREEN}✓ Validation level set to: $SMART_VALIDATION${NC}"
+    sleep 1
+}
+
+# 📋 Show current smart AI configuration
+show_smart_ai_config() {
+    echo -e "${CYAN}${BOLD}🎛️ CURRENT SMART CONFIGURATION:${NC}"
+    echo -e "${GRAY}System: $(nproc 2>/dev/null || echo '4') cores, $(free -h 2>/dev/null | awk '/^Mem:/ {print $2}' || echo 'unknown') RAM${NC}\n"
+    
+    # AI Features Section
+    echo -e "${MAGENTA}${BOLD}🤖 AI FEATURES:${NC}"
+    local ai_content_status=$([[ "$AI_CONTENT_DETECTION" == "true" ]] && echo "${GREEN}✓ ON${NC}" || echo "${RED}✗ OFF${NC}")
+    local ai_quality_status=$([[ "$AI_QUALITY_OPTIMIZATION" == "true" ]] && echo "${GREEN}✓ ON${NC}" || echo "${RED}✗ OFF${NC}")
+    local ai_motion_status=$([[ "$AI_MOTION_ANALYSIS" == "true" ]] && echo "${GREEN}✓ ON${NC}" || echo "${RED}✗ OFF${NC}")
+    local ai_duplicate_status=$([[ "$AI_DUPLICATE_DETECTION" == "advanced" ]] && echo "${GREEN}✓ Advanced${NC}" || echo "${YELLOW}Basic${NC}")
+    
+    echo -e "  Content Detection: $ai_content_status     Quality Optimization: $ai_quality_status"
+    echo -e "  Motion Analysis: $ai_motion_status       Duplicate Detection: $ai_duplicate_status\n"
+    
+    # Quality Control Section
+    echo -e "${YELLOW}${BOLD}🎯 QUALITY CONTROL:${NC}"
+    local max_res_display=$([[ "$SMART_MAX_RESOLUTION" == "auto" ]] && echo "AI Decides" || echo "$SMART_MAX_RESOLUTION")
+    local target_size_display=$([[ "$SMART_TARGET_SIZE" == "auto" ]] && echo "AI Optimized" || echo "${SMART_TARGET_SIZE}MB avg")
+    local fps_display=$([[ "$SMART_FRAMERATE_MODE" == "ai" ]] && echo "AI Decides" || echo "$SMART_FRAMERATE_MODE")
+    
+    echo -e "  Preset: ${BOLD}$QUALITY${NC} (with AI adjustments)    Max Resolution: ${BOLD}$max_res_display${NC}"
+    echo -e "  Target Size: ${BOLD}$target_size_display${NC}                Frame Rate: ${BOLD}$fps_display${NC}\n"
+    
+    # Processing Section
+    echo -e "${BLUE}${BOLD}⚡ PROCESSING:${NC}"
+    local parallel_display=$([[ "$SMART_PARALLEL_JOBS" == "auto" ]] && echo "Auto ($(nproc 2>/dev/null || echo '4'))" || echo "$SMART_PARALLEL_JOBS jobs")
+    local ai_per_file_status=$([[ "$SMART_AI_PER_FILE" == "true" ]] && echo "${GREEN}✓ ON${NC}" || echo "${RED}✗ OFF${NC}")
+    local optimization_level_display=$([[ "$SMART_OPTIMIZATION" == "balanced" ]] && echo "Balanced" || echo "$SMART_OPTIMIZATION")
+    
+    echo -e "  Parallel Jobs: ${BOLD}$parallel_display${NC}              AI Per-File: $ai_per_file_status"
+    echo -e "  Optimization: ${BOLD}$optimization_level_display${NC}                Progress: ${BOLD}Detailed${NC}\n"
+    
+    # Output Section
+    echo -e "${GREEN}${BOLD}📁 OUTPUT:${NC}"
+    local naming_display=$([[ "$SMART_NAMING" == "ai" ]] && echo "AI Suggests" || echo "$SMART_NAMING")
+    local backup_display=$([[ "$SMART_BACKUP" == "originals" ]] && echo "Originals Only" || echo "$SMART_BACKUP")
+    local validation_display=$([[ "$SMART_VALIDATION" == "quick" ]] && echo "Quick Check" || echo "$SMART_VALIDATION")
+    
+    echo -e "  Naming: ${BOLD}$naming_display${NC}                  Backup: ${BOLD}$backup_display${NC}"
+    echo -e "  Validation: ${BOLD}$validation_display${NC}"
+}
+
+# 🎯 Configure smart quality settings
+configure_smart_quality() {
+    clear
+    print_header
+    echo -e "${YELLOW}${BOLD}🎯 QUALITY & RESOLUTION SETTINGS${NC}\n"
+    
+    echo -e "${CYAN}Current Settings:${NC}"
+    echo -e "  Quality Preset: ${BOLD}$QUALITY${NC} (with AI adjustments)"
+    echo -e "  Max Resolution: ${BOLD}${SMART_MAX_RESOLUTION:-auto}${NC}"
+    echo -e "  Target Size: ${BOLD}${SMART_TARGET_SIZE:-auto}${NC}"
+    echo -e "  Frame Rate: ${BOLD}${SMART_FRAMERATE_MODE:-ai}${NC}\n"
+    
+    echo -e "${GREEN}[1]${NC} Change Quality Preset: ${BOLD}$QUALITY${NC}"
+    echo -e "${GREEN}[2]${NC} Set Maximum Resolution Limit"
+    echo -e "${GREEN}[3]${NC} Configure Target File Size"
+    echo -e "${GREEN}[4]${NC} Frame Rate Preferences"
+    echo -e "${GREEN}[0]${NC} Back to Smart Configuration\n"
+    
+    echo -e "${MAGENTA}Select option: ${NC}"
+    read -r choice
+    
+    case "$choice" in
+        "1")
+            select_quality_preset
+            ;;
+        "2")
+            echo -e "\n${BLUE}Maximum Resolution Limit:${NC}"
+            echo -e "${GREEN}[1]${NC} Auto (AI decides based on source)"
+            echo -e "${GREEN}[2]${NC} 480p (854x480)"
+            echo -e "${GREEN}[3]${NC} 720p (1280x720)"
+            echo -e "${GREEN}[4]${NC} 1080p (1920x1080)"
+            echo -e "${GREEN}[5]${NC} 1440p (2560x1440)"
+            echo -e "${GREEN}[6]${NC} 4K (3840x2160)\n"
+            echo -e "${MAGENTA}Select: ${NC}"
+            read -r res_choice
+            case "$res_choice" in
+                "1") SMART_MAX_RESOLUTION="auto" ;;
+                "2") SMART_MAX_RESOLUTION="480p" ;;
+                "3") SMART_MAX_RESOLUTION="720p" ;;
+                "4") SMART_MAX_RESOLUTION="1080p" ;;
+                "5") SMART_MAX_RESOLUTION="1440p" ;;
+                "6") SMART_MAX_RESOLUTION="4K" ;;
+            esac
+            echo -e "${GREEN}✓ Max resolution set to: $SMART_MAX_RESOLUTION${NC}"
+            sleep 1
+            ;;
+        "3")
+            echo -e "\n${BLUE}Target File Size (average per GIF):${NC}"
+            echo -e "${GREEN}[1]${NC} Auto (AI optimized for quality/size balance)"
+            echo -e "${GREEN}[2]${NC} Small (1MB average)"
+            echo -e "${GREEN}[3]${NC} Medium (5MB average)"
+            echo -e "${GREEN}[4]${NC} Large (10MB average)"
+            echo -e "${GREEN}[5]${NC} No limit (quality focused)\n"
+            echo -e "${MAGENTA}Select: ${NC}"
+            read -r size_choice
+            case "$size_choice" in
+                "1") SMART_TARGET_SIZE="auto" ;;
+                "2") SMART_TARGET_SIZE="1" ;;
+                "3") SMART_TARGET_SIZE="5" ;;
+                "4") SMART_TARGET_SIZE="10" ;;
+                "5") SMART_TARGET_SIZE="none" ;;
+            esac
+            echo -e "${GREEN}✓ Target size set to: $SMART_TARGET_SIZE${NC}"
+            sleep 1
+            ;;
+        "4")
+            echo -e "\n${BLUE}Frame Rate Preferences:${NC}"
+            echo -e "${GREEN}[1]${NC} AI Decides (recommended) - Smart frame rate based on content"
+            echo -e "${GREEN}[2]${NC} Preserve Source - Keep original frame rate when possible"
+            echo -e "${GREEN}[3]${NC} Low (8-12 fps) - For static content and small files"
+            echo -e "${GREEN}[4]${NC} Medium (12-18 fps) - Balanced approach"
+            echo -e "${GREEN}[5]${NC} High (18-24 fps) - Smooth motion\n"
+            echo -e "${MAGENTA}Select: ${NC}"
+            read -r fps_choice
+            case "$fps_choice" in
+                "1") SMART_FRAMERATE_MODE="ai" ;;
+                "2") SMART_FRAMERATE_MODE="preserve" ;;
+                "3") SMART_FRAMERATE_MODE="low" ;;
+                "4") SMART_FRAMERATE_MODE="medium" ;;
+                "5") SMART_FRAMERATE_MODE="high" ;;
+            esac
+            echo -e "${GREEN}✓ Frame rate mode set to: $SMART_FRAMERATE_MODE${NC}"
+            sleep 1
+            ;;
+        "0"|"")
+            return
+            ;;
+    esac
+}
+
+# 🤖 Configure smart AI features
+configure_smart_ai_features() {
+    clear
+    print_header
+    echo -e "${MAGENTA}${BOLD}🤖 AI FEATURE SELECTION${NC}\n"
+    
+    echo -e "${CYAN}Choose which AI features to enable:${NC}\n"
+    
+    local content_status=$([[ "${AI_CONTENT_DETECTION:-true}" == "true" ]] && echo "${GREEN}✓ ON${NC}" || echo "${RED}✗ OFF${NC}")
+    local quality_status=$([[ "${AI_QUALITY_OPTIMIZATION:-true}" == "true" ]] && echo "${GREEN}✓ ON${NC}" || echo "${RED}✗ OFF${NC}")
+    local motion_status=$([[ "${AI_MOTION_ANALYSIS:-true}" == "true" ]] && echo "${GREEN}✓ ON${NC}" || echo "${RED}✗ OFF${NC}")
+    local duplicate_status="${AI_DUPLICATE_DETECTION:-basic}"
+    
+    echo -e "${GREEN}[1]${NC} Content Detection: $content_status"
+    echo -e "    ${GRAY}Automatically detects animation, screencast, movie, or clip content${NC}"
+    echo -e "${GREEN}[2]${NC} Quality Optimization: $quality_status"
+    echo -e "    ${GRAY}AI adjusts quality parameters based on source characteristics${NC}"
+    echo -e "${GREEN}[3]${NC} Motion Analysis: $motion_status"
+    echo -e "    ${GRAY}Intelligent frame rate adjustments based on movement patterns${NC}"
+    echo -e "${GREEN}[4]${NC} Duplicate Detection: ${BOLD}$duplicate_status${NC}"
+    echo -e "    ${GRAY}Choose level of duplicate detection (basic/visual/advanced)${NC}\n"
+    
+    echo -e "${GREEN}[0]${NC} Back to Smart Configuration\n"
+    
+    echo -e "${MAGENTA}Select option: ${NC}"
+    read -r choice
+    
+    case "$choice" in
+        "1")
+            AI_CONTENT_DETECTION=$([[ "${AI_CONTENT_DETECTION:-true}" == "true" ]] && echo "false" || echo "true")
+            local new_status=$([[ "$AI_CONTENT_DETECTION" == "true" ]] && echo "enabled" || echo "disabled")
+            echo -e "\n${GREEN}✓ Content Detection $new_status${NC}"
+            sleep 1
+            configure_smart_ai_features
+            ;;
+        "2")
+            AI_QUALITY_OPTIMIZATION=$([[ "${AI_QUALITY_OPTIMIZATION:-true}" == "true" ]] && echo "false" || echo "true")
+            local new_status=$([[ "$AI_QUALITY_OPTIMIZATION" == "true" ]] && echo "enabled" || echo "disabled")
+            echo -e "\n${GREEN}✓ Quality Optimization $new_status${NC}"
+            sleep 1
+            configure_smart_ai_features
+            ;;
+        "3")
+            AI_MOTION_ANALYSIS=$([[ "${AI_MOTION_ANALYSIS:-true}" == "true" ]] && echo "false" || echo "true")
+            local new_status=$([[ "$AI_MOTION_ANALYSIS" == "true" ]] && echo "enabled" || echo "disabled")
+            echo -e "\n${GREEN}✓ Motion Analysis $new_status${NC}"
+            sleep 1
+            configure_smart_ai_features
+            ;;
+        "4")
+            echo -e "\n${BLUE}Duplicate Detection Level:${NC}"
+            echo -e "${GREEN}[1]${NC} Basic - File name and size comparison (fast)"
+            echo -e "${GREEN}[2]${NC} Visual - Perceptual hashing for visual similarity (recommended)"
+            echo -e "${GREEN}[3]${NC} Advanced - Full content analysis (thorough but slower)\n"
+            echo -e "${MAGENTA}Select: ${NC}"
+            read -r dup_choice
+            case "$dup_choice" in
+                "1") AI_DUPLICATE_DETECTION="basic" ;;
+                "2") AI_DUPLICATE_DETECTION="visual" ;;
+                "3") AI_DUPLICATE_DETECTION="advanced" ;;
+            esac
+            echo -e "${GREEN}✓ Duplicate detection set to: $AI_DUPLICATE_DETECTION${NC}"
+            sleep 1
+            configure_smart_ai_features
+            ;;
+        "0"|"")
+            return
+            ;;
+    esac
+}
+
+# ⚡ Configure smart performance settings
+configure_smart_performance() {
+    clear
+    print_header
+    echo -e "${BLUE}${BOLD}⚡ PERFORMANCE & PROCESSING${NC}\n"
+    
+    local cpu_cores=$(nproc 2>/dev/null || echo "4")
+    echo -e "${CYAN}System: $cpu_cores CPU cores detected${NC}\n"
+    
+    local parallel_display=$([[ "${SMART_PARALLEL_JOBS:-auto}" == "auto" ]] && echo "Auto ($cpu_cores)" || echo "$SMART_PARALLEL_JOBS jobs")
+    local per_file_status=$([[ "${SMART_AI_PER_FILE:-true}" == "true" ]] && echo "${GREEN}✓ ON${NC}" || echo "${RED}✗ OFF${NC}")
+    local optimization_display="${SMART_OPTIMIZATION:-balanced}"
+    
+    echo -e "${GREEN}[1]${NC} Parallel Processing: ${BOLD}$parallel_display${NC}"
+    echo -e "    ${GRAY}Number of videos to process simultaneously${NC}"
+    echo -e "${GREEN}[2]${NC} AI Per-File Decisions: $per_file_status"
+    echo -e "    ${GRAY}Let AI choose different settings for each video${NC}"
+    echo -e "${GREEN}[3]${NC} Optimization Level: ${BOLD}$optimization_display${NC}"
+    echo -e "    ${GRAY}Balance between speed and file size${NC}\n"
+    
+    echo -e "${GREEN}[0]${NC} Back to Smart Configuration\n"
+    
+    echo -e "${MAGENTA}Select option: ${NC}"
+    read -r choice
+    
+    case "$choice" in
+        "1")
+            echo -e "\n${BLUE}Parallel Processing:${NC}"
+            echo -e "${GREEN}[1]${NC} Auto - Let system decide (recommended)"
+            echo -e "${GREEN}[2]${NC} Low - 2 jobs (conservative)"
+            echo -e "${GREEN}[3]${NC} Medium - 4 jobs (balanced)"
+            echo -e "${GREEN}[4]${NC} High - 8 jobs (aggressive)"
+            echo -e "${GREEN}[5]${NC} Maximum - Use all $cpu_cores cores\n"
+            echo -e "${MAGENTA}Select: ${NC}"
+            read -r parallel_choice
+            case "$parallel_choice" in
+                "1") SMART_PARALLEL_JOBS="auto" ;;
+                "2") SMART_PARALLEL_JOBS="2" ;;
+                "3") SMART_PARALLEL_JOBS="4" ;;
+                "4") SMART_PARALLEL_JOBS="8" ;;
+                "5") SMART_PARALLEL_JOBS="$cpu_cores" ;;
+            esac
+            echo -e "${GREEN}✓ Parallel jobs set to: $SMART_PARALLEL_JOBS${NC}"
+            sleep 1
+            configure_smart_performance
+            ;;
+        "2")
+            SMART_AI_PER_FILE=$([[ "${SMART_AI_PER_FILE:-true}" == "true" ]] && echo "false" || echo "true")
+            local new_status=$([[ "$SMART_AI_PER_FILE" == "true" ]] && echo "enabled" || echo "disabled")
+            echo -e "\n${GREEN}✓ AI per-file decisions $new_status${NC}"
+            sleep 1
+            configure_smart_performance
+            ;;
+        "3")
+            echo -e "\n${BLUE}Optimization Level:${NC}"
+            echo -e "${GREEN}[1]${NC} Light - Fast processing, larger files"
+            echo -e "${GREEN}[2]${NC} Balanced - Good balance (recommended)"
+            echo -e "${GREEN}[3]${NC} Aggressive - Smallest files, slower processing\n"
+            echo -e "${MAGENTA}Select: ${NC}"
+            read -r opt_choice
+            case "$opt_choice" in
+                "1") SMART_OPTIMIZATION="light" ;;
+                "2") SMART_OPTIMIZATION="balanced" ;;
+                "3") SMART_OPTIMIZATION="aggressive" ;;
+            esac
+            echo -e "${GREEN}✓ Optimization level set to: $SMART_OPTIMIZATION${NC}"
+            sleep 1
+            configure_smart_performance
+            ;;
+        "0"|"")
+            return
+            ;;
+    esac
+}
+
+# 📁 Configure smart output settings
+configure_smart_output() {
+    clear
+    print_header
+    echo -e "${GREEN}${BOLD}📁 OUTPUT & FILE MANAGEMENT${NC}\n"
+    
+    local naming_display="${SMART_NAMING:-ai}"
+    local backup_display="${SMART_BACKUP:-originals}"
+    local validation_display="${SMART_VALIDATION:-quick}"
+    
+    echo -e "${GREEN}[1]${NC} File Naming: ${BOLD}$naming_display${NC}"
+    echo -e "    ${GRAY}How to name output GIF files${NC}"
+    echo -e "${GREEN}[2]${NC} Backup Strategy: ${BOLD}$backup_display${NC}"
+    echo -e "    ${GRAY}What to backup before conversion${NC}"
+    echo -e "${GREEN}[3]${NC} Validation Level: ${BOLD}$validation_display${NC}"
+    echo -e "    ${GRAY}How thoroughly to check output files${NC}\n"
+    
+    echo -e "${GREEN}[0]${NC} Back to Smart Configuration\n"
+    
+    echo -e "${MAGENTA}Select option: ${NC}"
+    read -r choice
+    
+    case "$choice" in
+        "1")
+            echo -e "\n${BLUE}File Naming Convention:${NC}"
+            echo -e "${GREEN}[1]${NC} AI Suggests - Smart names based on content"
+            echo -e "${GREEN}[2]${NC} Original Names - Keep video file names"
+            echo -e "${GREEN}[3]${NC} Timestamp - Add conversion timestamp"
+            echo -e "${GREEN}[4]${NC} Quality Suffix - Add quality level to names\n"
+            echo -e "${MAGENTA}Select: ${NC}"
+            read -r naming_choice
+            case "$naming_choice" in
+                "1") SMART_NAMING="ai" ;;
+                "2") SMART_NAMING="original" ;;
+                "3") SMART_NAMING="timestamp" ;;
+                "4") SMART_NAMING="quality" ;;
+            esac
+            echo -e "${GREEN}✓ Naming convention set to: $SMART_NAMING${NC}"
+            sleep 1
+            configure_smart_output
+            ;;
+        "2")
+            echo -e "\n${BLUE}Backup Strategy:${NC}"
+            echo -e "${GREEN}[1]${NC} None - No backups (fastest)"
+            echo -e "${GREEN}[2]${NC} Originals Only - Backup source videos"
+            echo -e "${GREEN}[3]${NC} With Metadata - Backup with AI analysis data\n"
+            echo -e "${MAGENTA}Select: ${NC}"
+            read -r backup_choice
+            case "$backup_choice" in
+                "1") SMART_BACKUP="none" ;;
+                "2") SMART_BACKUP="originals" ;;
+                "3") SMART_BACKUP="metadata" ;;
+            esac
+            echo -e "${GREEN}✓ Backup strategy set to: $SMART_BACKUP${NC}"
+            sleep 1
+            configure_smart_output
+            ;;
+        "3")
+            echo -e "\n${BLUE}Validation Level:${NC}"
+            echo -e "${GREEN}[1]${NC} Skip - No validation (fastest)"
+            echo -e "${GREEN}[2]${NC} Quick Check - Basic file integrity"
+            echo -e "${GREEN}[3]${NC} Thorough - Full validation and quality check\n"
+            echo -e "${MAGENTA}Select: ${NC}"
+            read -r validation_choice
+            case "$validation_choice" in
+                "1") SMART_VALIDATION="skip" ;;
+                "2") SMART_VALIDATION="quick" ;;
+                "3") SMART_VALIDATION="thorough" ;;
+            esac
+            echo -e "${GREEN}✓ Validation level set to: $SMART_VALIDATION${NC}"
+            sleep 1
+            configure_smart_output
+            ;;
+        "0"|"")
+            return
+            ;;
+    esac
+}
+
+# 🔄 Reset to smart defaults
+reset_to_smart_defaults() {
+    # AI Features
+    AI_CONTENT_DETECTION="true"
+    AI_QUALITY_OPTIMIZATION="true"
+    AI_MOTION_ANALYSIS="true"
+    AI_DUPLICATE_DETECTION="visual"
+    
+    # Quality Control
+    QUALITY="high"  # Start with high quality
+    SMART_MAX_RESOLUTION="auto"
+    SMART_TARGET_SIZE="auto"
+    SMART_FRAMERATE_MODE="ai"
+    
+    # Processing
+    SMART_PARALLEL_JOBS="auto"
+    SMART_AI_PER_FILE="true"
+    SMART_OPTIMIZATION="balanced"
+    
+    # Output
+    SMART_NAMING="ai"
+    SMART_BACKUP="originals"
+    SMART_VALIDATION="quick"
+    
+    # Core AI settings
+    AI_ENABLED="true"
+    AI_MODE="smart"
+    AUTO_OPTIMIZE="true"
+    PARALLEL_JOBS="auto"
+    PROGRESS_BAR="true"
+}
+
+# Initialize smart defaults if not set
+if [[ -z "$SMART_MAX_RESOLUTION" ]]; then
+    reset_to_smart_defaults
+fi
 
 # 📋 Show comprehensive advanced settings menu
 show_advanced_settings_menu() {
