@@ -1156,6 +1156,10 @@ show_ai_status() {
             local total_patterns=$(grep -v '^#' "$AI_MODEL_FILE" 2>/dev/null | grep -c '|' 2>/dev/null || echo "0")
             local avg_confidence="0.00"
             
+            # Clean the variable to ensure it contains only numbers
+            total_patterns=${total_patterns//[^0-9]/}
+            [[ -z "$total_patterns" ]] && total_patterns="0"
+            
             if [[ $total_patterns -gt 0 ]]; then
                 avg_confidence=$(awk -F'|' 'NR>4 && NF>=3 {sum+=$3; count++} END {if(count>0) printf "%.2f", sum/count; else print "0.00"}' "$AI_MODEL_FILE" 2>/dev/null || echo "0.00")
             fi
@@ -1281,9 +1285,15 @@ get_ai_training_stats() {
         return
     fi
     
-    local total_patterns=$(grep -v '^#' "$AI_MODEL_FILE" | grep -c '|' || echo "0")
-    local total_training_events=$(grep -v '^#' "$AI_TRAINING_LOG" | grep -c '|' || echo "0")
+    local total_patterns=$(grep -v '^#' "$AI_MODEL_FILE" 2>/dev/null | grep -c '|' 2>/dev/null || echo "0")
+    local total_training_events=$(grep -v '^#' "$AI_TRAINING_LOG" 2>/dev/null | grep -c '|' 2>/dev/null || echo "0")
     local avg_confidence
+    
+    # Clean the variables to ensure they contain only numbers
+    total_patterns=${total_patterns//[^0-9]/}
+    total_training_events=${total_training_events//[^0-9]/}
+    [[ -z "$total_patterns" ]] && total_patterns="0"
+    [[ -z "$total_training_events" ]] && total_training_events="0"
     
     if [[ $total_patterns -gt 0 ]]; then
         avg_confidence=$(awk -F'|' 'NR>4 && NF>=3 {sum+=$3; count++} END {if(count>0) printf "%.2f", sum/count; else print "0.00"}' "$AI_MODEL_FILE")
@@ -3858,11 +3868,25 @@ detect_duplicate_gifs() {
     echo -e "  ${BLUE}${BOLD}🧠 Stage 1: Parallel content fingerprinting (${AI_DUPLICATE_THREADS} threads)...${NC}"
     echo -e "  ${GRAY}Processing $total_files GIF files in parallel...${NC}"
     
-    # Parallel analysis function for individual GIF files
+    # Parallel analysis function for individual GIF files with timeout
     analyze_gif_parallel() {
         local gif_file="$1"
         local temp_dir="$2"
         local result_file="$3"
+        local timeout_seconds=30  # 30 second timeout per file
+        
+        # Check if file exists and is readable
+        if [[ ! -f "$gif_file" ]]; then
+            local error_msg="File not found: $gif_file"
+            log_error "$error_msg" "$gif_file" "File missing during duplicate detection"
+            echo "$gif_file|ERROR|0|0:0:0:0x0||0|0" >> "$result_file"
+            return 1
+        elif [[ ! -r "$gif_file" ]]; then
+            local error_msg="File not readable: $gif_file (permissions issue)"
+            log_error "$error_msg" "$gif_file" "Permission denied during duplicate detection"
+            echo "$gif_file|ERROR|0|0:0:0:0x0||0|0" >> "$result_file"
+            return 1
+        fi
         
         # Check cache first
         local cached_analysis=$(check_ai_cache "$gif_file" 2>/dev/null)
@@ -3872,41 +3896,76 @@ detect_duplicate_gifs() {
             return 0
         fi
         
-        # Cache miss - perform fresh analysis
-        # Stage 1: Traditional checksum (fast) - reuse for cache fingerprinting
-        local checksum=$(md5sum "$gif_file" 2>/dev/null | cut -d' ' -f1)
-        local size=$(stat -c%s "$gif_file" 2>/dev/null || echo "0")
-        
-        # Stage 2: Content fingerprinting (medium speed) - optimized FFprobe calls
-        local frame_count=$(ffprobe -v error -select_streams v:0 -count_frames -show_entries stream=nb_frames -of csv=p=0 "$gif_file" 2>/dev/null || echo "0")
-        local duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$gif_file" 2>/dev/null | cut -d. -f1 || echo "0")
-        local fps=$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 "$gif_file" 2>/dev/null | cut -d'/' -f1 || echo "0")
-        local resolution=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$gif_file" 2>/dev/null | tr ',' 'x' || echo "0x0")
-        
-        # Stage 3: Visual similarity hash (optimized with faster scaling)
-        local visual_hash=""
-        if command -v ffmpeg >/dev/null 2>&1; then
-            # Extract key frames for visual comparison - use fastest algorithm
-            local temp_frame="$temp_dir/${gif_file%.*}_$RANDOM$RANDOM_frame.png"
-            # Use faster scaling algorithm and threading for FFmpeg
-            if ffmpeg -v error -threads 1 -i "$gif_file" -vf "select='eq(n,5)',scale=32:32:flags=fast_bilinear" -frames:v 1 -y "$temp_frame" >/dev/null 2>&1; then
-                # Generate perceptual hash from middle frame
-                visual_hash=$(md5sum "$temp_frame" 2>/dev/null | cut -d' ' -f1)
-                rm -f "$temp_frame"
+        # Cache miss - perform fresh analysis with timeout protection
+        {
+            # Stage 1: Traditional checksum (fast)
+            local checksum=$(timeout 10 md5sum "$gif_file" 2>/dev/null | cut -d' ' -f1 || echo "TIMEOUT")
+            local size=$(stat -c%s "$gif_file" 2>/dev/null || echo "0")
+            
+            # Skip analysis for very large files that might cause hangs
+            if [[ $size -gt 104857600 ]]; then  # 100MB limit
+                local size_mb=$((size / 1024 / 1024))
+                local warning_msg="Skipping large file analysis: $gif_file (${size_mb}MB > 100MB limit)"
+                log_error "$warning_msg" "$gif_file" "Large file skipped to prevent system hangs" "analyze_gif_parallel"
+                echo -e "  ${YELLOW}⚠️ Skipped large file: $(basename "$gif_file") (${size_mb}MB)${NC}" >&2
+                echo "$gif_file|LARGE_FILE|$size|0:0:0:0x0||0|0" >> "$result_file"
+                return 0
             fi
+            
+            # Stage 2: Content fingerprinting with timeout
+            local frame_count=$(timeout 15 ffprobe -v error -select_streams v:0 -count_frames -show_entries stream=nb_frames -of csv=p=0 "$gif_file" 2>/dev/null || echo "0")
+            local duration=$(timeout 10 ffprobe -v error -show_entries format=duration -of csv=p=0 "$gif_file" 2>/dev/null | cut -d. -f1 || echo "0")
+            local fps=$(timeout 10 ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 "$gif_file" 2>/dev/null | cut -d'/' -f1 || echo "0")
+            local resolution=$(timeout 10 ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$gif_file" 2>/dev/null | tr ',' 'x' || echo "0x0")
+            
+            # Clean up any malformed data
+            frame_count=${frame_count//[^0-9]/}; [[ -z "$frame_count" ]] && frame_count="0"
+            duration=${duration//[^0-9]/}; [[ -z "$duration" ]] && duration="0"
+            fps=${fps//[^0-9]/}; [[ -z "$fps" ]] && fps="0"
+            
+            # Stage 3: Visual similarity hash (with timeout and error handling)
+            local visual_hash=""
+            if command -v ffmpeg >/dev/null 2>&1 && [[ "$checksum" != "TIMEOUT" ]]; then
+                local temp_frame="$temp_dir/${gif_file%.*}_$$_frame.png"
+                # Use timeout and simpler extraction for problematic files
+                if timeout 20 ffmpeg -v error -threads 1 -i "$gif_file" -vf "select='eq(n,min(n\,5))',scale=32:32:flags=fast_bilinear" -frames:v 1 -y "$temp_frame" >/dev/null 2>&1; then
+                    visual_hash=$(md5sum "$temp_frame" 2>/dev/null | cut -d' ' -f1 || echo "")
+                    rm -f "$temp_frame" 2>/dev/null
+                fi
+            fi
+            
+            # Create composite fingerprint
+            local content_fingerprint="${frame_count}:${duration}:${fps}:${resolution}"
+            
+            # Prepare analysis data
+            local analysis_data="$gif_file|$checksum|$size|$content_fingerprint|$visual_hash|$frame_count|$duration"
+            
+            # Save to cache for future runs
+            save_to_ai_cache "$gif_file" "$analysis_data" 2>/dev/null || true
+            
+            # Write results atomically
+            echo "$analysis_data" >> "$result_file"
+            
+        } &
+        
+        # Wait for analysis with timeout
+        local analysis_pid=$!
+        if ! timeout $timeout_seconds bash -c "wait $analysis_pid" 2>/dev/null; then
+            # Kill the analysis if it times out
+            kill -9 $analysis_pid 2>/dev/null || true
+            wait $analysis_pid 2>/dev/null || true
+            
+            # Log timeout error
+            local timeout_msg="File analysis timed out after ${timeout_seconds}s: $gif_file"
+            log_error "$timeout_msg" "$gif_file" "FFprobe/FFmpeg analysis timed out - possibly corrupted or complex file" "analyze_gif_parallel"
+            echo -e "  ${RED}⚠️ Timeout: $(basename "$gif_file") (${timeout_seconds}s)${NC}" >&2
+            
+            # Write timeout result
+            echo "$gif_file|TIMEOUT|0|0:0:0:0x0||0|0" >> "$result_file"
+            return 1
         fi
         
-        # Create composite fingerprint
-        local content_fingerprint="${frame_count}:${duration}:${fps}:${resolution}"
-        
-        # Prepare analysis data for caching and output
-        local analysis_data="$gif_file|$checksum|$size|$content_fingerprint|$visual_hash|$frame_count|$duration"
-        
-        # Save to cache for future runs
-        save_to_ai_cache "$gif_file" "$analysis_data" 2>/dev/null || true
-        
-        # Write results to temporary file (thread-safe)
-        echo "$analysis_data" >> "$result_file"
+        return 0
     }
     
     # Export function for parallel execution
@@ -3927,45 +3986,117 @@ detect_duplicate_gifs() {
         local batch_files=("${gif_files_list[@]:$i:$batch_size}")
         local batch_pids=()
         
-        # Start parallel jobs for this batch
+        # Start parallel jobs for this batch with improved error handling
         for gif_file in "${batch_files[@]}"; do
+            # Skip problematic files that might cause hangs
+            if [[ ! -r "$gif_file" ]]; then
+                local error_msg="File not readable in batch processing: $gif_file"
+                log_error "$error_msg" "$gif_file" "Permission denied during batch duplicate detection"
+                echo -e "  ${RED}⚠️ Unreadable: $(basename "$gif_file")${NC}" >&2
+                echo "$gif_file|UNREADABLE|0|0:0:0:0x0||0|0" >> "$results_file"
+                continue
+            fi
+            
             analyze_gif_parallel "$gif_file" "$temp_analysis_dir" "$results_file" &
             batch_pids+=("$!")
             
-            # Limit concurrent jobs
+            # Limit concurrent jobs and handle job cleanup
             if [[ ${#batch_pids[@]} -ge $AI_DUPLICATE_THREADS ]]; then
-                # Wait for some jobs to complete
-                wait "${batch_pids[0]}" 2>/dev/null || true
-                batch_pids=("${batch_pids[@]:1}")  # Remove first PID
+                # Wait for the first job with timeout
+                local first_pid="${batch_pids[0]}"
+                if ! timeout 45 bash -c "wait $first_pid" 2>/dev/null; then
+                    # Log batch timeout
+                    local batch_error="Batch job timed out after 45s (PID: $first_pid)"
+                    log_error "$batch_error" "batch_processing" "Parallel analysis job stuck during duplicate detection"
+                    echo -e "  ${RED}⚠️ Killed stuck analysis job (PID: $first_pid)${NC}" >&2
+                    # Force kill stuck process
+                    kill -9 "$first_pid" 2>/dev/null || true
+                fi
+                # Remove completed/killed PID from tracking
+                batch_pids=("${batch_pids[@]:1}")
             fi
         done
         
-        # Wait for all jobs in this batch to complete
+        # Wait for all remaining jobs in this batch with timeout
         for pid in "${batch_pids[@]}"; do
-            wait "$pid" 2>/dev/null || true
+            if ! timeout 45 bash -c "wait $pid" 2>/dev/null; then
+                # Log final batch cleanup timeout
+                local cleanup_error="Final batch cleanup timed out after 45s (PID: $pid)"
+                log_error "$cleanup_error" "batch_cleanup" "Parallel analysis job stuck during batch cleanup"
+                echo -e "  ${RED}⚠️ Killed remaining stuck job (PID: $pid)${NC}" >&2
+                # Kill stuck processes
+                kill -9 "$pid" 2>/dev/null || true
+            fi
         done
         
         processed_files=$batch_end
         update_parallel_progress "$processed_files" "$total_files" "Analyzing GIFs" 30
     done
     
-    # Process results from parallel analysis
+    # Process results from parallel analysis and count errors
+    local error_files=0
+    local timeout_files=0
+    local large_files=0
+    local unreadable_files=0
+    local successful_files=0
+    
     while IFS='|' read -r gif_file checksum size content_fingerprint visual_hash frame_count duration; do
         [[ -z "$gif_file" ]] && continue  # Skip empty lines
         
-        gif_checksums["$gif_file"]="$checksum"
-        gif_sizes["$gif_file"]="$size"
-        gif_fingerprints["$gif_file"]="$content_fingerprint"
-        gif_visual_hashes["$gif_file"]="$visual_hash"
-        gif_frame_counts["$gif_file"]="$frame_count"
-        gif_durations["$gif_file"]="$duration"
-        ((total_gifs++))
+        # Count different types of results
+        case "$checksum" in
+            "ERROR"|"UNREADABLE")
+                ((error_files++))
+                ((unreadable_files++))
+                ;;
+            "TIMEOUT")
+                ((error_files++))
+                ((timeout_files++))
+                ;;
+            "LARGE_FILE")
+                ((large_files++))
+                ;;
+            *)
+                gif_checksums["$gif_file"]="$checksum"
+                gif_sizes["$gif_file"]="$size"
+                gif_fingerprints["$gif_file"]="$content_fingerprint"
+                gif_visual_hashes["$gif_file"]="$visual_hash"
+                gif_frame_counts["$gif_file"]="$frame_count"
+                gif_durations["$gif_file"]="$duration"
+                ((total_gifs++))
+                ((successful_files++))
+                ;;
+        esac
     done < "$results_file"
     
-    # Clear progress line and show completion
+    # Clear progress line and show completion with error summary
     local final_cache_stats=$(get_cache_stats)
-    printf "\r  ${GREEN}✓ Parallel content analysis complete! Processed $total_gifs GIF files using ${BOLD}$AI_DUPLICATE_THREADS threads${NC}\n"
+    printf "\r  ${GREEN}✓ Parallel content analysis complete! ${NC}\n"
+    
+    # Show detailed analysis summary
+    echo -e "  ${CYAN}${BOLD}📈 ANALYSIS SUMMARY:${NC}"
+    echo -e "    ${GREEN}✓ Successfully analyzed: ${BOLD}$successful_files${NC} ${GREEN}files${NC}"
+    
+    if [[ $large_files -gt 0 ]]; then
+        echo -e "    ${YELLOW}⚠️ Skipped large files: ${BOLD}$large_files${NC} ${YELLOW}files (>100MB)${NC}"
+    fi
+    
+    if [[ $timeout_files -gt 0 ]]; then
+        echo -e "    ${RED}⚠️ Timed out: ${BOLD}$timeout_files${NC} ${RED}files (check error log)${NC}"
+    fi
+    
+    if [[ $unreadable_files -gt 0 ]]; then
+        echo -e "    ${RED}⚠️ Unreadable: ${BOLD}$unreadable_files${NC} ${RED}files (permission issues)${NC}"
+    fi
+    
+    if [[ $error_files -gt 0 ]]; then
+        echo -e "    ${RED}${BOLD}⚠️ Total errors: $error_files files${NC}"
+        echo -e "    ${BLUE}📄 Check error log: ${BOLD}$(basename "$ERROR_LOG")${NC}"
+        echo -e "    ${GRAY}Error details have been logged for investigation${NC}"
+    fi
+    
     echo -e "  ${BLUE}🗄️ Cache updated: $final_cache_stats${NC}"
+    echo -e "  ${GRAY}Used ${BOLD}$AI_DUPLICATE_THREADS threads${NC} ${GRAY}for parallel processing${NC}"
     
     echo -e "  ${BLUE}${BOLD}🔍 Stage 2: Multi-level duplicate detection...${NC}"
     
