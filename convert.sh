@@ -1771,7 +1771,8 @@ finish_script() {
 
 # 🔍 Detect and handle duplicate GIFs safely
 detect_duplicate_gifs() {
-    echo -e "${BLUE}🔍 Checking for duplicate GIF files...${NC}"
+    echo -e "${BLUE}${BOLD}🔍 Smart Duplicate Detection${NC}"
+    echo -e "${CYAN}🔎 Scanning your GIF files for identical content...${NC}"
     
     local total_gifs=0
     local duplicate_count=0
@@ -1838,7 +1839,8 @@ detect_duplicate_gifs() {
     echo -e "  ${GREEN}✓ Scanned $total_gifs GIF files${NC}"
     
     if [[ $duplicate_count -eq 0 ]]; then
-        echo -e "  ${GREEN}✓ No duplicate GIFs found${NC}"
+        echo -e "  ${GREEN}${BOLD}✨ Excellent! No duplicate GIFs found${NC}"
+        echo -e "  ${BLUE}🚀 Your collection is already optimized!${NC}"
         return 0
     fi
     
@@ -1854,23 +1856,38 @@ detect_duplicate_gifs() {
         echo ""
     done
     
-    echo -e "  ${YELLOW}What would you like to do with duplicate GIFs?${NC}"
-    echo -e "  ${CYAN}1)${NC} Delete duplicates automatically (recommended)"
-    echo -e "  ${CYAN}2)${NC} Smart delete (also remove corresponding video files)"
-    echo -e "  ${CYAN}3)${NC} Move duplicates to backup folder"
-    echo -e "  ${CYAN}4)${NC} Review each duplicate interactively"
-    echo -e "  ${CYAN}5)${NC} Skip and continue (keep all duplicates)"
-    echo -e "  ${GRAY}Option 2 prevents re-conversion of duplicate content.${NC}"
-    echo -e "  ${GRAY}Option 3 moves duplicates to ~/.smart-gif-converter/duplicate_gifs/"
-    echo -e "  so you can review them later if needed.${NC}"
-    echo -e "\n  ${MAGENTA}Choice [1-5]: ${NC}"
+    echo -e "  ${YELLOW}${BOLD}🤔 What should I do with these duplicate GIF files?${NC}\n"
+    
+    echo -e "  ${GREEN}${BOLD}[1] 🗑️  Delete duplicates (Quick & Clean)${NC}"
+    echo -e "      ${GRAY}→ Remove duplicate GIFs but keep the source videos${NC}"
+    echo -e "      ${GRAY}→ May reconvert some videos later${NC}\n"
+    
+    echo -e "  ${BLUE}${BOLD}[2] 🧠 Smart Delete (Recommended)${NC}"
+    echo -e "      ${GRAY}→ Delete duplicate GIFs AND their source videos${NC}"
+    echo -e "      ${GRAY}→ Prevents wasted re-conversion time${NC}"
+    echo -e "      ${GREEN}→ Most efficient option!${NC}\n"
+    
+    echo -e "  ${CYAN}${BOLD}[3] 📦 Move to Backup${NC}"
+    echo -e "      ${GRAY}→ Keep duplicates safe in backup folder${NC}"
+    echo -e "      ${GRAY}→ Review them later if needed${NC}\n"
+    
+    echo -e "  ${MAGENTA}${BOLD}[4] 🔍 Interactive Review${NC}"
+    echo -e "      ${GRAY}→ Choose what to do with each duplicate individually${NC}"
+    echo -e "      ${GRAY}→ More control but takes longer${NC}\n"
+    
+    echo -e "  ${YELLOW}${BOLD}[5] ⏭️  Skip for Now${NC}"
+    echo -e "      ${GRAY}→ Keep all duplicates and continue${NC}"
+    echo -e "      ${RED}→ Uses more disk space${NC}\n"
+    
+    echo -e "  ${BLUE}💡 ${BOLD}Tip:${NC} ${BLUE}Option 2 (Smart Delete) saves the most time and space!${NC}\n"
+    echo -e "  ${MAGENTA}${BOLD}Your choice [1-5]: ${NC}"
     
     local choice
     read -r choice
     
     case "$choice" in
-        1)
-            echo -e "\n  ${YELLOW}🗑️  Deleting duplicate GIF files...${NC}"
+        "1")
+            echo -e "\n  ${GREEN}${BOLD}🗑️  Quick Clean: Deleting duplicate GIF files...${NC}"
             local deleted_count=0
             for pair in "${duplicate_pairs[@]}"; do
                 local remove_file="${pair%|*}"
@@ -1914,10 +1931,11 @@ detect_duplicate_gifs() {
                     echo -e "    ${RED}❌ Failed to delete: $remove_file${NC}"
                 fi
             done
-            echo -e "  ${GREEN}✓ $deleted_count duplicate GIF(s) cleaned up${NC}"
+            echo -e "  ${GREEN}${BOLD}✨ Success! Cleaned up $deleted_count duplicate GIF(s)${NC}"
             ;;
         "2")
-            echo -e "\n  ${YELLOW}🤖 Smart deleting duplicate GIFs and corresponding videos...${NC}"
+            echo -e "\n  ${BLUE}${BOLD}🧠 Smart Delete: Removing duplicates and source videos...${NC}"
+            echo -e "  ${CYAN}🚀 This prevents wasted re-conversion time!${NC}"
             local smart_deleted_count=0
             for pair in "${duplicate_pairs[@]}"; do
                 local remove_file="${pair%|*}"
@@ -1952,10 +1970,11 @@ detect_duplicate_gifs() {
                     echo -e "    ${RED}❌ Failed to delete: $remove_file${NC}"
                 fi
             done
-            echo -e "  ${GREEN}✓ $smart_deleted_count duplicate GIF(s) and videos cleaned up${NC}"
+            echo -e "  ${GREEN}${BOLD}🎉 Smart cleanup complete! Removed $smart_deleted_count duplicates + videos${NC}"
+            echo -e "  ${BLUE}⚡ You just saved time and disk space!${NC}"
             ;;
         "3")
-            echo -e "\n  ${YELLOW}📦 Moving duplicate GIFs to backup...${NC}"
+            echo -e "\n  ${CYAN}${BOLD}📦 Safe Backup: Moving duplicates to backup folder...${NC}"
             local backup_dir="$LOG_DIR/duplicate_gifs"
             mkdir -p "$backup_dir" 2>/dev/null || {
                 echo -e "    ${RED}❌ Cannot create backup directory${NC}"
@@ -1991,10 +2010,11 @@ detect_duplicate_gifs() {
                     echo -e "    ${RED}❌ Failed to move: $remove_file${NC}"
                 fi
             done
-            echo -e "  ${GREEN}✓ $moved_count duplicate GIF(s) moved to: $backup_dir${NC}"
+            echo -e "  ${GREEN}${BOLD}📦 Safely backed up $moved_count duplicate(s) to:${NC}"
+            echo -e "  ${CYAN}📁 $backup_dir${NC}"
             ;;
         "4")
-            echo -e "\n  ${CYAN}🔍 Interactive duplicate review:${NC}"
+            echo -e "\n  ${MAGENTA}${BOLD}🔍 Interactive Review: Let's go through each duplicate...${NC}"
             for pair in "${duplicate_pairs[@]}"; do
                 local remove_file="${pair%|*}"
                 local keep_file="${pair#*|}"
@@ -2030,8 +2050,8 @@ detect_duplicate_gifs() {
             done
             ;;
         "5")
-            echo -e "\n  ${YELLOW}⚠️  Keeping all duplicate GIFs${NC}"
-            echo -e "  ${YELLOW}Note: Duplicates may consume unnecessary disk space${NC}"
+            echo -e "\n  ${YELLOW}${BOLD}⏭️  Skipping: Keeping all duplicates for now${NC}"
+            echo -e "  ${GRAY}💾 Note: This uses more disk space but you can clean up later${NC}"
             ;;
         *)
             echo -e "\n  ${RED}❌ Invalid choice. Keeping all duplicates.${NC}"
