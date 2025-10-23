@@ -3095,8 +3095,9 @@ detect_duplicate_gifs() {
             echo -e "\n  ${GREEN}${BOLD}🗑️  Quick Clean: Deleting duplicate GIF files...${NC}"
             local deleted_count=0
             for pair in "${duplicate_pairs[@]}"; do
-                local remove_file="${pair%|*}"
-                local keep_file="${pair#*|}"
+                local remove_file="${pair%%|*}"
+                local temp_pair="${pair#*|}"
+                local keep_file="${temp_pair%%|*}"
                 
                 # Safety check: only delete GIF files
                 if [[ "${remove_file##*.}" != "gif" ]]; then
@@ -3143,8 +3144,9 @@ detect_duplicate_gifs() {
             echo -e "  ${CYAN}🚀 This prevents wasted re-conversion time!${NC}"
             local smart_deleted_count=0
             for pair in "${duplicate_pairs[@]}"; do
-                local remove_file="${pair%|*}"
-                local keep_file="${pair#*|}"
+                local remove_file="${pair%%|*}"
+                local temp_pair="${pair#*|}"
+                local keep_file="${temp_pair%%|*}"
                 
                 # Safety check: only delete GIF files
                 if [[ "${remove_file##*.}" != "gif" ]]; then
@@ -3188,8 +3190,9 @@ detect_duplicate_gifs() {
             
             local moved_count=0
             for pair in "${duplicate_pairs[@]}"; do
-                local remove_file="${pair%|*}"
-                local keep_file="${pair#*|}"
+                local remove_file="${pair%%|*}"
+                local temp_pair="${pair#*|}"
+                local keep_file="${temp_pair%%|*}"
                 
                 # Safety check: only move GIF files
                 if [[ "${remove_file##*.}" != "gif" ]]; then
@@ -3221,8 +3224,9 @@ detect_duplicate_gifs() {
         "4")
             echo -e "\n  ${MAGENTA}${BOLD}🔍 Interactive Review: Let's go through each duplicate...${NC}"
             for pair in "${duplicate_pairs[@]}"; do
-                local remove_file="${pair%|*}"
-                local keep_file="${pair#*|}"
+                local remove_file="${pair%%|*}"
+                local temp_pair="${pair#*|}"
+                local keep_file="${temp_pair%%|*}"
                 local remove_size=$(stat -c%s "$remove_file" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "unknown")
                 local keep_size=$(stat -c%s "$keep_file" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "unknown")
                 
