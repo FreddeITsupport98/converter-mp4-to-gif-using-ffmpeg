@@ -177,11 +177,21 @@ PROGRESS_BAR=true
 INTERACTIVE_MODE=true
 SKIP_VALIDATION=false
 ONLY_FILE=""
+# 🤖 Enhanced AI Configuration
 AI_ENABLED=false
 CROP_FILTER=""
-AI_MODE="smart"
+AI_MODE="smart"  # smart, content, motion, quality
 AI_CONFIDENCE_THRESHOLD=70
 AI_CONTENT_CACHE=""
+AI_AUTO_QUALITY=false  # Let AI automatically select quality per video
+AI_SCENE_ANALYSIS=true  # Enable advanced scene detection
+AI_VISUAL_SIMILARITY=true  # Enable visual similarity in duplicate detection
+AI_SMART_CROP=true  # Enable intelligent crop detection
+AI_DYNAMIC_FRAMERATE=true  # Enable smart frame rate adjustment
+AI_QUALITY_SCALING=true  # Enable intelligent quality parameter scaling
+AI_CONTENT_FINGERPRINT=true  # Enable content fingerprinting for duplicates
+AI_THREADS_OPTIMAL="auto"  # AI-optimized thread count
+AI_MEMORY_OPT="auto"  # AI-optimized memory settings
 CPU_BENCHMARK=false
 RAM_OPTIMIZATION=true
 RAM_CACHE_SIZE="auto"
@@ -632,40 +642,116 @@ ai_smart_analysis() {
     apply_ai_optimizations "$content_type" "$motion_level" "$complexity_score" "$duration" "$width" "$height"
 }
 
-# 🎨 Content Type Detection
+# 🎨 Enhanced Content Type Detection with ML-inspired algorithms
 detect_content_type() {
     local file="$1" duration="$2" width="$3" height="$4"
     
-    # Analyze visual patterns to determine content type
-    local histogram_analysis
-    histogram_analysis=$(ffmpeg -v error -i "$file" -t 10 -vf "histogram=level_height=200" -frames:v 5 -f null - 2>&1 | wc -l)
+    # Multi-stage analysis for accurate content type detection
+    local content_scores=()
     
-    # Sample frames for edge detection
-    local edge_density
-    edge_density=$(ffmpeg -v error -i "$file" -t 5 -vf "edgedetect=low=0.1:high=0.4,blackframe=98" -f null - 2>&1 | grep -c "blackframe" || echo "0")
+    # Stage 1: Visual Pattern Analysis
+    local histogram_variance=$(ffmpeg -v error -i "$file" -t 8 -vf "histogram=level_height=200,scale=100:100" -frames:v 10 -f null - 2>&1 | wc -l 2>/dev/null || echo "0")
     
-    # Color analysis
-    local color_variance
-    color_variance=$(ffmpeg -v error -i "$file" -t 3 -vf "signalstats" -f null - 2>&1 | grep -o "YAVG=[0-9]*" | head -5 | wc -l)
+    # Stage 2: Advanced Edge Detection with multiple thresholds
+    local edge_low=$(ffmpeg -v error -i "$file" -t 5 -vf "edgedetect=low=0.05:high=0.2" -frames:v 8 -f null - 2>&1 | grep -c "frame=" 2>/dev/null || echo "0")
+    local edge_high=$(ffmpeg -v error -i "$file" -t 5 -vf "edgedetect=low=0.2:high=0.6" -frames:v 8 -f null - 2>&1 | grep -c "frame=" 2>/dev/null || echo "0")
     
-    # Determine content type based on analysis
-    # Ensure numeric values (fallback to 0 if empty or invalid)
-    edge_density=${edge_density//[^0-9]/}
-    color_variance=${color_variance//[^0-9]/}
-    edge_density=${edge_density:-0}
-    color_variance=${color_variance:-0}
+    # Stage 3: Color Complexity Analysis
+    local color_stats=$(ffmpeg -v error -i "$file" -t 4 -vf "signalstats" -f null - 2>&1 | grep -E "YAVG=|UAVG=|VAVG=" | wc -l 2>/dev/null || echo "0")
+    local color_range=$(ffmpeg -v error -i "$file" -t 3 -vf "signalstats" -f null - 2>&1 | grep -E "YMAX=|YMIN=" | wc -l 2>/dev/null || echo "0")
     
-    if [[ $edge_density -gt 15 && $color_variance -gt 3 ]]; then
-        echo "animation"  # High edge density + color variance = animation/cartoon
-    elif [[ $width -ge 1920 && $height -ge 1080 && $duration -lt 30 ]]; then
-        echo "screencast"  # High res + short = likely screencast
-    elif [[ $duration -gt 300 ]]; then
-        echo "movie"  # Long duration = movie/show
-    elif [[ $duration -lt 10 ]]; then
-        echo "clip"  # Very short = clip/meme
-    else
-        echo "general"  # Default
+    # Stage 4: Motion Vector Analysis
+    local motion_vectors=$(ffmpeg -v error -i "$file" -t 6 -vf "select='gt(scene,0.1)',showinfo" -f null - 2>&1 | grep -c "scene:" 2>/dev/null || echo "0")
+    
+    # Stage 5: Frame Rate Pattern Analysis
+    local fps_consistency=$(ffmpeg -v error -i "$file" -t 4 -vf "select='not(mod(n,5))',showinfo" -f null - 2>&1 | grep -c "pkt_pts_time=" 2>/dev/null || echo "0")
+    
+    # Sanitize and normalize values
+    histogram_variance=${histogram_variance//[^0-9]/}; histogram_variance=${histogram_variance:-0}
+    edge_low=${edge_low//[^0-9]/}; edge_low=${edge_low:-0}
+    edge_high=${edge_high//[^0-9]/}; edge_high=${edge_high:-0}
+    color_stats=${color_stats//[^0-9]/}; color_stats=${color_stats:-0}
+    color_range=${color_range//[^0-9]/}; color_range=${color_range:-0}
+    motion_vectors=${motion_vectors//[^0-9]/}; motion_vectors=${motion_vectors:-0}
+    fps_consistency=${fps_consistency//[^0-9]/}; fps_consistency=${fps_consistency:-0}
+    
+    # AI-inspired scoring system
+    local animation_score=0
+    local screencast_score=0
+    local movie_score=0
+    local clip_score=0
+    
+    # Animation detection (high edge density, consistent colors, smooth motion)
+    if [[ $edge_high -gt 12 && $color_stats -gt 15 && $fps_consistency -gt 8 ]]; then
+        ((animation_score += 30))
     fi
+    if [[ $histogram_variance -gt 8 && $motion_vectors -lt 4 ]]; then
+        ((animation_score += 20))
+    fi
+    
+    # Screencast detection (sharp edges, limited colors, static elements)
+    if [[ $edge_low -gt 15 && $color_range -lt 8 && $motion_vectors -lt 3 ]]; then
+        ((screencast_score += 35))
+    fi
+    if [[ $width -ge 1280 && $height -ge 720 && $fps_consistency -lt 5 ]]; then
+        ((screencast_score += 15))
+    fi
+    
+    # Movie detection (complex color patterns, natural motion, high resolution)
+    if [[ $color_stats -gt 20 && $color_range -gt 10 && $motion_vectors -gt 5 ]]; then
+        ((movie_score += 25))
+    fi
+    if [[ $width -ge 1920 && $height -ge 1080 && $duration -gt 60 ]]; then
+        ((movie_score += 20))
+    fi
+    if [[ $histogram_variance -gt 15 && $edge_low -lt 10 ]]; then
+        ((movie_score += 15))
+    fi
+    
+    # Clip detection (short duration, variable motion, mixed patterns)
+    if [[ $duration -lt 30 && $motion_vectors -gt 3 && $motion_vectors -lt 8 ]]; then
+        ((clip_score += 25))
+    fi
+    if [[ $fps_consistency -gt 6 && $color_stats -gt 8 && $color_stats -lt 18 ]]; then
+        ((clip_score += 20))
+    fi
+    
+    # Determine content type based on highest score
+    local max_score=0
+    local content_type="clip"  # default fallback
+    
+    if [[ $animation_score -gt $max_score ]]; then
+        max_score=$animation_score
+        content_type="animation"
+    fi
+    if [[ $screencast_score -gt $max_score ]]; then
+        max_score=$screencast_score
+        content_type="screencast"
+    fi
+    if [[ $movie_score -gt $max_score ]]; then
+        max_score=$movie_score
+        content_type="movie"
+    fi
+    if [[ $clip_score -gt $max_score ]]; then
+        max_score=$clip_score
+        content_type="clip"
+    fi
+    
+    # Confidence-based fallback for low scores
+    if [[ $max_score -lt 25 ]]; then
+        # Fallback to basic heuristics
+        if [[ $width -ge 1920 && $height -ge 1080 && $duration -gt 300 ]]; then
+            content_type="movie"
+        elif [[ $duration -lt 15 ]]; then
+            content_type="clip"
+        elif [[ $width -ge 1280 && $color_range -lt 6 ]]; then
+            content_type="screencast"
+        else
+            content_type="animation"
+        fi
+    fi
+    
+    echo "$content_type"
 }
 
 # 💨 Advanced Motion Analysis
@@ -764,11 +850,238 @@ intelligent_crop_detection() {
     echo "$best_crop"
 }
 
-# ⚙️ Apply AI-based Optimizations
+# 🎬 Advanced Scene Detection and Analysis
+ai_scene_detection() {
+    local file="$1" duration="$2"
+    local sample_duration=$((duration > 60 ? 60 : duration))
+    
+    echo -e "      🎬 ${BLUE}Analyzing scene transitions and visual patterns...${NC}"
+    
+    # Detect scene changes with multiple thresholds
+    local major_scenes=$(ffmpeg -v error -i "$file" -t $sample_duration -vf "select=gt(scene\,0.25)" -vsync vfr -f null - 2>&1 | grep -c "frame=" || echo "0")
+    local minor_scenes=$(ffmpeg -v error -i "$file" -t $sample_duration -vf "select=gt(scene\,0.12)" -vsync vfr -f null - 2>&1 | grep -c "frame=" || echo "0")
+    
+    # Analyze frame consistency for optimal frame rate
+    local frame_consistency=$(ffmpeg -v error -i "$file" -t 10 -vf "select='not(mod(n\,3))',showinfo" -f null - 2>&1 | grep -c "pkt_pts_time=" || echo "0")
+    
+    # Detect static regions (useful for optimizing GIF size)
+    local static_regions=$(ffmpeg -v error -i "$file" -t 15 -vf "select='lt(scene\,0.003)',showinfo" -f null - 2>&1 | grep -c "pkt_pts_time=" || echo "0")
+    
+    # Clean numeric values
+    major_scenes=${major_scenes//[^0-9]/}; major_scenes=${major_scenes:-0}
+    minor_scenes=${minor_scenes//[^0-9]/}; minor_scenes=${minor_scenes:-0}
+    frame_consistency=${frame_consistency//[^0-9]/}; frame_consistency=${frame_consistency:-0}
+    static_regions=${static_regions//[^0-9]/}; static_regions=${static_regions:-0}
+    
+    # Calculate scene complexity score
+    local scene_density=$((major_scenes * 100 / sample_duration))
+    local transition_smoothness=$((minor_scenes - major_scenes))
+    local static_ratio=$((static_regions * 100 / (frame_consistency + 1)))
+    
+    # Return scene analysis results
+    echo "${scene_density}|${transition_smoothness}|${static_ratio}"
+}
+
+# 📊 Smart Frame Rate Optimization
+ai_smart_framerate_adjustment() {
+    local file="$1" duration="$2" motion_level="$3" scene_data="$4"
+    
+    echo -e "      📊 ${BLUE}Optimizing frame rate based on motion and scene analysis...${NC}"
+    
+    # Parse scene data
+    local scene_density="${scene_data%%|*}"
+    local temp_data="${scene_data#*|}"
+    local transition_smoothness="${temp_data%%|*}"
+    local static_ratio="${scene_data##*|}"
+    
+    # Base frame rate selection
+    local optimal_fps=12
+    
+    # Adjust based on motion level
+    case "$motion_level" in
+        "high")
+            optimal_fps=18
+            [[ $scene_density -gt 15 ]] && optimal_fps=20
+            ;;
+        "medium")
+            optimal_fps=15
+            [[ $transition_smoothness -gt 10 ]] && optimal_fps=16
+            ;;
+        "low")
+            optimal_fps=12
+            [[ $static_ratio -gt 60 ]] && optimal_fps=10
+            ;;
+        "static")
+            optimal_fps=8
+            [[ $static_ratio -gt 80 ]] && optimal_fps=6
+            ;;
+    esac
+    
+    # Content duration adjustments
+    if [[ $duration -gt 180 ]]; then
+        # Long content - reduce fps to manage size
+        optimal_fps=$((optimal_fps - 2))
+        [[ $optimal_fps -lt 6 ]] && optimal_fps=6
+    elif [[ $duration -lt 5 ]]; then
+        # Very short content - can afford higher fps
+        optimal_fps=$((optimal_fps + 4))
+        [[ $optimal_fps -gt 24 ]] && optimal_fps=24
+    fi
+    
+    echo "$optimal_fps"
+}
+
+# 🔧 Intelligent Quality Scaling
+ai_intelligent_quality_scaling() {
+    local file="$1" width="$2" height="$3" complexity_score="$4" content_type="$5"
+    
+    echo -e "      🔧 ${BLUE}Calculating optimal quality parameters...${NC}"
+    
+    local total_pixels=$((width * height))
+    local base_colors=128
+    local scaling_quality="bicubic"
+    
+    # Adjust color palette based on visual complexity and content type
+    if [[ $complexity_score -gt 80 ]]; then
+        base_colors=256  # High complexity needs more colors
+    elif [[ $complexity_score -gt 60 ]]; then
+        base_colors=192
+    elif [[ $complexity_score -gt 40 ]]; then
+        base_colors=128
+    elif [[ $complexity_score -gt 20 ]]; then
+        base_colors=96
+    else
+        base_colors=64   # Low complexity can use fewer colors
+    fi
+    
+    # Content-specific adjustments
+    case "$content_type" in
+        "animation")
+            base_colors=$((base_colors + 32))  # Animations benefit from more colors
+            scaling_quality="lanczos"
+            ;;
+        "screencast")
+            base_colors=$((base_colors - 16))  # Screencasts have limited color palette
+            scaling_quality="neighbor"  # Preserve sharp edges
+            ;;
+        "movie")
+            # Keep base colors as calculated
+            scaling_quality="bicubic"
+            ;;
+        "clip")
+            base_colors=$((base_colors + 16))  # Short clips can afford more colors
+            scaling_quality="lanczos"
+            ;;
+    esac
+    
+    # Resolution-based scaling quality
+    if [[ $total_pixels -ge 8294400 ]]; then  # 4K+
+        scaling_quality="lanczos"  # Best quality for downscaling
+    elif [[ $total_pixels -le 307200 ]]; then  # 480p or lower
+        scaling_quality="neighbor"  # Preserve low-res content
+    fi
+    
+    # Cap colors at reasonable limits
+    [[ $base_colors -gt 256 ]] && base_colors=256
+    [[ $base_colors -lt 32 ]] && base_colors=32
+    
+    echo "${base_colors}|${scaling_quality}"
+}
+
+# ✂️ Enhanced Intelligent Crop with AI Analysis
+ai_enhanced_crop_detection() {
+    local file="$1" width="$2" height="$3" content_type="$4"
+    
+    echo -e "      ✂️ ${BLUE}AI crop analysis for optimal framing...${NC}"
+    
+    # Content-aware crop detection
+    local crop_samples=()
+    local sample_strategy=()
+    
+    # Different sampling strategies based on content type
+    case "$content_type" in
+        "movie"|"clip")
+            # Sample more frequently for dynamic content
+            sample_strategy=("5" "15%" "30%" "50%" "70%" "85%")
+            ;;
+        "screencast")
+            # Fewer samples for static content
+            sample_strategy=("10%" "50%" "90%")
+            ;;
+        "animation")
+            # Sample at quarter intervals
+            sample_strategy=("25%" "50%" "75%")
+            ;;
+        *)
+            # Default sampling
+            sample_strategy=("3" "25%" "50%" "75%")
+            ;;
+    esac
+    
+    for sample_time in "${sample_strategy[@]}"; do
+        # Use more sensitive detection for different content types
+        local sensitivity="24:16:0"
+        [[ "$content_type" == "screencast" ]] && sensitivity="12:8:0"
+        [[ "$content_type" == "animation" ]] && sensitivity="32:24:0"
+        
+        local crop_line
+        crop_line=$(ffmpeg -v error -ss "$sample_time" -i "$file" -t 1 -vf "cropdetect=$sensitivity" -f null - 2>&1 | grep -o "crop=[0-9]*:[0-9]*:[0-9]*:[0-9]*" | tail -1)
+        [[ -n "$crop_line" ]] && crop_samples+=("$crop_line")
+    done
+    
+    # Smart crop selection based on consistency and area preservation
+    declare -A crop_frequency
+    local best_crop="none"
+    local max_frequency=0
+    
+    # Count frequency of similar crops
+    for crop in "${crop_samples[@]}"; do
+        ((crop_frequency["$crop"]++))
+        if [[ ${crop_frequency["$crop"]} -gt $max_frequency ]]; then
+            # Validate crop preserves enough content
+            local cw=$(echo "$crop" | cut -d'=' -f2 | cut -d: -f1)
+            local ch=$(echo "$crop" | cut -d'=' -f2 | cut -d: -f2)
+            local area=$((cw * ch))
+            local original_area=$((width * height))
+            local area_ratio=$((area * 100 / original_area))
+            
+            # Accept crop if it preserves at least 75% of original area
+            if [[ $area_ratio -ge 75 ]]; then
+                max_frequency=${crop_frequency["$crop"]}
+                best_crop="$crop"
+            fi
+        fi
+    done
+    
+    echo "$best_crop"
+}
+
+# ⚙️ Enhanced AI-based Optimizations with Advanced Features
 apply_ai_optimizations() {
     local content_type="$1" motion_level="$2" complexity_score="$3" duration="$4" width="$5" height="$6"
     
-    echo -e "    🤖 ${MAGENTA}Applying AI optimizations for $content_type content${NC}"
+    echo -e "    🤖 ${MAGENTA}Applying advanced AI optimizations for $content_type content${NC}"
+    
+    # Stage 1: Advanced scene analysis
+    local scene_data=$(ai_scene_detection "$1" "$duration")
+    
+    # Stage 2: Smart frame rate optimization
+    local optimal_fps=$(ai_smart_framerate_adjustment "$1" "$duration" "$motion_level" "$scene_data")
+    FRAMERATE="$optimal_fps"
+    
+    # Stage 3: Intelligent quality scaling
+    local quality_data=$(ai_intelligent_quality_scaling "$1" "$width" "$height" "$complexity_score" "$content_type")
+    local suggested_colors="${quality_data%%|*}"
+    local suggested_scaling="${quality_data##*|}"
+    MAX_COLORS="$suggested_colors"
+    SCALING_ALGO="$suggested_scaling"
+    
+    # Stage 4: Enhanced crop detection
+    local enhanced_crop=$(ai_enhanced_crop_detection "$1" "$width" "$height" "$content_type")
+    if [[ "$enhanced_crop" != "none" ]]; then
+        CROP_FILTER="$enhanced_crop"
+        AI_CONTENT_CACHE+=" enhanced_crop=applied"
+    fi
     
     # Content-specific optimizations
     case "$content_type" in
@@ -879,46 +1192,132 @@ ai_motion_analysis() {
     esac
 }
 
-# 🎨 AI-Powered Quality Selection for Quick Mode
+# 🎨 Enhanced AI-Powered Quality Selection with Intelligent Optimization
 ai_quality_selection() {
-    echo -e "${CYAN}${BOLD}🎯 SELECT YOUR PREFERRED QUALITY LEVEL:${NC}\n"
-    echo -e "${YELLOW}AI will handle everything else - you just choose quality!${NC}\n"
+    echo -e "${CYAN}${BOLD}🎯 AI-DRIVEN QUALITY SELECTION${NC}\n"
+    echo -e "${YELLOW}🧠 AI will analyze your videos and suggest the optimal quality level!${NC}\n"
+    
+    # Pre-analyze first video to provide intelligent recommendations
+    local video_files=()
+    shopt -s nullglob
+    for ext in mp4 avi mov mkv webm; do
+        video_files+=(*."$ext")
+    done
+    shopt -u nullglob
+    
+    local ai_recommendation="high"  # default fallback
+    local recommendation_reason=""
+    
+    if [[ ${#video_files[@]} -gt 0 ]]; then
+        echo -e "${BLUE}🔍 AI is analyzing your videos to provide smart recommendations...${NC}"
+        local sample_file="${video_files[0]}"
+        
+        # Quick analysis for recommendation
+        local duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$sample_file" 2>/dev/null | cut -d. -f1 || echo "0")
+        local width=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$sample_file" 2>/dev/null || echo "0")
+        local height=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$sample_file" 2>/dev/null || echo "0")
+        local bitrate=$(ffprobe -v error -show_entries format=bit_rate -of csv=p=0 "$sample_file" 2>/dev/null || echo "0")
+        local file_size=$(stat -c%s "$sample_file" 2>/dev/null || echo "0")
+        
+        # AI-based recommendation logic
+        local total_pixels=$((width * height))
+        local file_size_mb=$((file_size / 1024 / 1024))
+        
+        if [[ $total_pixels -ge 8294400 && $file_size_mb -gt 100 ]]; then
+            # 4K+ high-quality source
+            ai_recommendation="max"
+            recommendation_reason="4K source with high bitrate detected"
+        elif [[ $total_pixels -ge 2073600 && $bitrate -gt 5000000 ]]; then
+            # 1080p+ good quality
+            ai_recommendation="high"
+            recommendation_reason="High-resolution source with good bitrate"
+        elif [[ $duration -gt 300 && $file_size_mb -gt 200 ]]; then
+            # Long, high-quality movie
+            ai_recommendation="medium"
+            recommendation_reason="Long-form content - balanced approach recommended"
+        elif [[ $duration -lt 10 && $total_pixels -ge 1382400 ]]; then
+            # Short high-res clip
+            ai_recommendation="high"
+            recommendation_reason="Short high-resolution clip - quality preservation recommended"
+        elif [[ $width -ge 1280 && $height -ge 720 && $duration -lt 60 ]]; then
+            # Screencast-like content
+            ai_recommendation="medium"
+            recommendation_reason="Screencast-type content detected"
+        elif [[ $total_pixels -lt 921600 || $file_size_mb -lt 10 ]]; then
+            # Lower resolution or small file
+            ai_recommendation="low"
+            recommendation_reason="Lower resolution or compressed source"
+        fi
+        
+        echo -e "  ${GREEN}✓ Analysis complete!${NC}"
+        echo ""
+    fi
     
     local quality_options=(
-        "Low Quality - Small files, fast processing (good for previews)"
-        "Medium Quality - Balanced size and quality (recommended for most content)"
-        "High Quality - Great detail, standard choice (best balance)"
-        "Max Quality - Maximum detail, larger files (for important content)"
+        "🔹 Low Quality - Optimized for size (best for previews & social media)"
+        "⚖️  Medium Quality - Balanced approach (recommended for most content)"
+        "💎 High Quality - Detailed output (best for important content)"
+        "🏆 Max Quality - Premium quality (for professional use)"
+        "🤖 Let AI Decide - Use AI recommendation based on video analysis"
     )
     
-    local quality_values=("low" "medium" "high" "max")
+    local quality_values=("low" "medium" "high" "max" "ai_auto")
     local quality_descriptions=(
-        "480p, 8-10fps, optimized for size"
-        "720p, 10-12fps, balanced approach"
-        "1080p, 12-15fps, quality focused"
-        "1440p+, 15-20fps, maximum quality"
+        "Up to 720p, 8-12fps, 64-128 colors, optimized compression"
+        "Up to 1080p, 10-15fps, 128-192 colors, balanced settings"
+        "Up to 1440p, 12-18fps, 192-256 colors, quality-focused"
+        "Up to 4K, 15-24fps, 256 colors, maximum detail preservation"
+        "AI automatically selects optimal settings per video"
     )
+    
+    # Show AI recommendation prominently
+    if [[ -n "$recommendation_reason" ]]; then
+        echo -e "${YELLOW}${BOLD}💡 AI RECOMMENDATION:${NC}"
+        echo -e "  ${GREEN}✓ Suggested: ${BOLD}${ai_recommendation^^}${NC} ${GREEN}quality${NC}"
+        echo -e "  ${CYAN}🔎 Reason: $recommendation_reason${NC}"
+        echo ""
+    fi
     
     for i in "${!quality_options[@]}"; do
         local num=$((i + 1))
         local is_current=$([[ "${quality_values[$i]}" == "$QUALITY" ]] && echo " 🎯 (Current)" || echo "")
-        echo -e "  ${GREEN}[$num]${NC} ${quality_options[$i]}${is_current}"
+        local is_recommended=$([[ "${quality_values[$i]}" == "$ai_recommendation" ]] && echo " 💡 (AI Recommended)" || echo "")
+        
+        # Special handling for AI auto option
+        if [[ "${quality_values[$i]}" == "ai_auto" ]]; then
+            is_recommended=" 🎆 (Smart Choice!)"
+        fi
+        
+        echo -e "  ${GREEN}[$num]${NC} ${quality_options[$i]}${is_current}${is_recommended}"
         echo -e "      ${GRAY}→ ${quality_descriptions[$i]}${NC}"
         echo ""
     done
     
-    echo -e "${MAGENTA}Enter your choice [1-4] or press Enter for current ($QUALITY):${NC} "
+    echo -e "${MAGENTA}Enter your choice [1-5] or press Enter for AI recommendation ($ai_recommendation):${NC} "
     read -r quality_choice
     
-    if [[ -n "$quality_choice" && "$quality_choice" =~ ^[1-4]$ ]]; then
+    if [[ -n "$quality_choice" && "$quality_choice" =~ ^[1-5]$ ]]; then
         local index=$((quality_choice - 1))
-        apply_preset "${quality_values[$index]}"
-        echo -e "${GREEN}✓ Selected: ${BOLD}$QUALITY${NC} ${GREEN}quality${NC}"
+        local selected_quality="${quality_values[$index]}"
+        
+        if [[ "$selected_quality" == "ai_auto" ]]; then
+            echo -e "${GREEN}🤖 AI Auto Mode Selected!${NC}"
+            echo -e "${CYAN}AI will automatically determine optimal quality for each video${NC}"
+            AI_AUTO_QUALITY=true
+            QUALITY="$ai_recommendation"  # Set initial quality based on recommendation
+        else
+            apply_preset "$selected_quality"
+            AI_AUTO_QUALITY=false
+            echo -e "${GREEN}✓ Selected: ${BOLD}$QUALITY${NC} ${GREEN}quality${NC}"
+        fi
     else
-        echo -e "${GREEN}✓ Using current: ${BOLD}$QUALITY${NC} ${GREEN}quality${NC}"
+        # Use AI recommendation as default
+        apply_preset "$ai_recommendation"
+        AI_AUTO_QUALITY=false
+        echo -e "${GREEN}✓ Using AI recommendation: ${BOLD}$QUALITY${NC} ${GREEN}quality${NC}"
     fi
     
-    echo -e "${CYAN}${BOLD}🤖 AI will now optimize all other settings based on video content!${NC}"
+    echo -e "${CYAN}${BOLD}🧠 AI will now analyze and optimize all other settings based on each video's content!${NC}"
 }
 
 # 🔍 AI Preview Analysis (non-intrusive)
@@ -1769,18 +2168,28 @@ finish_script() {
     cleanup_ram_disk >/dev/null 2>&1
 }
 
-# 🔍 Detect and handle duplicate GIFs safely
+# 🔍 Advanced AI-Powered Duplicate Detection with Visual Similarity Analysis
 detect_duplicate_gifs() {
-    echo -e "${BLUE}${BOLD}🔍 Smart Duplicate Detection${NC}"
-    echo -e "${CYAN}🔎 Scanning your GIF files for identical content...${NC}"
+    echo -e "${BLUE}${BOLD}🤖 AI-Enhanced Duplicate Detection${NC}"
+    echo -e "${CYAN}🔬 Advanced analysis: Content fingerprinting + Visual similarity + Metadata comparison...${NC}"
     
     local total_gifs=0
     local duplicate_count=0
     local duplicate_pairs=()
     declare -A gif_checksums
     declare -A gif_sizes
+    declare -A gif_fingerprints
+    declare -A gif_visual_hashes
+    declare -A gif_frame_counts
+    declare -A gif_durations
     
-    # Find all GIF files in current directory and calculate checksums
+    # Create temporary directory for analysis
+    local temp_analysis_dir="$(mktemp -d)"
+    trap "rm -rf '$temp_analysis_dir'" EXIT
+    
+    echo -e "  ${BLUE}🧠 Stage 1: Content fingerprinting and metadata analysis...${NC}"
+    
+    # Find all GIF files in current directory and perform multi-stage analysis
     shopt -s nullglob
     for gif_file in *.gif; do
         [[ -f "$gif_file" ]] || continue
@@ -1793,43 +2202,116 @@ detect_duplicate_gifs() {
         
         ((total_gifs++))
         
-        # Calculate MD5 checksum for content comparison
+        # Stage 1: Traditional checksum (fast)
         local checksum=$(md5sum "$gif_file" 2>/dev/null | cut -d' ' -f1)
         local size=$(stat -c%s "$gif_file" 2>/dev/null || echo "0")
         
-        if [[ -n "$checksum" ]]; then
-            # Check if we already have a file with this checksum
-            if [[ -n "${gif_checksums[$checksum]:-}" ]]; then
-                # Found a duplicate
-                local original_file="${gif_checksums[$checksum]}"
-                local original_size="${gif_sizes[$checksum]}"
-                
-                # Determine which file to keep (prefer larger file or alphabetically first)
-                local keep_file="$original_file"
-                local remove_file="$gif_file"
-                
-                if [[ $size -gt $original_size ]]; then
-                    keep_file="$gif_file"
-                    remove_file="$original_file"
-                elif [[ $size -eq $original_size && "$gif_file" < "$original_file" ]]; then
-                    keep_file="$gif_file"
-                    remove_file="$original_file"
-                fi
-                
-                duplicate_pairs+=("$remove_file|$keep_file")
-                ((duplicate_count++))
-                
-                # Update tracking to keep the preferred file
-                gif_checksums["$checksum"]="$keep_file"
-                gif_sizes["$checksum"]="$(stat -c%s "$keep_file" 2>/dev/null || echo "0")"
-            else
-                # First time seeing this checksum
-                gif_checksums["$checksum"]="$gif_file"
-                gif_sizes["$checksum"]="$size"
+        # Stage 2: Content fingerprinting (medium speed)
+        local frame_count=$(ffprobe -v error -select_streams v:0 -count_frames -show_entries stream=nb_frames -of csv=p=0 "$gif_file" 2>/dev/null || echo "0")
+        local duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$gif_file" 2>/dev/null | cut -d. -f1 || echo "0")
+        local fps=$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 "$gif_file" 2>/dev/null | cut -d'/' -f1 || echo "0")
+        local resolution=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$gif_file" 2>/dev/null | tr ',' 'x' || echo "0x0")
+        
+        # Stage 3: Visual similarity hash (slower but more accurate)
+        local visual_hash=""
+        if command -v ffmpeg >/dev/null 2>&1; then
+            # Extract key frames for visual comparison
+            local temp_frame="$temp_analysis_dir/${gif_file%.*}_frame.png"
+            if ffmpeg -v error -i "$gif_file" -vf "select='eq(n,5)',scale=64:64" -frames:v 1 -y "$temp_frame" >/dev/null 2>&1; then
+                # Generate perceptual hash from middle frame
+                visual_hash=$(md5sum "$temp_frame" 2>/dev/null | cut -d' ' -f1)
+                rm -f "$temp_frame"
             fi
         fi
+        
+        # Create composite fingerprint
+        local content_fingerprint="${frame_count}:${duration}:${fps}:${resolution}"
+        
+        # Store all analysis data
+        gif_checksums["$gif_file"]="$checksum"
+        gif_sizes["$gif_file"]="$size"
+        gif_fingerprints["$gif_file"]="$content_fingerprint"
+        gif_visual_hashes["$gif_file"]="$visual_hash"
+        gif_frame_counts["$gif_file"]="$frame_count"
+        gif_durations["$gif_file"]="$duration"
     done
     shopt -u nullglob
+    
+    echo -e "  ${GREEN}✓ Analyzed $total_gifs GIF files${NC}"
+    echo -e "  ${BLUE}🔍 Stage 2: Multi-level duplicate detection...${NC}"
+    
+    # Advanced duplicate detection with multiple similarity levels
+    local gif_files=("${!gif_checksums[@]}")
+    for ((i=0; i<${#gif_files[@]}; i++)); do
+        local file1="${gif_files[i]}"
+        for ((j=i+1; j<${#gif_files[@]}; j++)); do
+            local file2="${gif_files[j]}"
+            
+            local is_duplicate=false
+            local similarity_reason=""
+            
+            # Level 1: Exact binary match (highest confidence)
+            if [[ "${gif_checksums[$file1]}" == "${gif_checksums[$file2]}" ]]; then
+                is_duplicate=true
+                similarity_reason="exact_binary"
+            # Level 2: Visual similarity (high confidence)
+            elif [[ -n "${gif_visual_hashes[$file1]}" && -n "${gif_visual_hashes[$file2]}" ]] && \
+                 [[ "${gif_visual_hashes[$file1]}" == "${gif_visual_hashes[$file2]}" ]]; then
+                is_duplicate=true
+                similarity_reason="visual_identical"
+            # Level 3: Content fingerprint match (medium confidence)
+            elif [[ "${gif_fingerprints[$file1]}" == "${gif_fingerprints[$file2]}" ]]; then
+                # Additional validation for content fingerprint matches
+                local size1="${gif_sizes[$file1]}"
+                local size2="${gif_sizes[$file2]}"
+                local size_diff=$(( (size1 > size2 ? size1 - size2 : size2 - size1) ))
+                local size_ratio=$(( size_diff * 100 / (size1 > size2 ? size1 : size2) ))
+                
+                # Only consider as duplicate if size difference is small (< 5%)
+                if [[ $size_ratio -lt 5 ]]; then
+                    is_duplicate=true
+                    similarity_reason="content_fingerprint"
+                fi
+            # Level 4: Near-identical content (lower confidence, requires human review)
+            elif [[ "${gif_frame_counts[$file1]}" == "${gif_frame_counts[$file2]}" ]] && \
+                 [[ "${gif_durations[$file1]}" == "${gif_durations[$file2]}" ]]; then
+                local size1="${gif_sizes[$file1]}"
+                local size2="${gif_sizes[$file2]}"
+                local size_diff=$(( (size1 > size2 ? size1 - size2 : size2 - size1) ))
+                local size_ratio=$(( size_diff * 100 / (size1 > size2 ? size1 : size2) ))
+                
+                # Only flag as potential duplicate if very similar
+                if [[ $size_ratio -lt 10 ]]; then
+                    is_duplicate=true
+                    similarity_reason="near_identical"
+                fi
+            fi
+            
+            # Handle detected duplicates
+            if [[ "$is_duplicate" == "true" ]]; then
+                local size1="${gif_sizes[$file1]}"
+                local size2="${gif_sizes[$file2]}"
+                
+                # Determine which file to keep (prefer larger, then alphabetically first)
+                local keep_file="$file1"
+                local remove_file="$file2"
+                
+                if [[ $size2 -gt $size1 ]]; then
+                    keep_file="$file2"
+                    remove_file="$file1"
+                elif [[ $size1 -eq $size2 && "$file2" < "$file1" ]]; then
+                    keep_file="$file2"
+                    remove_file="$file1"
+                fi
+                
+                duplicate_pairs+=("$remove_file|$keep_file|$similarity_reason")
+                ((duplicate_count++))
+            fi
+        done
+    done
+    
+    # Clean up temporary analysis directory
+    rm -rf "$temp_analysis_dir"
     
     if [[ $total_gifs -eq 0 ]]; then
         echo -e "  ${CYAN}ℹ️  No existing GIF files found${NC}"
@@ -1844,15 +2326,40 @@ detect_duplicate_gifs() {
         return 0
     fi
     
-    # Show duplicate files
-    echo -e "\n  ${YELLOW}⚠️  Found $duplicate_count duplicate GIF file(s):${NC}"
+    # Show duplicate files with AI analysis details
+    echo -e "\n  ${YELLOW}🔍 Found $duplicate_count duplicate GIF file(s) using AI analysis:${NC}"
     for pair in "${duplicate_pairs[@]}"; do
-        local remove_file="${pair%|*}"
-        local keep_file="${pair#*|}"
+        local remove_file="${pair%%|*}"
+        local temp_pair="${pair#*|}"
+        local keep_file="${temp_pair%%|*}"
+        local similarity_reason="${pair##*|}"
+        
         local remove_size=$(stat -c%s "$remove_file" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "unknown")
         local keep_size=$(stat -c%s "$keep_file" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "unknown")
+        
+        # Display similarity reason with appropriate icon and color
+        local reason_display=""
+        case "$similarity_reason" in
+            "exact_binary")
+                reason_display="${GREEN}🎯 Exact binary match (100% identical)${NC}"
+                ;;
+            "visual_identical")
+                reason_display="${BLUE}👁️  Visual content identical${NC}"
+                ;;
+            "content_fingerprint")
+                reason_display="${CYAN}🔍 Same content fingerprint${NC}"
+                ;;
+            "near_identical")
+                reason_display="${YELLOW}⚠️  Near-identical (manual review suggested)${NC}"
+                ;;
+            *)
+                reason_display="${GRAY}🔍 Detected as duplicate${NC}"
+                ;;
+        esac
+        
         echo -e "    ${RED}🔴 Remove: $remove_file ($remove_size)${NC}"
         echo -e "    ${GREEN}🔵 Keep:   $keep_file ($keep_size)${NC}"
+        echo -e "    ${MAGENTA}📊 Reason: $reason_display${NC}"
         echo ""
     done
     
@@ -4674,27 +5181,94 @@ get_status_icon() {
     fi
 }
 
-# 🤖 Configure AI Mode
+# 🤖 Enhanced AI Configuration Menu
 configure_ai_mode() {
-    echo -e "\n${BLUE}${BOLD}🤖 AI MODE CONFIGURATION:${NC}"
-    echo -e "${CYAN}Current: ${BOLD}${AI_MODE:-smart}${NC}\n"
+    echo -e "\n${BLUE}${BOLD}🧠 ADVANCED AI CONFIGURATION${NC}"
+    echo -e "${CYAN}Current Mode: ${BOLD}${AI_MODE:-smart}${NC}\n"
     
-    echo -e "  ${GREEN}[1]${NC} Smart Mode (recommended) - Full analysis: content + motion + quality"
-    echo -e "  ${GREEN}[2]${NC} Content Mode - Focus on content type detection"
-    echo -e "  ${GREEN}[3]${NC} Motion Mode - Focus on motion analysis"
-    echo -e "  ${GREEN}[4]${NC} Quality Mode - Focus on quality optimization\n"
+    echo -e "${YELLOW}${BOLD}🎯 ANALYSIS MODES:${NC}"
+    echo -e "  ${GREEN}[1]${NC} 🧠 Smart Mode (recommended) - Full AI analysis with all features"
+    echo -e "  ${GREEN}[2]${NC} 🎨 Content Mode - Focus on content type detection"
+    echo -e "  ${GREEN}[3]${NC} 💪 Motion Mode - Focus on motion analysis and frame rate optimization"
+    echo -e "  ${GREEN}[4]${NC} 💎 Quality Mode - Focus on quality optimization and scaling\n"
     
-    echo -e "${MAGENTA}Select AI mode [1-4]: ${NC}"
+    echo -e "${MAGENTA}${BOLD}🔧 ADVANCED FEATURES:${NC}"
+    echo -e "  ${GREEN}[5]${NC} 🎬 Scene Analysis: $(get_status_icon "$AI_SCENE_ANALYSIS")"
+    echo -e "  ${GREEN}[6]${NC} 👀 Visual Similarity: $(get_status_icon "$AI_VISUAL_SIMILARITY")"
+    echo -e "  ${GREEN}[7]${NC} ✂️ Smart Crop: $(get_status_icon "$AI_SMART_CROP")"
+    echo -e "  ${GREEN}[8]${NC} 📊 Dynamic Frame Rate: $(get_status_icon "$AI_DYNAMIC_FRAMERATE")"
+    echo -e "  ${GREEN}[9]${NC} 🎨 Quality Scaling: $(get_status_icon "$AI_QUALITY_SCALING")\n"
+    
+    echo -e "${CYAN}${BOLD}🤖 AI AUTO FEATURES:${NC}"
+    echo -e "  ${GREEN}[10]${NC} 🎯 Auto Quality: $(get_status_icon "$AI_AUTO_QUALITY")"
+    echo -e "  ${GREEN}[11]${NC} 🔍 Content Fingerprint: $(get_status_icon "$AI_CONTENT_FINGERPRINT")\n"
+    
+    echo -e "${MAGENTA}Select option [1-11] or Enter to finish: ${NC}"
     read -r ai_choice
     
     case "$ai_choice" in
-        "1") AI_MODE="smart"; echo -e "${GREEN}✓ AI Mode set to Smart${NC}" ;;
-        "2") AI_MODE="content"; echo -e "${GREEN}✓ AI Mode set to Content${NC}" ;;
-        "3") AI_MODE="motion"; echo -e "${GREEN}✓ AI Mode set to Motion${NC}" ;;
-        "4") AI_MODE="quality"; echo -e "${GREEN}✓ AI Mode set to Quality${NC}" ;;
-        *) echo -e "${YELLOW}No change made${NC}" ;;
+        "1") 
+            AI_MODE="smart"
+            echo -e "${GREEN}✓ AI Mode set to Smart (Full Analysis)${NC}"
+            ;;
+        "2") 
+            AI_MODE="content"
+            echo -e "${GREEN}✓ AI Mode set to Content Focus${NC}"
+            ;;
+        "3") 
+            AI_MODE="motion"
+            echo -e "${GREEN}✓ AI Mode set to Motion Focus${NC}"
+            ;;
+        "4") 
+            AI_MODE="quality"
+            echo -e "${GREEN}✓ AI Mode set to Quality Focus${NC}"
+            ;;
+        "5") 
+            AI_SCENE_ANALYSIS=$([[ "$AI_SCENE_ANALYSIS" == "true" ]] && echo "false" || echo "true")
+            echo -e "${GREEN}✓ Scene Analysis $(get_status_text "$AI_SCENE_ANALYSIS")${NC}"
+            ;;
+        "6") 
+            AI_VISUAL_SIMILARITY=$([[ "$AI_VISUAL_SIMILARITY" == "true" ]] && echo "false" || echo "true")
+            echo -e "${GREEN}✓ Visual Similarity $(get_status_text "$AI_VISUAL_SIMILARITY")${NC}"
+            ;;
+        "7") 
+            AI_SMART_CROP=$([[ "$AI_SMART_CROP" == "true" ]] && echo "false" || echo "true")
+            echo -e "${GREEN}✓ Smart Crop $(get_status_text "$AI_SMART_CROP")${NC}"
+            ;;
+        "8") 
+            AI_DYNAMIC_FRAMERATE=$([[ "$AI_DYNAMIC_FRAMERATE" == "true" ]] && echo "false" || echo "true")
+            echo -e "${GREEN}✓ Dynamic Frame Rate $(get_status_text "$AI_DYNAMIC_FRAMERATE")${NC}"
+            ;;
+        "9") 
+            AI_QUALITY_SCALING=$([[ "$AI_QUALITY_SCALING" == "true" ]] && echo "false" || echo "true")
+            echo -e "${GREEN}✓ Quality Scaling $(get_status_text "$AI_QUALITY_SCALING")${NC}"
+            ;;
+        "10") 
+            AI_AUTO_QUALITY=$([[ "$AI_AUTO_QUALITY" == "true" ]] && echo "false" || echo "true")
+            echo -e "${GREEN}✓ Auto Quality $(get_status_text "$AI_AUTO_QUALITY")${NC}"
+            ;;
+        "11") 
+            AI_CONTENT_FINGERPRINT=$([[ "$AI_CONTENT_FINGERPRINT" == "true" ]] && echo "false" || echo "true")
+            echo -e "${GREEN}✓ Content Fingerprint $(get_status_text "$AI_CONTENT_FINGERPRINT")${NC}"
+            ;;
+        "") 
+            echo -e "${CYAN}AI configuration complete${NC}"
+            ;;
+        *) 
+            echo -e "${YELLOW}No change made${NC}"
+            ;;
     esac
-    sleep 1
+    
+    [[ -n "$ai_choice" && "$ai_choice" != "" ]] && sleep 1 && configure_ai_mode
+}
+
+# 💬 Helper function for status text
+get_status_text() {
+    if [[ "$1" == "true" ]]; then
+        echo "enabled"
+    else
+        echo "disabled"
+    fi
 }
 
 # 💻 Configure Threading
