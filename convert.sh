@@ -6918,8 +6918,10 @@ validate_video_file() {
         
         # Check cache for this specific file (no output)
         if grep -qF "$cache_key|VALID" "$validation_cache" 2>/dev/null; then
+            CACHE_HITS=$((CACHE_HITS + 1))
             return 0
         elif grep -qF "$cache_key|INVALID" "$validation_cache" 2>/dev/null; then
+            CACHE_HITS=$((CACHE_HITS + 1))
             return 1
         fi
     else
@@ -6930,6 +6932,7 @@ validate_video_file() {
     fi
     
     # Cache miss - perform full validation
+    CACHE_MISSES=$((CACHE_MISSES + 1))
     local validation_result="INVALID"
     if detect_video_corruption "$file"; then
         validation_result="VALID"
@@ -6993,33 +6996,33 @@ check_duplicate_output() {
     
     # If force conversion is enabled, ignore existing files
     if [[ "$FORCE_CONVERSION" == "true" ]]; then
-        echo -e "  ${YELLOW}♾️ Force mode: Will overwrite existing $(basename "$output_file")${NC}"
+        [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${YELLOW}♾️ Force mode: Will overwrite existing $(basename "$output_file")${NC}"
         return 1
     fi
     
     # Check if output is newer than input (modification time)
     if [[ "$output_file" -nt "$input_file" ]]; then
-        echo -e "  ${GREEN}✓ Already converted: $(basename "$output_file") (newer than source)${NC}"
+        [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${GREEN}✓ Already converted: $(basename "$output_file") (newer than source)${NC}"
         return 0
     fi
     
     # Check if output file is valid (basic size check)
     local output_size=$(stat -c%s "$output_file" 2>/dev/null || echo "0")
     if [[ $output_size -lt 100 ]]; then
-        echo -e "  ${YELLOW}⚠️ Existing file too small, will recreate: $(basename "$output_file")${NC}"
+        [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${YELLOW}⚠️ Existing file too small, will recreate: $(basename "$output_file")${NC}"
         rm -f "$output_file" 2>/dev/null
         return 1
     fi
     
     # Quick validation of existing GIF
     if ! file "$output_file" 2>/dev/null | grep -q "GIF"; then
-        echo -e "  ${YELLOW}⚠️ Existing file not a valid GIF, will recreate: $(basename "$output_file")${NC}"
+        [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${YELLOW}⚠️ Existing file not a valid GIF, will recreate: $(basename "$output_file")${NC}"
         rm -f "$output_file" 2>/dev/null
         return 1
     fi
     
     # File exists, is newer, and appears valid
-    echo -e "  ${GREEN}⏭️ Skipping: $(basename "$output_file") already exists and is valid${NC}"
+    [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${GREEN}⏭️ Skipping: $(basename "$output_file") already exists and is valid${NC}"
     return 0
 }
 
@@ -9775,24 +9778,47 @@ start_conversion() {
             return 1
         fi
     else
-    # Show validation progress bar
-    echo -e "${BLUE}🔍 Validating video files...${NC}"
+    # Show clean validation progress bar (no text, just bar)
     
     shopt -s nullglob
     local all_video_files=(*.mp4 *.avi *.mov *.mkv *.webm)
     local total_to_check=${#all_video_files[@]}
     local checked=0
     
+    # Enable silent mode for validation phase
+    VALIDATION_SILENT_MODE=true
+    
+    # Track cache hits/misses to show status
+    CACHE_HITS=0
+    CACHE_MISSES=0
+    
     for file in "${all_video_files[@]}"; do
         if [[ -f "$file" && -r "$file" ]]; then
             ((checked++))
             
-            # Update progress bar
-            if [[ $total_to_check -gt 0 ]]; then
+            # Show progress bar if many files
+            if [[ $total_to_check -gt 10 ]]; then
                 local percent=$((checked * 100 / total_to_check))
-                local filled=$((checked * 40 / total_to_check))
-                local empty=$((40 - filled))
-                printf "\r  ${CYAN}[${GREEN}%${filled}s${GRAY}%${empty}s${CYAN}] ${YELLOW}%d%%${NC} ${BLUE}(%d/%d)${NC}" "" "" "$percent" "$checked" "$total_to_check" | tr ' ' '█'
+                local filled=$((checked * 50 / total_to_check))
+                local empty=$((50 - filled))
+                
+                # Build progress bar
+                local bar=""
+                for ((i=0; i<filled; i++)); do bar+="█"; done
+                for ((i=0; i<empty; i++)); do bar+="░"; done
+                
+                # Determine status message based on cache usage
+                local status_msg=""
+                if [[ $CACHE_HITS -gt 0 && $CACHE_MISSES -eq 0 ]]; then
+                    status_msg="${GREEN}Cached${NC}"
+                elif [[ $CACHE_MISSES -gt 0 ]]; then
+                    status_msg="${YELLOW}Validating${NC}"
+                else
+                    status_msg="${CYAN}Checking${NC}"
+                fi
+                
+                # Show progress bar with status and filename
+                printf "\r\033[K${BLUE}🔍 [${GREEN}%s${GRAY}%s${BLUE}] ${YELLOW}%3d%%${NC} ${GRAY}(%d/%d)${NC} %b\n${CYAN}%s: ${NC}%s\033[A" "${bar:0:filled}" "${bar:filled:empty}" "$percent" "$checked" "$total_to_check" "$status_msg" "$(basename "$file")"
             fi
             
             ((total_files++)) || true
@@ -9805,7 +9831,7 @@ start_conversion() {
                 continue
             fi
             
-            # Check for duplicates first
+            # Check for duplicates first (silently during validation)
             if check_duplicate_output "$file"; then
                 ((already_converted++)) || true
                 ((skipped_files++)) || true
@@ -9821,9 +9847,12 @@ start_conversion() {
         fi
     done
     
-    # Clear progress bar line and show completion
-    if [[ $total_to_check -gt 0 ]]; then
-        printf "\r  ${GREEN}✓ Validation complete: %d files checked${NC}\n" "$total_to_check"
+    # Disable silent mode after validation
+    VALIDATION_SILENT_MODE=false
+    
+    # Clear validation progress bar (both lines)
+    if [[ $total_to_check -gt 10 ]]; then
+        printf "\r\033[K\n\033[K\033[A"
     fi
     
     shopt -u nullglob
@@ -11512,15 +11541,17 @@ _convert_video_internal() {
                 } >> "$ERROR_LOG" 2>/dev/null || true
             fi
             
-            # Log with comprehensive details
-            log_error "FFmpeg GIF conversion failed (attempt $((retry_count + 1)))" "$file" "Cause: ${conv_diagnosis:-$(explain_exit_code $conversion_exit_code)}" "${BASH_LINENO[0]}" "_convert_video_internal"
-            
-            # User-friendly terminal output
-            echo -e "  ${RED}⚠️ FFmpeg GIF conversion failed${NC}"
-            if [[ -n "$conv_diagnosis" ]]; then
-                echo -e "  ${RED}🔍 Cause: $conv_diagnosis${NC}"
+            # Only log and show errors if not interrupted
+            if [[ "$INTERRUPT_REQUESTED" != true ]]; then
+                log_error "FFmpeg GIF conversion failed (attempt $((retry_count + 1)))" "$file" "Cause: ${conv_diagnosis:-$(explain_exit_code $conversion_exit_code)}" "${BASH_LINENO[0]}" "_convert_video_internal"
+                
+                # User-friendly terminal output
+                echo -e "  ${RED}⚠️ FFmpeg GIF conversion failed${NC}"
+                if [[ -n "$conv_diagnosis" ]]; then
+                    echo -e "  ${RED}🔍 Cause: $conv_diagnosis${NC}"
+                fi
+                echo -e "  ${YELLOW}📋 Full log: $ERROR_LOG${NC}"
             fi
-            echo -e "  ${YELLOW}📋 Full log: $ERROR_LOG${NC}"
             
             # Cleanup
             rm -f "$conversion_error_file" 2>/dev/null || true
