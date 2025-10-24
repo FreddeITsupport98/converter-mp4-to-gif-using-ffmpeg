@@ -3433,8 +3433,8 @@ summarize_ffmpeg_error() {
     local default_msg="Unknown FFmpeg error"
     [[ ! -s "$err_file" ]] && { echo "$default_msg"; return; }
 
-    # Extract non-banner lines
-    local body=$(grep -v -E "^ffmpeg version|^\s*libav|^\s*configuration:|^Input #|^Output #|^Stream mapping:|^Press \[q\]|^\s*$" "$err_file" 2>/dev/null)
+    # Extract non-banner lines and filter out benign warnings
+    local body=$(grep -v -E "^ffmpeg version|^\s*libav|^\s*configuration:|^Input #|^Output #|^Stream mapping:|^Press \[q\]|^\s*$|Duped color|deprecated pixel format" "$err_file" 2>/dev/null)
 
     # Look for common fatal patterns
     local patterns=(
@@ -3549,9 +3549,16 @@ convert_with_progress() {
     echo -e "  ${CYAN}Converting to GIF (CPU optimized for filter compatibility)...${NC}"
     
     # Run ffmpeg and capture PID for interruption handling (redirect stdin to prevent terminal conflicts)
-    # Use AI-optimized threading if available, otherwise use default
-    local optimal_threads="${AI_THREADS_OPTIMAL:-$FFMPEG_THREADS}"
-    local memory_opts="${AI_MEMORY_OPT:-$FFMPEG_MEMORY_OPTS}"
+    # Resolve AI_THREADS_OPTIMAL: if set to "auto", use FFMPEG_THREADS; otherwise use it directly
+    local optimal_threads="$FFMPEG_THREADS"
+    if [[ "$AI_THREADS_OPTIMAL" != "auto" && -n "$AI_THREADS_OPTIMAL" ]]; then
+        optimal_threads="$AI_THREADS_OPTIMAL"
+    fi
+    # Resolve AI_MEMORY_OPT: if set to "auto" or empty, don't use it; otherwise use it directly
+    local memory_opts=""
+    if [[ "$AI_MEMORY_OPT" != "auto" && -n "$AI_MEMORY_OPT" ]]; then
+        memory_opts="$AI_MEMORY_OPT"
+    fi
     local cmd="env -i PATH=\"$PATH\" HOME=\"$HOME\" ffmpeg $accel_flags $FFMPEG_INPUT_OPTS -i \"$file\" -i \"$palette_file\" -lavfi \"$filter\" -threads $optimal_threads $memory_opts -nostats -nostdin -loglevel warning -y \"$out_file\""
     
     # Run with progress dots
@@ -3613,9 +3620,16 @@ convert_with_progress_oneshot() {
     echo -e "  ${CYAN}Converting to GIF (one-shot, CPU optimized)...${NC}"
     
     # Run ffmpeg and capture PID for interruption handling (redirect stdin to prevent terminal conflicts)
-    # Use AI-optimized threading if available, otherwise use default
-    local optimal_threads="${AI_THREADS_OPTIMAL:-$FFMPEG_THREADS}"
-    local memory_opts="${AI_MEMORY_OPT:-$FFMPEG_MEMORY_OPTS}"
+    # Resolve AI_THREADS_OPTIMAL: if set to "auto", use FFMPEG_THREADS; otherwise use it directly
+    local optimal_threads="$FFMPEG_THREADS"
+    if [[ "$AI_THREADS_OPTIMAL" != "auto" && -n "$AI_THREADS_OPTIMAL" ]]; then
+        optimal_threads="$AI_THREADS_OPTIMAL"
+    fi
+    # Resolve AI_MEMORY_OPT: if set to "auto" or empty, don't use it; otherwise use it directly
+    local memory_opts=""
+    if [[ "$AI_MEMORY_OPT" != "auto" && -n "$AI_MEMORY_OPT" ]]; then
+        memory_opts="$AI_MEMORY_OPT"
+    fi
     local cmd="env -i PATH=\"$PATH\" HOME=\"$HOME\" ffmpeg $accel_flags $FFMPEG_INPUT_OPTS -i \"$file\" -filter_complex \"$filter_complex\" -threads $optimal_threads $memory_opts -nostats -nostdin -loglevel warning -y \"$out_file\""
     
     # Run with progress dots
@@ -11120,6 +11134,13 @@ _convert_video_internal() {
     
     # Retry loop for conversion
     while [[ $retry_count -le $MAX_RETRIES && $conversion_success == false ]]; do
+        # Check for interrupt request at start of each retry
+        if [[ "$INTERRUPT_REQUESTED" == true ]]; then
+            echo -e "\n${YELLOW}⚠️  Interrupt detected - stopping conversion${NC}"
+            cleanup_temp_files "${file%.*}"
+            return 130  # Standard exit code for SIGINT
+        fi
+        
         if [[ $retry_count -gt 0 ]]; then
             echo -e "  ${YELLOW}♾️ Retry attempt $retry_count/$MAX_RETRIES${NC}"
             sleep 1
