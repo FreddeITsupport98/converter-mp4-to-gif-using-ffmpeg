@@ -11309,7 +11309,16 @@ _convert_video_internal() {
         if [[ -n "$CROP_FILTER" ]]; then
             # Insert crop right after fps, before scale
             if [[ "$filter_chain" == fps=* ]]; then
-                filter_chain=$(echo "$filter_chain" | sed "s/fps=[^,\"]\+/&,$CROP_FILTER/")
+                # Use bash string manipulation instead of sed to avoid quoting issues
+                local fps_part="${filter_chain%%,*}"
+                local rest_part="${filter_chain#*,}"
+                if [[ "$fps_part" == "$filter_chain" ]]; then
+                    # No comma found, just fps filter
+                    filter_chain="${fps_part},${CROP_FILTER}"
+                else
+                    # Has more filters after fps
+                    filter_chain="${fps_part},${CROP_FILTER},${rest_part}"
+                fi
             else
                 filter_chain="$CROP_FILTER,$filter_chain"
             fi
