@@ -4006,6 +4006,17 @@ force_cleanup_on_exit() {
     # Clean up temp files for current conversion only (don't delete whole folder)
     if [[ -n "$CURRENT_FILE" ]]; then
         cleanup_temp_files "${CURRENT_FILE%.*}" 2>/dev/null || true
+        
+        # Delete incomplete output GIF if it exists
+        local incomplete_gif="${CURRENT_FILE%.*}.${OUTPUT_FORMAT}"
+        if [[ -f "$incomplete_gif" ]]; then
+            local output_size=$(stat -c%s "$incomplete_gif" 2>/dev/null || echo "0")
+            # If GIF is suspiciously small or incomplete, delete it
+            if [[ $output_size -lt 1000 ]]; then
+                rm -f "$incomplete_gif" 2>/dev/null || true
+                echo -e "${YELLOW}🧹 Cleaned up incomplete conversion: $(basename "$incomplete_gif")${NC}"
+            fi
+        fi
     fi
     
     # Clean work directory and RAM disk on exit
@@ -4774,11 +4785,16 @@ detect_duplicate_gifs() {
                     remove_file="$file1"
                     decision_reason="keeping GIF matching source video: $(basename "$source_file2")"
                 elif [[ "$has_source1" == true && "$has_source2" == true ]]; then
-                    # Both have matching source videos - fall through to other rules
-                    # But add this info to the decision reason later
+                    # Both have matching source videos - this shouldn't happen normally
+                    # Fall through to other rules but mark this special case
                     decision_reason="both match source videos"
+                    # Continue to next rule without setting keep/remove yet
+                fi
+                
+                # Only apply remaining rules if keep_file is not yet set
+                if [[ -z "$keep_file" ]]; then
                 # Rule 1: Prefer the file created first (older file)
-                elif [[ $ctime1 -lt $ctime2 && $((ctime2 - ctime1)) -gt 60 ]]; then
+                if [[ $ctime1 -lt $ctime2 && $((ctime2 - ctime1)) -gt 60 ]]; then
                     # file1 is at least 1 minute older
                     keep_file="$file1"
                     remove_file="$file2"
@@ -4846,11 +4862,18 @@ detect_duplicate_gifs() {
                 elif [[ "$file1" < "$file2" ]]; then
                     keep_file="$file1"
                     remove_file="$file2"
-                    decision_reason="alphabetical order"
+                    decision_reason="${decision_reason:+$decision_reason, }alphabetical order"
                 else
                     keep_file="$file2"
                     remove_file="$file1"
-                    decision_reason="alphabetical order"
+                    decision_reason="${decision_reason:+$decision_reason, }alphabetical order"
+                fi
+                fi  # End of: if [[ -z "$keep_file" ]]
+                
+                # Safety check: make sure we have both files set
+                if [[ -z "$keep_file" || -z "$remove_file" ]]; then
+                    echo -e "    ${RED}⚠️  Warning: Could not determine which duplicate to keep, skipping pair${NC}" >&2
+                    continue
                 fi
                 
                 # Store the duplicate pair with enhanced metadata
@@ -9817,8 +9840,14 @@ start_conversion() {
                     status_msg="${CYAN}Checking${NC}"
                 fi
                 
-                # Show progress bar with status and filename
-                printf "\r\033[K${BLUE}🔍 [${GREEN}%s${GRAY}%s${BLUE}] ${YELLOW}%3d%%${NC} ${GRAY}(%d/%d)${NC} %b\n${CYAN}%s: ${NC}%s\033[A" "${bar:0:filled}" "${bar:filled:empty}" "$percent" "$checked" "$total_to_check" "$status_msg" "$(basename "$file")"
+                # Truncate filename if too long (max 40 chars)
+                local display_file="$(basename "$file")"
+                if [[ ${#display_file} -gt 40 ]]; then
+                    display_file="${display_file:0:37}..."
+                fi
+                
+                # Single-line progress with status and filename
+                printf "\r\033[K${BLUE}🔍 [${GREEN}%s${GRAY}%s${BLUE}] ${YELLOW}%3d%%${NC} ${GRAY}(%d/%d)${NC} %b ${GRAY}%s${NC}" "${bar:0:filled}" "${bar:filled:empty}" "$percent" "$checked" "$total_to_check" "$status_msg" "$display_file"
             fi
             
             ((total_files++)) || true
@@ -9850,9 +9879,9 @@ start_conversion() {
     # Disable silent mode after validation
     VALIDATION_SILENT_MODE=false
     
-    # Clear validation progress bar (both lines)
+    # Clear validation progress bar
     if [[ $total_to_check -gt 10 ]]; then
-        printf "\r\033[K\n\033[K\033[A"
+        printf "\r\033[K"
     fi
     
     shopt -u nullglob
@@ -11228,8 +11257,20 @@ _convert_video_internal() {
     while [[ $retry_count -le $MAX_RETRIES && $conversion_success == false ]]; do
         # Check for interrupt request at start of each retry
         if [[ "$INTERRUPT_REQUESTED" == true ]]; then
-            # Silently stop without error messages
+            # Clean up temp files
             cleanup_temp_files "${file%.*}"
+            
+            # Delete incomplete output GIF if it exists
+            if [[ -f "$final_output_file" ]]; then
+                local output_size=$(stat -c%s "$final_output_file" 2>/dev/null || echo "0")
+                # If GIF is suspiciously small or was just created, delete it
+                if [[ $output_size -lt 1000 ]] || [[ "$final_output_file" -nt "$file" ]]; then
+                    rm -f "$final_output_file" 2>/dev/null
+                    echo -e "  ${YELLOW}🧹 Cleaned up incomplete: $(basename "$final_output_file")${NC}"
+                fi
+            fi
+            
+            # Silently stop without error messages
             return 130  # Standard exit code for SIGINT
         fi
         
@@ -11797,6 +11838,13 @@ _convert_video_internal() {
         
         # Enhanced Auto-optimization with multiple strategies
         if [[ "$AUTO_OPTIMIZE" == true && "$OUTPUT_FORMAT" == "gif" ]]; then
+            # Check for interrupt before optimization
+            if [[ "$INTERRUPT_REQUESTED" == true ]]; then
+                echo -e "  ${YELLOW}👋 Skipping optimization due to interrupt${NC}"
+                ((converted_files++))
+                return 0
+            fi
+            
             local original_size=$converted_size
             local best_file="$final_output_file"
             local best_size=$original_size
@@ -11823,8 +11871,17 @@ _convert_video_internal() {
                 # Try different optimization levels
                 local gifsicle_success=false
                 for opt_level in "-O3" "-O2" "-O1"; do
+                    # Check for interrupt during optimization
+                    if [[ "$INTERRUPT_REQUESTED" == true ]]; then
+                        kill $opt_progress_pid 2>/dev/null || true
+                        wait $opt_progress_pid 2>/dev/null || true
+                        printf "\r  ${YELLOW}👋 Optimization interrupted${NC}\n"
+                        ((converted_files++))
+                        return 0
+                    fi
+                    
                     local temp_file="${final_output_file}.gifsicle.tmp"
-                    if gifsicle $opt_level "$final_output_file" -o "$temp_file" 2>/dev/null; then
+                    if timeout 30 gifsicle $opt_level "$final_output_file" -o "$temp_file" 2>/dev/null; then
                         local new_size=$(stat -c%s "$temp_file" 2>/dev/null || echo "0")
                         if [[ $new_size -gt 100 && $new_size -lt $best_size ]]; then
                             best_file="$temp_file"
@@ -11862,6 +11919,17 @@ _convert_video_internal() {
             fi
             
             if [[ $should_try_ffmpeg == true ]]; then
+                # Check for interrupt before FFmpeg optimization
+                if [[ "$INTERRUPT_REQUESTED" == true ]]; then
+                    printf "\r  ${YELLOW}👋 Skipping FFmpeg re-optimization due to interrupt${NC}\n"
+                    # Apply best result so far before exiting
+                    if [[ "$best_file" != "$final_output_file" && -f "$best_file" ]]; then
+                        mv "$best_file" "$final_output_file" 2>/dev/null
+                    fi
+                    ((converted_files++))
+                    return 0
+                fi
+                
                 echo -e "  ${BLUE}🔄 Trying FFmpeg re-optimization...${NC}"
                 
                 # Progress animation
