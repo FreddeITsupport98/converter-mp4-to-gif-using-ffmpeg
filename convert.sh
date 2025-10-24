@@ -1651,6 +1651,11 @@ init_log_directory() {
 
 # 🚨 Robust error logging system
 log_error() {
+    # Don't show errors if user interrupted the script
+    if [[ "$INTERRUPT_REQUESTED" == true ]]; then
+        return 0
+    fi
+    
     local error_msg="$1"
     local file="$2"
     local detailed_error="$3"
@@ -3961,7 +3966,7 @@ INTERRUPT_REQUESTED=false
 # 🔥 Graceful signal handler that allows current conversion to finish
 handle_interrupt() {
     INTERRUPT_REQUESTED=true
-    echo -e "\n${YELLOW}⚠️  Interrupt received! Stopping after current file completes...${NC}"
+    echo -e "\n${YELLOW}👋 Quitting... Stopping after current file completes...${NC}"
     echo -e "${CYAN}💡 Press Ctrl+C again to force immediate exit${NC}"
     
     # Set a trap for the second interrupt to force exit
@@ -4700,19 +4705,156 @@ detect_duplicate_gifs() {
                 local size1="${gif_sizes[$file1]}"
                 local size2="${gif_sizes[$file2]}"
                 
-                # Determine which file to keep (prefer larger, then alphabetically first)
-                local keep_file="$file1"
-                local remove_file="$file2"
+                # Get file metadata for intelligent decision
+                local mtime1=$(stat -c%Y "$file1" 2>/dev/null || echo "0")  # Modification time
+                local mtime2=$(stat -c%Y "$file2" 2>/dev/null || echo "0")
+                local ctime1=$(stat -c%Z "$file1" 2>/dev/null || echo "0")  # Change time (creation on some systems)
+                local ctime2=$(stat -c%Z "$file2" 2>/dev/null || echo "0")
+                local perms1=$(stat -c%a "$file1" 2>/dev/null || echo "0")  # File permissions
+                local perms2=$(stat -c%a "$file2" 2>/dev/null || echo "0")
                 
-                if [[ $size2 -gt $size1 ]]; then
-                    keep_file="$file2"
-                    remove_file="$file1"
-                elif [[ $size1 -eq $size2 && "$file2" < "$file1" ]]; then
-                    keep_file="$file2"
-                    remove_file="$file1"
+                # Get base filenames for similarity comparison
+                local basename1=$(basename "$file1" .gif)
+                local basename2=$(basename "$file2" .gif)
+                
+                # Check if corresponding MP4/video source files exist
+                local has_source1=false
+                local has_source2=false
+                local source_file1=""
+                local source_file2=""
+                
+                # Check for video source files for file1
+                for ext in mp4 avi mov mkv webm MP4 AVI MOV MKV WEBM; do
+                    if [[ -f "${basename1}.$ext" ]]; then
+                        has_source1=true
+                        source_file1="${basename1}.$ext"
+                        break
+                    fi
+                done
+                
+                # Check for video source files for file2
+                for ext in mp4 avi mov mkv webm MP4 AVI MOV MKV WEBM; do
+                    if [[ -f "${basename2}.$ext" ]]; then
+                        has_source2=true
+                        source_file2="${basename2}.$ext"
+                        break
+                    fi
+                done
+                
+                # Calculate filename similarity score (0-100)
+                local name_similarity=0
+                if [[ "$basename1" == "$basename2" ]]; then
+                    name_similarity=100
+                elif [[ "$basename1" == *"$basename2"* || "$basename2" == *"$basename1"* ]]; then
+                    name_similarity=75  # Substring match
+                elif [[ "${basename1:0:10}" == "${basename2:0:10}" ]]; then
+                    name_similarity=50  # First 10 chars match
+                else
+                    # Check for common patterns like "copy", "(1)", etc.
+                    if [[ "$basename1" =~ [[:space:]]?\(?[0-9]+\)? ]] || [[ "$basename2" =~ [[:space:]]?\(?[0-9]+\)? ]]; then
+                        name_similarity=60  # Likely a copy with number
+                    fi
                 fi
                 
-                duplicate_pairs+=("$remove_file|$keep_file|$similarity_reason")
+                # Intelligent decision logic based on multiple factors
+                local keep_file=""
+                local remove_file=""
+                local decision_reason=""
+                
+                # Rule 0 (PRIORITY): Prefer GIF that matches its source video filename
+                # This is the most important rule - GIFs should match their source videos
+                if [[ "$has_source1" == true && "$has_source2" == false ]]; then
+                    # Only file1 has a matching source video - keep it
+                    keep_file="$file1"
+                    remove_file="$file2"
+                    decision_reason="keeping GIF matching source video: $(basename "$source_file1")"
+                elif [[ "$has_source2" == true && "$has_source1" == false ]]; then
+                    # Only file2 has a matching source video - keep it
+                    keep_file="$file2"
+                    remove_file="$file1"
+                    decision_reason="keeping GIF matching source video: $(basename "$source_file2")"
+                elif [[ "$has_source1" == true && "$has_source2" == true ]]; then
+                    # Both have matching source videos - fall through to other rules
+                    # But add this info to the decision reason later
+                    decision_reason="both match source videos"
+                # Rule 1: Prefer the file created first (older file)
+                elif [[ $ctime1 -lt $ctime2 && $((ctime2 - ctime1)) -gt 60 ]]; then
+                    # file1 is at least 1 minute older
+                    keep_file="$file1"
+                    remove_file="$file2"
+                    decision_reason="keeping older file (created first)"
+                elif [[ $ctime2 -lt $ctime1 && $((ctime1 - ctime2)) -gt 60 ]]; then
+                    # file2 is at least 1 minute older
+                    keep_file="$file2"
+                    remove_file="$file1"
+                    decision_reason="keeping older file (created first)"
+                # Rule 2: If no source match and creation times are similar, prefer file with better name
+                elif [[ $name_similarity -ge 60 ]]; then
+                    # Files have similar names, prefer the simpler/shorter one
+                    local len1=${#basename1}
+                    local len2=${#basename2}
+                    
+                    # Check if one is a numbered copy
+                    if [[ "$basename2" =~ \([0-9]+\) && ! "$basename1" =~ \([0-9]+\) ]]; then
+                        keep_file="$file1"
+                        remove_file="$file2"
+                        decision_reason="removing numbered copy"
+                    elif [[ "$basename1" =~ \([0-9]+\) && ! "$basename2" =~ \([0-9]+\) ]]; then
+                        keep_file="$file2"
+                        remove_file="$file1"
+                        decision_reason="removing numbered copy"
+                    # Check for "copy" in filename
+                    elif [[ "$basename2" =~ -?[Cc]opy && ! "$basename1" =~ -?[Cc]opy ]]; then
+                        keep_file="$file1"
+                        remove_file="$file2"
+                        decision_reason="removing copy file"
+                    elif [[ "$basename1" =~ -?[Cc]opy && ! "$basename2" =~ -?[Cc]opy ]]; then
+                        keep_file="$file2"
+                        remove_file="$file1"
+                        decision_reason="removing copy file"
+                    # Prefer shorter, cleaner name
+                    elif [[ $len1 -lt $len2 ]]; then
+                        keep_file="$file1"
+                        remove_file="$file2"
+                        decision_reason="keeping shorter filename"
+                    else
+                        keep_file="$file2"
+                        remove_file="$file1"
+                        decision_reason="keeping shorter filename"
+                    fi
+                # Rule 3: Prefer larger file size (better quality)
+                elif [[ $size2 -gt $size1 && $((size2 - size1)) -gt 1024 ]]; then
+                    # file2 is at least 1KB larger
+                    keep_file="$file2"
+                    remove_file="$file1"
+                    decision_reason="keeping larger file (better quality)"
+                elif [[ $size1 -gt $size2 && $((size1 - size2)) -gt 1024 ]]; then
+                    # file1 is at least 1KB larger
+                    keep_file="$file1"
+                    remove_file="$file2"
+                    decision_reason="keeping larger file (better quality)"
+                # Rule 4: Prefer file modified more recently (if sizes are similar)
+                elif [[ $mtime1 -gt $mtime2 ]]; then
+                    keep_file="$file1"
+                    remove_file="$file2"
+                    decision_reason="keeping recently modified file"
+                elif [[ $mtime2 -gt $mtime1 ]]; then
+                    keep_file="$file2"
+                    remove_file="$file1"
+                    decision_reason="keeping recently modified file"
+                # Rule 5: Fallback to alphabetical order
+                elif [[ "$file1" < "$file2" ]]; then
+                    keep_file="$file1"
+                    remove_file="$file2"
+                    decision_reason="alphabetical order"
+                else
+                    keep_file="$file2"
+                    remove_file="$file1"
+                    decision_reason="alphabetical order"
+                fi
+                
+                # Store the duplicate pair with enhanced metadata
+                duplicate_pairs+=("$remove_file|$keep_file|$similarity_reason|$decision_reason")
                 ((duplicate_count++))
             fi
         done
@@ -4750,13 +4892,19 @@ detect_duplicate_gifs() {
     # Show duplicate files with AI analysis details
     echo -e "\n  ${YELLOW}🔍 Found $duplicate_count duplicate GIF file(s) using AI analysis:${NC}"
     for pair in "${duplicate_pairs[@]}"; do
+        # Parse the enhanced duplicate pair format: remove_file|keep_file|similarity_reason|decision_reason
         local remove_file="${pair%%|*}"
-        local temp_pair="${pair#*|}"
-        local keep_file="${temp_pair%%|*}"
-        local similarity_reason="${pair##*|}"
+        local rest="${pair#*|}"
+        local keep_file="${rest%%|*}"
+        rest="${rest#*|}"
+        local similarity_reason="${rest%%|*}"
+        local decision_reason="${rest#*|}"
         
+        # Get file metadata for display
         local remove_size=$(stat -c%s "$remove_file" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "unknown")
         local keep_size=$(stat -c%s "$keep_file" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "unknown")
+        local remove_mtime=$(stat -c%y "$remove_file" 2>/dev/null | cut -d' ' -f1 || echo "unknown")
+        local keep_mtime=$(stat -c%y "$keep_file" 2>/dev/null | cut -d' ' -f1 || echo "unknown")
         
         # Display similarity reason with appropriate icon and color
         local reason_display=""
@@ -4778,217 +4926,61 @@ detect_duplicate_gifs() {
                 ;;
         esac
         
-        echo -e "    ${RED}🔴 Remove: $remove_file ($remove_size)${NC}"
-        echo -e "    ${GREEN}🔵 Keep:   $keep_file ($keep_size)${NC}"
-        echo -e "    ${MAGENTA}📊 Reason: $reason_display${NC}"
+        echo -e "    ${RED}🔴 Remove: $remove_file ($remove_size, modified: $remove_mtime)${NC}"
+        echo -e "    ${GREEN}🔵 Keep:   $keep_file ($keep_size, modified: $keep_mtime)${NC}"
+        echo -e "    ${MAGENTA}📊 Detection: $reason_display${NC}"
+        if [[ -n "$decision_reason" && "$decision_reason" != "$similarity_reason" ]]; then
+            echo -e "    ${CYAN}🧠 Decision: $decision_reason${NC}"
+        fi
         echo ""
     done
     
-    echo -e "  ${YELLOW}${BOLD}🤔 What should I do with these duplicate GIF files?${NC}\n"
-    
-    echo -e "  ${GREEN}${BOLD}[1] 🗑️  Delete duplicates (Quick & Clean)${NC}"
-    echo -e "      ${GRAY}→ Remove duplicate GIFs but keep the source videos${NC}"
-    echo -e "      ${GRAY}→ May reconvert some videos later${NC}\n"
-    
-    echo -e "  ${BLUE}${BOLD}[2] 🧠 Smart Delete (Recommended)${NC}"
-    echo -e "      ${GRAY}→ Delete duplicate GIFs AND their source videos${NC}"
-    echo -e "      ${GRAY}→ Prevents wasted re-conversion time${NC}"
-    echo -e "      ${GREEN}→ Most efficient option!${NC}\n"
-    
-    echo -e "  ${CYAN}${BOLD}[3] 📦 Move to Backup${NC}"
-    echo -e "      ${GRAY}→ Keep duplicates safe in backup folder${NC}"
-    echo -e "      ${GRAY}→ Review them later if needed${NC}\n"
-    
-    echo -e "  ${MAGENTA}${BOLD}[4] 🔍 Interactive Review${NC}"
-    echo -e "      ${GRAY}→ Choose what to do with each duplicate individually${NC}"
-    echo -e "      ${GRAY}→ More control but takes longer${NC}\n"
-    
-    echo -e "  ${YELLOW}${BOLD}[5] ⏭️  Skip for Now${NC}"
-    echo -e "      ${GRAY}→ Keep all duplicates and continue${NC}"
-    echo -e "      ${RED}→ Uses more disk space${NC}\n"
-    
-    echo -e "  ${BLUE}💡 ${BOLD}Tip:${NC} ${BLUE}Option 2 (Smart Delete) saves the most time and space!${NC}\n"
-    echo -e "  ${MAGENTA}${BOLD}Your choice [1-5]: ${NC}"
+    echo -e "\n  ${YELLOW}${BOLD}Duplicate GIFs are found! Do you want to remove duplicates? (y/N): ${NC}"
     
     local choice
     read -r choice
     
-    case "$choice" in
-        "1")
-            echo -e "\n  ${GREEN}${BOLD}🗑️  Quick Clean: Deleting duplicate GIF files...${NC}"
-            local deleted_count=0
-            for pair in "${duplicate_pairs[@]}"; do
-                local remove_file="${pair%%|*}"
-                local temp_pair="${pair#*|}"
-                local keep_file="${temp_pair%%|*}"
-                
-                # Safety check: only delete GIF files
-                if [[ "${remove_file##*.}" != "gif" ]]; then
-                    echo -e "    ${RED}❌ SAFETY: Refusing to delete non-GIF file: $remove_file${NC}"
-                    continue
-                fi
-                
-                # Safety check: don't delete if it looks like a video file
-                if [[ "$remove_file" =~ \.(mp4|avi|mov|mkv|webm)$ ]]; then
-                    echo -e "    ${RED}❌ SAFETY: Refusing to delete video file: $remove_file${NC}"
-                    continue
-                fi
-                
-                if [[ -f "$remove_file" ]] && rm -f "$remove_file" 2>/dev/null; then
-                    echo -e "    ${GREEN}✓ Deleted: $remove_file (keeping $keep_file)${NC}"
-                    ((deleted_count++))
-                    
-                    # Also delete the corresponding video file to prevent re-conversion
-                    local video_file="${remove_file%.*}.mp4"
-                    local alt_extensions=("avi" "mov" "mkv" "webm")
-                    
-                    for ext in "mp4" "${alt_extensions[@]}"; do
-                        local corresponding_video="${remove_file%.*}.$ext"
-                        if [[ -f "$corresponding_video" ]]; then
-                            if rm -f "$corresponding_video" 2>/dev/null; then
-                                echo -e "    ${BLUE}  ↳ Also deleted corresponding video: $(basename "$corresponding_video")${NC}"
-                            fi
-                            break
-                        fi
-                    done
-                    
-                    # Log the deletion
-                    {
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] DUPLICATE GIF DELETED: $remove_file (kept $keep_file)"
-                    } >> "$CONVERSION_LOG" 2>/dev/null || true
-                else
-                    echo -e "    ${RED}❌ Failed to delete: $remove_file${NC}"
-                fi
-            done
-            echo -e "  ${GREEN}${BOLD}✨ Success! Cleaned up $deleted_count duplicate GIF(s)${NC}"
-            ;;
-        "2")
-            echo -e "\n  ${BLUE}${BOLD}🧠 Smart Delete: Removing duplicates and source videos...${NC}"
-            echo -e "  ${CYAN}🚀 This prevents wasted re-conversion time!${NC}"
-            local smart_deleted_count=0
-            for pair in "${duplicate_pairs[@]}"; do
-                local remove_file="${pair%%|*}"
-                local temp_pair="${pair#*|}"
-                local keep_file="${temp_pair%%|*}"
-                
-                # Safety check: only delete GIF files
-                if [[ "${remove_file##*.}" != "gif" ]]; then
-                    echo -e "    ${RED}❌ SAFETY: Refusing to delete non-GIF file: $remove_file${NC}"
-                    continue
-                fi
-                
-                if [[ -f "$remove_file" ]] && rm -f "$remove_file" 2>/dev/null; then
-                    echo -e "    ${GREEN}✓ Deleted GIF: $remove_file (keeping $keep_file)${NC}"
-                    
-                    # Also delete the corresponding video file
-                    for ext in "mp4" "avi" "mov" "mkv" "webm"; do
-                        local corresponding_video="${remove_file%.*}.$ext"
-                        if [[ -f "$corresponding_video" ]]; then
-                            if rm -f "$corresponding_video" 2>/dev/null; then
-                                echo -e "    ${BLUE}  ↳ Also deleted video: $(basename "$corresponding_video")${NC}"
-                            fi
-                            break
-                        fi
-                    done
-                    
-                    ((smart_deleted_count++))
-                    # Log the deletion
-                    {
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SMART DUPLICATE DELETED: $remove_file + video (kept $keep_file)"
-                    } >> "$CONVERSION_LOG" 2>/dev/null || true
-                else
-                    echo -e "    ${RED}❌ Failed to delete: $remove_file${NC}"
-                fi
-            done
-            echo -e "  ${GREEN}${BOLD}🎉 Smart cleanup complete! Removed $smart_deleted_count duplicates + videos${NC}"
-            echo -e "  ${BLUE}⚡ You just saved time and disk space!${NC}"
-            ;;
-        "3")
-            echo -e "\n  ${CYAN}${BOLD}📦 Safe Backup: Moving duplicates to backup folder...${NC}"
-            local backup_dir="$LOG_DIR/duplicate_gifs"
-            mkdir -p "$backup_dir" 2>/dev/null || {
-                echo -e "    ${RED}❌ Cannot create backup directory${NC}"
-                return 1
-            }
+    # Default to 'no' if empty or anything other than y/Y
+    if [[ ! "$choice" =~ ^[Yy]$ ]]; then
+        echo -e "  ${CYAN}⏭️  Skipping duplicate removal${NC}"
+        return 0
+    fi
+    
+    # User chose yes - delete duplicate GIF files only
+    echo -e "\n  ${GREEN}${BOLD}🗑️  Deleting duplicate GIF files...${NC}"
+    local deleted_count=0
+    
+    for pair in "${duplicate_pairs[@]}"; do
+        local remove_file="${pair%%|*}"
+        local temp_pair="${pair#*|}"
+        local keep_file="${temp_pair%%|*}"
+        
+        # Safety check: only delete GIF files
+        if [[ "${remove_file##*.}" != "gif" ]]; then
+            echo -e "    ${RED}❌ SAFETY: Refusing to delete non-GIF file: $remove_file${NC}"
+            continue
+        fi
+        
+        # Safety check: don't delete if it looks like a video file
+        if [[ "$remove_file" =~ \.(mp4|avi|mov|mkv|webm)$ ]]; then
+            echo -e "    ${RED}❌ SAFETY: Refusing to delete video file: $remove_file${NC}"
+            continue
+        fi
+        
+        if [[ -f "$remove_file" ]] && rm -f "$remove_file" 2>/dev/null; then
+            echo -e "    ${GREEN}✓ Deleted: $remove_file (keeping $keep_file)${NC}"
+            ((deleted_count++))
             
-            local moved_count=0
-            for pair in "${duplicate_pairs[@]}"; do
-                local remove_file="${pair%%|*}"
-                local temp_pair="${pair#*|}"
-                local keep_file="${temp_pair%%|*}"
-                
-                # Safety check: only move GIF files
-                if [[ "${remove_file##*.}" != "gif" ]]; then
-                    echo -e "    ${RED}❌ SAFETY: Refusing to move non-GIF file: $remove_file${NC}"
-                    continue
-                fi
-                
-                # Safety check: don't move if it looks like a video file
-                if [[ "$remove_file" =~ \.(mp4|avi|mov|mkv|webm)$ ]]; then
-                    echo -e "    ${RED}❌ SAFETY: Refusing to move video file: $remove_file${NC}"
-                    continue
-                fi
-                
-                local backup_file="$backup_dir/${remove_file}.$(date +%s).duplicate"
-                if [[ -f "$remove_file" ]] && mv "$remove_file" "$backup_file" 2>/dev/null; then
-                    echo -e "    ${GREEN}✓ Moved: $remove_file -> $(basename "$backup_file") (kept $keep_file)${NC}"
-                    ((moved_count++))
-                    # Log the move
-                    {
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] DUPLICATE GIF MOVED: $remove_file -> $backup_file (kept $keep_file)"
-                    } >> "$CONVERSION_LOG" 2>/dev/null || true
-                else
-                    echo -e "    ${RED}❌ Failed to move: $remove_file${NC}"
-                fi
-            done
-            echo -e "  ${GREEN}${BOLD}📦 Safely backed up $moved_count duplicate(s) to:${NC}"
-            echo -e "  ${CYAN}📁 $backup_dir${NC}"
-            ;;
-        "4")
-            echo -e "\n  ${MAGENTA}${BOLD}🔍 Interactive Review: Let's go through each duplicate...${NC}"
-            for pair in "${duplicate_pairs[@]}"; do
-                local remove_file="${pair%%|*}"
-                local temp_pair="${pair#*|}"
-                local keep_file="${temp_pair%%|*}"
-                local remove_size=$(stat -c%s "$remove_file" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "unknown")
-                local keep_size=$(stat -c%s "$keep_file" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "unknown")
-                
-                echo -e "\n  ${YELLOW}Duplicate found:${NC}"
-                echo -e "    ${RED}File A: $remove_file ($remove_size)${NC}"
-                echo -e "    ${GREEN}File B: $keep_file ($keep_size)${NC}"
-                echo -e "  ${MAGENTA}Delete File A? [y/N]: ${NC}"
-                
-                local confirm
-                read -r confirm
-                if [[ "$confirm" =~ ^[Yy]$ ]]; then
-                    # Safety check: only delete GIF files
-                    if [[ "${remove_file##*.}" != "gif" ]] || [[ "$remove_file" =~ \.(mp4|avi|mov|mkv|webm)$ ]]; then
-                        echo -e "    ${RED}❌ SAFETY: Refusing to delete non-GIF or video file: $remove_file${NC}"
-                        continue
-                    fi
-                    
-                    if rm -f "$remove_file" 2>/dev/null; then
-                        echo -e "    ${GREEN}✓ Deleted: $remove_file${NC}"
-                        # Log the deletion
-                        {
-                            echo "[$(date '+%Y-%m-%d %H:%M:%S')] DUPLICATE GIF DELETED (interactive): $remove_file (kept $keep_file)"
-                        } >> "$CONVERSION_LOG" 2>/dev/null || true
-                    else
-                        echo -e "    ${RED}❌ Failed to delete: $remove_file${NC}"
-                    fi
-                else
-                    echo -e "    ${YELLOW}Skipped: $remove_file${NC}"
-                fi
-            done
-            ;;
-        "5")
-            echo -e "\n  ${YELLOW}${BOLD}⏭️  Skipping: Keeping all duplicates for now${NC}"
-            echo -e "  ${GRAY}💾 Note: This uses more disk space but you can clean up later${NC}"
-            ;;
-        *)
-            echo -e "\n  ${RED}❌ Invalid choice. Keeping all duplicates.${NC}"
-            ;;
-    esac
+            # Log the deletion
+            {
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] DUPLICATE GIF DELETED: $remove_file (kept $keep_file)"
+            } >> "$CONVERSION_LOG" 2>/dev/null || true
+        else
+            echo -e "    ${RED}❌ Failed to delete: $remove_file${NC}"
+        fi
+    done
+    
+    echo -e "  ${GREEN}${BOLD}✨ Success! Cleaned up $deleted_count duplicate GIF(s)${NC}"
     
     echo ""
 }
@@ -6884,7 +6876,7 @@ validate_conversion_environment() {
     return 0
 }
 
-# 🎦 Comprehensive video file validation with corruption detection
+# 🎬 Comprehensive video file validation with MD5-based caching
 validate_video_file() {
     local file="$1"
     trace_function "validate_video_file"
@@ -6907,12 +6899,52 @@ validate_video_file() {
         return 1
     fi
     
-    # Detect corruption using comprehensive ffprobe analysis
-    if ! detect_video_corruption "$file"; then
-        return 1
+    # MD5-based validation cache to skip expensive FFprobe checks
+    local validation_cache="$LOG_DIR/validation_cache.db"
+    local file_mtime=$(stat -c%Y "$file" 2>/dev/null || echo "0")
+    local cache_key="${file}|${file_size}|${file_mtime}"
+    
+    # Validate cache integrity on first access (silent rebuild)
+    if [[ -f "$validation_cache" ]]; then
+        # Check if cache is corrupted (malformed entries)
+        if ! head -1 "$validation_cache" 2>/dev/null | grep -qE '^.+\|[0-9]+\|[0-9]+\|(VALID|INVALID)$'; then
+            # First line is corrupted or invalid format
+            if [[ $(wc -l < "$validation_cache" 2>/dev/null || echo 0) -gt 0 ]]; then
+                # Silently rebuild cache
+                mv "$validation_cache" "${validation_cache}.corrupt.$(date +%s)" 2>/dev/null
+                echo "# Validation Cache v1.0 - $(date)" > "$validation_cache"
+            fi
+        fi
+        
+        # Check cache for this specific file (no output)
+        if grep -qF "$cache_key|VALID" "$validation_cache" 2>/dev/null; then
+            return 0
+        elif grep -qF "$cache_key|INVALID" "$validation_cache" 2>/dev/null; then
+            return 1
+        fi
+    else
+        # Initialize cache with header
+        mkdir -p "$(dirname "$validation_cache")" 2>/dev/null
+        echo "# Validation Cache v1.0 - $(date)" > "$validation_cache"
+        echo "# Format: filepath|filesize|mtime|VALID/INVALID" >> "$validation_cache"
     fi
     
-    return 0
+    # Cache miss - perform full validation
+    local validation_result="INVALID"
+    if detect_video_corruption "$file"; then
+        validation_result="VALID"
+    fi
+    
+    # Save to cache
+    mkdir -p "$(dirname "$validation_cache")" 2>/dev/null
+    echo "$cache_key|$validation_result" >> "$validation_cache"
+    
+    # Keep cache size manageable (last 1000 entries)
+    if [[ -f "$validation_cache" ]] && [[ $(wc -l < "$validation_cache") -gt 1000 ]]; then
+        tail -800 "$validation_cache" > "${validation_cache}.tmp" && mv "${validation_cache}.tmp" "$validation_cache"
+    fi
+    
+    [[ "$validation_result" == "VALID" ]] && return 0 || return 1
 }
 
 # 🔍 Basic corruption detection for video files (less aggressive)
@@ -6921,7 +6953,7 @@ detect_video_corruption() {
     local temp_error="/tmp/ffprobe_error_$$_$(date +%s).log"
     trace_function "detect_video_corruption"
     
-    echo -e "  ${BLUE}🔍 Quick validation: $(basename "$file")${NC}"
+    # Silent validation - no output
     
     # Test 1: Basic stream validation
     if ! ffprobe -v quiet -select_streams v:0 -show_entries stream=codec_type -of csv=p=0 "$file" 2>"$temp_error" | grep -q "video"; then
@@ -6944,9 +6976,8 @@ detect_video_corruption() {
     # Skip the aggressive frame decoding test that was causing false positives
     # If basic tests pass, assume the file is valid
     
-    # Cleanup and success
+    # Cleanup and success (silent)
     rm -f "$temp_error" 2>/dev/null
-    echo -e "  ${GREEN}✓ Basic validation passed: $(basename "$file")${NC}"
     return 0
 }
 
@@ -9744,9 +9775,26 @@ start_conversion() {
             return 1
         fi
     else
+    # Show validation progress bar
+    echo -e "${BLUE}🔍 Validating video files...${NC}"
+    
     shopt -s nullglob
-    for file in *.mp4 *.avi *.mov *.mkv *.webm; do
+    local all_video_files=(*.mp4 *.avi *.mov *.mkv *.webm)
+    local total_to_check=${#all_video_files[@]}
+    local checked=0
+    
+    for file in "${all_video_files[@]}"; do
         if [[ -f "$file" && -r "$file" ]]; then
+            ((checked++))
+            
+            # Update progress bar
+            if [[ $total_to_check -gt 0 ]]; then
+                local percent=$((checked * 100 / total_to_check))
+                local filled=$((checked * 40 / total_to_check))
+                local empty=$((40 - filled))
+                printf "\r  ${CYAN}[${GREEN}%${filled}s${GRAY}%${empty}s${CYAN}] ${YELLOW}%d%%${NC} ${BLUE}(%d/%d)${NC}" "" "" "$percent" "$checked" "$total_to_check" | tr ' ' '█'
+            fi
+            
             ((total_files++)) || true
             local base_name=$(basename "$file")
             
@@ -9754,7 +9802,6 @@ start_conversion() {
             if [[ -n "${processed_files[$base_name]:-}" ]]; then
                 ((resumed_files++)) || true
                 ((already_converted++)) || true
-                echo -e "${BLUE}↻ Already processed: $base_name${NC}"
                 continue
             fi
             
@@ -9767,14 +9814,18 @@ start_conversion() {
                 # Only do basic validation for files we'll actually process
                 if validate_video_file "$file"; then
                     files_to_process+=("$file")
-                    echo -e "${GREEN}📄 Ready to convert: $(basename "$file")${NC}"
                 else
-                    echo -e "${YELLOW}⚠️ Skipping invalid: $(basename "$file")${NC}"
                     ((corrupt_input_files++)) || true
                 fi
             fi
         fi
     done
+    
+    # Clear progress bar line and show completion
+    if [[ $total_to_check -gt 0 ]]; then
+        printf "\r  ${GREEN}✓ Validation complete: %d files checked${NC}\n" "$total_to_check"
+    fi
+    
     shopt -u nullglob
     fi
     
@@ -9829,7 +9880,7 @@ start_conversion() {
         for file in "${files_to_process[@]}"; do
             # Check for graceful interrupt request
             if [[ "$INTERRUPT_REQUESTED" == true ]]; then
-                echo -e "\n${YELLOW}⚠️  Interrupt received - waiting for current jobs to complete${NC}"
+                echo -e "\n${YELLOW}👋 Quitting... Waiting for current jobs to complete${NC}"
                 break
             fi
             
@@ -9892,7 +9943,7 @@ start_conversion() {
         for file in "${files_to_process[@]}"; do
             # Check for graceful interrupt request
             if [[ "$INTERRUPT_REQUESTED" == true ]]; then
-                echo -e "\n${YELLOW}⚠️  Interrupt received - stopping after completing current batch${NC}"
+                echo -e "\n${YELLOW}👋 Quitting... Stopping after completing current file${NC}"
                 break
             fi
             
@@ -9913,11 +9964,23 @@ start_conversion() {
         done
     fi
     
-    # Final progress update
+    # Final progress update - only show 100% if not interrupted
     if [[ "$PROGRESS_BAR" == true ]]; then
-        printf "\r\033[K${GREEN}Overall: ["
-        printf "%50s" | tr ' ' '▓'
-        printf "] 100%% (%d/%d) ${GREEN}Completed!${NC}\n\n" $files_to_convert $files_to_convert
+        if [[ "$INTERRUPT_REQUESTED" == true ]]; then
+            # Show actual progress when interrupted
+            local percent=$((current * 100 / files_to_convert))
+            local filled=$((current * 50 / files_to_convert))
+            local empty=$((50 - filled))
+            printf "\r\033[K${YELLOW}Overall: ["
+            for ((i=0; i<filled; i++)); do printf "█"; done
+            for ((i=0; i<empty; i++)); do printf "░"; done
+            printf "] %d%% (%d/%d) ${YELLOW}Interrupted${NC}\n\n" $percent $current $files_to_convert
+        else
+            # Show 100% completion for successful finish
+            printf "\r\033[K${GREEN}Overall: ["
+            printf "%50s" | tr ' ' '▓'
+            printf "] 100%% (%d/%d) ${GREEN}Completed!${NC}\n\n" $files_to_convert $files_to_convert
+        fi
     fi
     
     show_statistics
@@ -11136,7 +11199,7 @@ _convert_video_internal() {
     while [[ $retry_count -le $MAX_RETRIES && $conversion_success == false ]]; do
         # Check for interrupt request at start of each retry
         if [[ "$INTERRUPT_REQUESTED" == true ]]; then
-            echo -e "\n${YELLOW}⚠️  Interrupt detected - stopping conversion${NC}"
+            # Silently stop without error messages
             cleanup_temp_files "${file%.*}"
             return 130  # Standard exit code for SIGINT
         fi
@@ -11926,6 +11989,24 @@ show_statistics() {
 
 # 🎆 Main execution with robust error handling
 main() {
+    # Self-integrity check - detect if script was modified
+    local script_path="${BASH_SOURCE[0]}"
+    local script_hash_cache="$HOME/.smart-gif-converter/.script_hash"
+    local current_hash=$(md5sum "$script_path" 2>/dev/null | cut -d' ' -f1)
+    
+    if [[ -f "$script_hash_cache" ]]; then
+        local cached_hash=$(cat "$script_hash_cache" 2>/dev/null)
+        if [[ "$current_hash" != "$cached_hash" ]]; then
+            echo -e "${YELLOW}⚠️ Script modified - clearing validation cache for safety${NC}"
+            rm -f "$HOME/.smart-gif-converter/validation_cache.db" 2>/dev/null
+            echo "$current_hash" > "$script_hash_cache"
+        fi
+    else
+        # First run or cache missing - save hash
+        mkdir -p "$(dirname "$script_hash_cache")" 2>/dev/null
+        echo "$current_hash" > "$script_hash_cache"
+    fi
+    
     # Initialize error handling system
     trace_function "main"
     
@@ -12344,7 +12425,7 @@ main() {
                 ;;
             --show-logs)
                 init_log_directory >/dev/null 2>&1
-                echo -e "${CYAN}${BOLD}📁 LOG DIRECTORY INFORMATION:${NC}\\n"
+                echo -e "${CYAN}${BOLD}📁 LOG DIRECTORY INFORMATION:${NC}\\\\n"
                 local log_dir_display="$(echo "$LOG_DIR" | sed "s|$HOME|~|g")"
                 local error_log_display="$(echo "$ERROR_LOG" | sed "s|$HOME|~|g")"
                 local conv_log_display="$(echo "$CONVERSION_LOG" | sed "s|$HOME|~|g")"
@@ -12353,7 +12434,7 @@ main() {
                 local clickable_conv_log=$(make_clickable_path "$CONVERSION_LOG" "$conv_log_display")
                 echo -e "${YELLOW}Log Directory:${NC} $clickable_log_dir"
                 echo -e "${YELLOW}Error Log:${NC} $clickable_error_log"
-                echo -e "${YELLOW}Conversion Log:${NC} $clickable_conv_log\\n"
+                echo -e "${YELLOW}Conversion Log:${NC} $clickable_conv_log\\\\n"
                 
                 if [[ -f "$ERROR_LOG" ]]; then
                     local error_lines=$(wc -l < "$ERROR_LOG")
@@ -12370,9 +12451,69 @@ main() {
                 fi
                 
                 echo -e "\n${BLUE}Commands to view logs:${NC}"
-                echo -e "  tail -f \"$ERROR_LOG\"       # Follow error log"
-                echo -e "  tail -20 \"$CONVERSION_LOG\"  # Last 20 conversions"
-                echo -e "  ls -la \"$LOG_DIR\"         # List all log files"
+                echo -e "  tail -f \\\"$ERROR_LOG\\\"       # Follow error log"
+                echo -e "  tail -20 \\\"$CONVERSION_LOG\\\"  # Last 20 conversions"
+                echo -e "  ls -la \\\"$LOG_DIR\\\"         # List all log files"
+                exit 0
+                ;;
+            --check-cache|--validate-cache)
+                init_log_directory >/dev/null 2>&1
+                local validation_cache="$LOG_DIR/validation_cache.db"
+                echo -e "${CYAN}${BOLD}🛡️ VALIDATION CACHE CHECK:${NC}\n"
+                
+                if [[ ! -f "$validation_cache" ]]; then
+                    echo -e "${YELLOW}⚠️ No validation cache found${NC}"
+                    echo -e "${BLUE}ℹ️ Cache will be created on first validation${NC}"
+                    exit 0
+                fi
+                
+                local cache_size=$(stat -c%s "$validation_cache" 2>/dev/null | numfmt --to=iec)
+                local cache_entries=$(grep -c '|' "$validation_cache" 2>/dev/null || echo "0")
+                echo -e "${YELLOW}Cache Location:${NC} $(make_clickable_path "$validation_cache" "${validation_cache/$HOME/~}")"
+                echo -e "${YELLOW}Cache Size:${NC} $cache_size ($cache_entries entries)"
+                
+                # Validate cache format
+                local corrupted=0
+                local valid=0
+                local invalid=0
+                
+                while IFS='|' read -r filepath filesize mtime status; do
+                    [[ "$filepath" =~ ^# ]] && continue  # Skip comments
+                    if [[ -z "$filepath" || -z "$filesize" || -z "$mtime" || ! "$status" =~ ^(VALID|INVALID)$ ]]; then
+                        ((corrupted++))
+                    elif [[ "$status" == "VALID" ]]; then
+                        ((valid++))
+                    else
+                        ((invalid++))
+                    fi
+                done < "$validation_cache"
+                
+                echo -e "\n${GREEN}✓ Valid entries:${NC} $valid"
+                echo -e "${RED}✗ Invalid entries:${NC} $invalid"
+                
+                if [[ $corrupted -gt 0 ]]; then
+                    echo -e "${YELLOW}⚠️ Corrupted entries:${NC} $corrupted"
+                    echo -e "\n${YELLOW}Recommendation: Rebuild cache with --clear-cache${NC}"
+                else
+                    echo -e "${GREEN}✓ Cache integrity: OK${NC}"
+                fi
+                
+                echo -e "\n${BLUE}Commands:${NC}"
+                echo -e "  ./convert.sh --clear-cache      # Clear validation cache"
+                echo -e "  rm \"$validation_cache\"    # Manually delete cache"
+                exit 0
+                ;;
+            --clear-cache)
+                init_log_directory >/dev/null 2>&1
+                local validation_cache="$LOG_DIR/validation_cache.db"
+                if [[ -f "$validation_cache" ]]; then
+                    local backup="${validation_cache}.backup.$(date +%s)"
+                    mv "$validation_cache" "$backup"
+                    echo -e "${GREEN}✓ Validation cache cleared${NC}"
+                    echo -e "${BLUE}ℹ️ Backup saved: $(basename "$backup")${NC}"
+                else
+                    echo -e "${YELLOW}⚠️ No validation cache to clear${NC}"
+                fi
                 exit 0
                 ;;
             *)
