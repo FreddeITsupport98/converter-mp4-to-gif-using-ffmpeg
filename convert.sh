@@ -2684,17 +2684,42 @@ ai_quality_selection() {
         local filled=$((progress * 20 / 100))
         local empty=$((20 - filled))
         
+        # Hide cursor at start of first progress update
+        if [[ $current_step -eq 1 ]]; then
+            tput civis 2>/dev/null || printf "\033[?25l"
+        fi
+        
+        # Get terminal width and calculate available space for text
+        local term_width=$(tput cols 2>/dev/null || echo "80")
+        # Actual visible characters: "  [" (3) + bar (20) + "] " (2) + "100% " (5) = 30 chars
+        # Reserve extra space to prevent wrapping (safety margin)
+        local available_width=$((term_width - 35))
+        # Ensure reasonable bounds
+        [[ $available_width -lt 15 ]] && available_width=15
+        [[ $available_width -gt 40 ]] && available_width=40
+        
+        # Truncate step name if too long
+        local display_name="$step_name"
+        if [[ ${#step_name} -gt $available_width ]]; then
+            display_name="${step_name:0:$((available_width-3))}..."
+        fi
+        
         # Clear the entire line first to prevent text artifacts
         printf "\r\033[K"
         
-        # Print progress bar with fixed-width text (50 chars for step name)
+        # Print progress bar with dynamic-width text
         printf "  ${CYAN}["
         for ((i=0; i<filled; i++)); do printf "${GREEN}█${NC}"; done
         for ((i=0; i<empty; i++)); do printf "${GRAY}░${NC}"; done
-        printf "${CYAN}] ${BOLD}%3d%%${NC} ${BLUE}%-50s${NC}" "$progress" "$step_name"
+        printf "${CYAN}] ${BOLD}%3d%%${NC} ${BLUE}%s${NC}" "$progress" "$display_name"
         
-        # Brief pause to make progress visible (skip for completion step)
-        [[ "$step_name" != "Complete!" ]] && sleep 0.1
+        # Show cursor and move to new line when complete
+        if [[ "$step_name" == "Complete!" ]]; then
+            tput cnorm 2>/dev/null || printf "\033[?25h"
+        else
+            # Brief pause to make progress visible
+            sleep 0.1
+        fi
     }
     
     # 🎯 Try inxi first - comprehensive hardware detection tool
@@ -3083,18 +3108,12 @@ ai_quality_selection() {
         # High-end systems should prioritize quality - system capabilities matter more than source quality
         case "$system_tier" in
             "high-end")
-                # Workstation/Enthusiast systems (score 100+) - prioritize maximum quality
+                # Workstation/Enthusiast systems (score 100+) - ALWAYS recommend MAX quality
                 if [[ $system_score -ge 100 ]]; then
-                    # Top-tier systems: Always recommend max or high for any decent source
-                    if [[ "$ai_recommendation" == "low" ]]; then
-                        ai_recommendation="high"
-                        recommendation_reason="Workstation-class PC - quality prioritized over source"
-                    elif [[ "$ai_recommendation" == "medium" ]]; then
+                    # Top-tier systems: Your hardware can handle MAX, so use it!
+                    if [[ "$ai_recommendation" != "max" ]]; then
                         ai_recommendation="max"
-                        recommendation_reason="Workstation-class PC - maximum quality recommended"
-                    elif [[ "$ai_recommendation" == "high" ]]; then
-                        ai_recommendation="max"
-                        recommendation_reason="$recommendation_reason (upgraded for workstation PC)"
+                        recommendation_reason="Workstation-class PC (Score: $system_score) - maximum quality recommended"
                     fi
                 # High-end systems (score 70-99) - aggressive upgrades
                 else
@@ -5477,16 +5496,43 @@ analyze_video_gif_mapping() {
     local need_conversion=0
     local orphaned_count=0
     
-    # Scan all video files
+    # Scan all video files with progress
+    echo -e "  ${CYAN}🔍 Scanning video files...${NC}"
     shopt -s nullglob
-    for video in *.mp4 *.avi *.mov *.mkv *.webm; do
+    local video_list=(*.mp4 *.avi *.mov *.mkv *.webm)
+    local video_count=${#video_list[@]}
+    
+    for video in "${video_list[@]}"; do
         [[ -f "$video" ]] || continue
         local basename="${video%.*}"
         video_files["$basename"]="$video"
         ((total_videos++))
+        
+        # Truncate filename if too long
+        local display_name="$(basename "$video")"
+        if [[ ${#display_name} -gt 50 ]]; then
+            display_name="${display_name:0:47}..."
+        fi
+        
+        # Show progress bar on first line
+        local progress=$((total_videos * 100 / video_count))
+        printf "\r\033[K  ${CYAN}["
+        local filled=$((progress * 20 / 100))
+        for ((i=0; i<filled; i++)); do printf "${GREEN}█${NC}"; done
+        for ((i=filled; i<20; i++)); do printf "${GRAY}░${NC}"; done
+        printf "${CYAN}] ${BOLD}%3d%%${NC} ${BLUE}Scanned %d/%d${NC}" "$progress" "$total_videos" "$video_count"
+        
+        # Show current file on second line
+        printf "\n  ${GRAY}📄 %s${NC}" "$display_name"
+        printf "\r\033[1A"  # Move cursor back up to progress bar line
     done
+    printf "\r\033[K  ${CYAN}["
+    for ((i=0; i<20; i++)); do printf "${GREEN}█${NC}"; done
+    printf "${CYAN}] ${BOLD}100%%${NC} ${BLUE}Scanned %d videos${NC}\n" "$total_videos"
+    printf "\033[K\n"  # Clear the file name line
     
     # Scan all GIF files
+    echo -e "  ${CYAN}🔍 Scanning GIF files...${NC}"
     for gif in *.gif; do
         [[ -f "$gif" ]] || continue
         local basename="${gif%.*}"
@@ -5500,10 +5546,33 @@ analyze_video_gif_mapping() {
         return 1
     fi
     
-    # Analyze mappings
+    # Analyze mappings with progress
+    echo -e "  ${CYAN}🔍 Analyzing video-GIF mappings...${NC}"
+    local analyzed=0
+    local total_to_analyze=$total_videos
+    
     for basename in "${!video_files[@]}"; do
         local video_file="${video_files[$basename]}"
         local expected_gif="${basename}.gif"
+        ((analyzed++))
+        
+        # Truncate filename if too long
+        local display_name="$(basename "$video_file")"
+        if [[ ${#display_name} -gt 50 ]]; then
+            display_name="${display_name:0:47}..."
+        fi
+        
+        # Show progress bar on first line
+        local progress=$((analyzed * 100 / total_to_analyze))
+        printf "\r\033[K  ${CYAN}["
+        local filled=$((progress * 20 / 100))
+        for ((i=0; i<filled; i++)); do printf "${GREEN}█${NC}"; done
+        for ((i=filled; i<20; i++)); do printf "${GRAY}░${NC}"; done
+        printf "${CYAN}] ${BOLD}%3d%%${NC} ${BLUE}Analyzed %d/%d${NC}" "$progress" "$analyzed" "$total_to_analyze"
+        
+        # Show current file on second line
+        printf "\n  ${GRAY}🔍 %s${NC}" "$display_name"
+        printf "\r\033[1A"  # Move cursor back up to progress bar line
         
         if [[ -n "${gif_files[$basename]:-}" ]]; then
             # Found corresponding GIF
@@ -5525,6 +5594,7 @@ analyze_video_gif_mapping() {
             ((need_conversion++))
         fi
     done
+    printf "\n"
     
     # Find orphaned GIFs (GIFs without corresponding video files)
     for basename in "${!gif_files[@]}"; do
@@ -5546,32 +5616,8 @@ analyze_video_gif_mapping() {
         echo -e "    ${YELLOW}🔍 Orphaned GIFs: ${BOLD}$orphaned_count${NC}"
     fi
     
-    # Show detailed mapping information
-    if [[ $already_converted -gt 0 ]]; then
-        echo -e "\n  ${GREEN}✓ Existing conversions found:${NC}"
-        for video_file in "${!video_to_gif_map[@]}"; do
-            local gif_file="${video_to_gif_map[$video_file]}"
-            local video_size=$(stat -c%s "$video_file" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "?")
-            local gif_size=$(stat -c%s "$gif_file" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "?")
-            local status="✓"
-            
-            if [[ -n "${conversion_needed[$video_file]:-}" && "${conversion_needed[$video_file]}" == "outdated" ]]; then
-                status="⚠️ (video newer)"
-            fi
-            
-            echo -e "    ${status} $(basename "$video_file") ($video_size) → $(basename "$gif_file") ($gif_size)"
-        done
-    fi
-    
-    if [[ $need_conversion -gt 0 ]]; then
-        echo -e "\n  ${CYAN}🔄 Videos needing conversion:${NC}"
-        for video_file in "${!conversion_needed[@]}"; do
-            if [[ "${conversion_needed[$video_file]}" == "missing" ]]; then
-                local video_size=$(stat -c%s "$video_file" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "?")
-                echo -e "    ${CYAN}📹 $(basename "$video_file") ($video_size) → ${GRAY}[no GIF]${NC}"
-            fi
-        done
-    fi
+    # Only show summary - no verbose file listings
+    echo ""
     
     if [[ $orphaned_count -gt 0 ]]; then
         echo -e "\n  ${YELLOW}🔍 Orphaned GIFs (no matching video):${NC}"
