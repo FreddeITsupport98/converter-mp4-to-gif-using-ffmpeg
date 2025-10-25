@@ -2666,6 +2666,377 @@ ai_quality_selection() {
     local ai_recommendation="high"  # default fallback
     local recommendation_reason=""
     
+    # 🖥️ Detect system capabilities for intelligent recommendations
+    echo -e "${BLUE}🖥️  Analyzing system capabilities...${NC}"
+    
+    local system_score=0
+    local system_factors=()
+    
+    # Progress tracking
+    local detection_steps=6  # Updated to match actual steps
+    local current_step=0
+    
+    # Helper function to show detection progress
+    show_detection_progress() {
+        local step_name="$1"
+        ((current_step++))
+        local progress=$((current_step * 100 / detection_steps))
+        local filled=$((progress * 20 / 100))
+        local empty=$((20 - filled))
+        
+        # Clear the entire line first to prevent text artifacts
+        printf "\r\033[K"
+        
+        # Print progress bar with fixed-width text (50 chars for step name)
+        printf "  ${CYAN}["
+        for ((i=0; i<filled; i++)); do printf "${GREEN}█${NC}"; done
+        for ((i=0; i<empty; i++)); do printf "${GRAY}░${NC}"; done
+        printf "${CYAN}] ${BOLD}%3d%%${NC} ${BLUE}%-50s${NC}" "$progress" "$step_name"
+        
+        # Brief pause to make progress visible (skip for completion step)
+        [[ "$step_name" != "Complete!" ]] && sleep 0.1
+    }
+    
+    # 🎯 Try inxi first - comprehensive hardware detection tool
+    local use_inxi=false
+    local inxi_cpu_info=""
+    local inxi_memory_info=""
+    local inxi_gpu_info=""
+    local inxi_disk_info=""
+    
+    if command -v inxi >/dev/null 2>&1; then
+        use_inxi=true
+        show_detection_progress "Detecting hardware with inxi..."
+        
+        # Intelligent inxi flag selection based on what we need:
+        # -C = CPU (cores, model, speed, cache)
+        # -m = Memory (size, type, speed)
+        # -G = Graphics (GPU model, driver)
+        # -D = Drives (type, model, size)
+        # -b = Basic output (faster, less verbose)
+        # -c 0 = No color codes (cleaner parsing)
+        
+        # Get CPU info: cores, model, frequency, cache
+        inxi_cpu_info=$(inxi -C -c 0 2>/dev/null)
+        
+        # Get Memory info: total RAM, type, speed
+        inxi_memory_info=$(inxi -m -c 0 2>/dev/null)
+        
+        # Get GPU info: model, driver
+        inxi_gpu_info=$(inxi -G -c 0 2>/dev/null)
+        
+        # Get Disk info: SSD/HDD detection
+        inxi_disk_info=$(inxi -D -c 0 2>/dev/null)
+    else
+        show_detection_progress "Detecting hardware (standard tools)..."
+    fi
+    
+    # Enhanced CPU detection with frequency and model info
+    show_detection_progress "Analyzing CPU..."
+    local cpu_model=""
+    local cpu_freq_mhz=0
+    local cpu_cores_detected=0
+    
+    # Parse inxi CPU info if available
+    if [[ "$use_inxi" == "true" && -n "$inxi_cpu_info" ]]; then
+        # Extract CPU model from inxi output
+        # Example: "CPU: 16-core AMD Ryzen 9 5950X (32-thread) @ 3.4GHz"
+        cpu_model=$(echo "$inxi_cpu_info" | grep -oP 'CPU:.*?(?=\(|@|$)' | sed 's/CPU:[[:space:]]*//g' | sed 's/[0-9]*-core[[:space:]]*//g' | sed 's/[[:space:]]*$//')
+        
+        # Extract core count from inxi
+        cpu_cores_detected=$(echo "$inxi_cpu_info" | grep -oP '[0-9]+-core' | grep -oP '[0-9]+' | head -1)
+        [[ -n "$cpu_cores_detected" ]] && CPU_CORES=$cpu_cores_detected
+        
+        # Extract frequency (convert GHz to MHz)
+        local cpu_freq_ghz=$(echo "$inxi_cpu_info" | grep -oP '@[[:space:]]*[0-9.]+\s*GHz' | grep -oP '[0-9.]+' | head -1)
+        if [[ -n "$cpu_freq_ghz" ]]; then
+            cpu_freq_mhz=$(echo "$cpu_freq_ghz * 1000" | bc 2>/dev/null | cut -d. -f1)
+        fi
+    fi
+    
+    # Fallback: Try to get CPU model from lscpu (no sudo needed)
+    if [[ -z "$cpu_model" ]] && command -v lscpu >/dev/null 2>&1; then
+        cpu_model=$(lscpu | grep "Model name:" | sed 's/Model name:[[:space:]]*//g' | head -1)
+        [[ -z "$cpu_freq_mhz" || "$cpu_freq_mhz" == "0" ]] && cpu_freq_mhz=$(lscpu | grep "CPU max MHz:" | awk '{print $NF}' | cut -d. -f1)
+        # Fallback to current MHz if max not available
+        [[ -z "$cpu_freq_mhz" || "$cpu_freq_mhz" == "0" ]] && cpu_freq_mhz=$(lscpu | grep "CPU MHz:" | awk '{print $NF}' | cut -d. -f1)
+    fi
+    
+    # Alternative: read from /proc/cpuinfo
+    if [[ -z "$cpu_model" && -r /proc/cpuinfo ]]; then
+        cpu_model=$(grep "model name" /proc/cpuinfo | head -1 | cut -d: -f2 | sed 's/^[[:space:]]*//g')
+    fi
+    
+    # Score based on CPU cores and frequency
+    if [[ $CPU_CORES -ge 16 ]]; then
+        system_score=$((system_score + 35))
+        system_factors+=("${CPU_CORES}-core CPU")
+    elif [[ $CPU_CORES -ge 12 ]]; then
+        system_score=$((system_score + 30))
+        system_factors+=("${CPU_CORES}-core CPU")
+    elif [[ $CPU_CORES -ge 8 ]]; then
+        system_score=$((system_score + 20))
+        system_factors+=("${CPU_CORES}-core CPU")
+    elif [[ $CPU_CORES -ge 4 ]]; then
+        system_score=$((system_score + 10))
+    fi
+    
+    # Bonus for high-frequency CPUs (3.5GHz+)
+    if [[ $cpu_freq_mhz -ge 3500 ]]; then
+        system_score=$((system_score + 10))
+    elif [[ $cpu_freq_mhz -ge 3000 ]]; then
+        system_score=$((system_score + 5))
+    fi
+    
+    # Detect high-performance CPU brands/models
+    if [[ -n "$cpu_model" ]]; then
+        if echo "$cpu_model" | grep -qiE "(ryzen 9|ryzen 7|i9|i7|threadripper|xeon|epyc)"; then
+            system_score=$((system_score + 15))
+            # Extract short CPU name for display
+            local cpu_short=$(echo "$cpu_model" | sed -E 's/.*(Ryzen [0-9]|Core i[0-9]|Threadripper|Xeon|EPYC).*/\1/I' | head -c 20)
+            [[ -n "$cpu_short" && "$cpu_short" != "$cpu_model" ]] && system_factors+=("$cpu_short")
+        fi
+    fi
+    
+    # Enhanced RAM detection with speed info
+    show_detection_progress "Analyzing memory..."
+    local total_ram_mb=0
+    local ram_speed_mhz=0
+    
+    # Parse inxi memory info if available
+    if [[ "$use_inxi" == "true" && -n "$inxi_memory_info" ]]; then
+        # Extract total RAM from inxi output
+        # Example: "RAM: 32 GiB (2 x 16 GiB) DDR4 3200 MHz"
+        local ram_size_str=$(echo "$inxi_memory_info" | grep -oP 'RAM:[[:space:]]*[0-9.]+\s*(GiB|GB|MiB|MB)' | grep -oP '[0-9.]+\s*(GiB|GB|MiB|MB)')
+        
+        if [[ -n "$ram_size_str" ]]; then
+            local ram_value=$(echo "$ram_size_str" | grep -oP '[0-9.]+')
+            local ram_unit=$(echo "$ram_size_str" | grep -oP '(GiB|GB|MiB|MB)')
+            
+            # Convert to MB
+            case "$ram_unit" in
+                "GiB"|"GB")
+                    total_ram_mb=$(echo "$ram_value * 1024" | bc 2>/dev/null | cut -d. -f1)
+                    ;;
+                "MiB"|"MB")
+                    total_ram_mb=$(echo "$ram_value" | cut -d. -f1)
+                    ;;
+            esac
+        fi
+        
+        # Extract RAM speed from inxi
+        ram_speed_mhz=$(echo "$inxi_memory_info" | grep -oP 'DDR[0-9][[:space:]]*[0-9]+' | grep -oP '[0-9]+$' | head -1)
+    fi
+    
+    # Fallback: Use free command
+    if [[ $total_ram_mb -eq 0 ]] && command -v free >/dev/null 2>&1; then
+        total_ram_mb=$(free -m | awk '/^Mem:/ {print $2}')
+    fi
+    
+    # Fallback: Try to get RAM speed from dmidecode without sudo (may work on some systems)
+    if [[ $ram_speed_mhz -eq 0 ]] && command -v dmidecode >/dev/null 2>&1; then
+        ram_speed_mhz=$(dmidecode -t memory 2>/dev/null | grep "Speed:" | grep -oE '[0-9]+' | head -1 || echo "0")
+    fi
+    
+    # Score based on total RAM
+    if [[ $total_ram_mb -ge 65536 ]]; then  # 64GB+
+        system_score=$((system_score + 40))
+        system_factors+=("${total_ram_mb}MB RAM")
+    elif [[ $total_ram_mb -ge 32768 ]]; then  # 32GB+
+        system_score=$((system_score + 30))
+        system_factors+=("${total_ram_mb}MB RAM")
+    elif [[ $total_ram_mb -ge 16384 ]]; then  # 16GB+
+        system_score=$((system_score + 20))
+        system_factors+=("${total_ram_mb}MB RAM")
+    elif [[ $total_ram_mb -ge 8192 ]]; then  # 8GB+
+        system_score=$((system_score + 10))
+    fi
+    
+    # Bonus for fast RAM (3200MHz+)
+    if [[ $ram_speed_mhz -ge 3200 ]]; then
+        system_score=$((system_score + 5))
+    fi
+    
+    # Enhanced GPU detection with model info
+    show_detection_progress "Analyzing GPU..."
+    local has_gpu=false
+    local gpu_model=""
+    local gpu_detected=false
+    
+    # Parse inxi GPU info if available
+    if [[ "$use_inxi" == "true" && -n "$inxi_gpu_info" ]]; then
+        # Extract GPU model from inxi output
+        # Example: "Graphics: Device-1: NVIDIA GeForce RTX 3080 driver: nvidia v: 525.125.06"
+        gpu_model=$(echo "$inxi_gpu_info" | grep -oP 'Device-[0-9]+:[[:space:]]*[^:]+' | sed 's/Device-[0-9]*:[[:space:]]*//g' | head -1)
+        
+        if [[ -n "$gpu_model" ]]; then
+            has_gpu=true
+            gpu_detected=true
+            
+            # Intelligent GPU tier detection from inxi output
+            if echo "$gpu_model" | grep -qiE "NVIDIA"; then
+                # NVIDIA tier detection
+                if echo "$gpu_model" | grep -qiE "(RTX 40|RTX 309|RTX 308|A[0-9]{3,4}|H100|A100|Quadro RTX)"; then
+                    system_score=$((system_score + 30))
+                    system_factors+=("High-end NVIDIA GPU")
+                elif echo "$gpu_model" | grep -qiE "(RTX 30|RTX 20|GTX 16)"; then
+                    system_score=$((system_score + 20))
+                    system_factors+=("NVIDIA GPU")
+                else
+                    system_score=$((system_score + 15))
+                    system_factors+=("NVIDIA GPU")
+                fi
+            elif echo "$gpu_model" | grep -qiE "AMD|Radeon"; then
+                # AMD tier detection
+                if echo "$gpu_model" | grep -qiE "(RX 7[0-9]{3}|RX 6[89][0-9]{2}|Radeon VII)"; then
+                    system_score=$((system_score + 20))
+                    system_factors+=("High-end AMD GPU")
+                else
+                    system_score=$((system_score + 15))
+                    system_factors+=("AMD GPU")
+                fi
+            elif echo "$gpu_model" | grep -qiE "Intel.*Arc|Intel.*Xe"; then
+                # Intel Arc detection
+                system_score=$((system_score + 15))
+                system_factors+=("Intel Arc GPU")
+            elif echo "$gpu_model" | grep -qiE "Intel"; then
+                # Intel integrated
+                system_score=$((system_score + 5))
+            fi
+        fi
+    fi
+    
+    # Fallback: NVIDIA GPU detection with nvidia-smi
+    if [[ "$gpu_detected" == "false" ]] && command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+        has_gpu=true
+        gpu_model=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+        
+        # Score based on GPU tier (RTX 40/30 series, high-end Quadro, etc.)
+        if echo "$gpu_model" | grep -qiE "(RTX 40|RTX 309|RTX 308|A[0-9]{3,4}|H100|A100)"; then
+            system_score=$((system_score + 30))
+            system_factors+=("High-end NVIDIA GPU")
+        elif echo "$gpu_model" | grep -qiE "(RTX 30|RTX 20|GTX 16)"; then
+            system_score=$((system_score + 20))
+            system_factors+=("NVIDIA GPU")
+        else
+            system_score=$((system_score + 15))
+            system_factors+=("NVIDIA GPU")
+        fi
+    # Fallback: AMD GPU detection
+    elif [[ "$gpu_detected" == "false" ]] && command -v rocm-smi >/dev/null 2>&1 && rocm-smi >/dev/null 2>&1; then
+        has_gpu=true
+        system_score=$((system_score + 20))
+        system_factors+=("AMD GPU (ROCm)")
+    elif [[ "$gpu_detected" == "false" ]] && lspci 2>/dev/null | grep -qi 'vga.*amd'; then
+        has_gpu=true
+        gpu_model=$(lspci 2>/dev/null | grep -i 'vga.*amd' | sed 's/.*: //g' | head -1)
+        # Check for high-end AMD cards
+        if echo "$gpu_model" | grep -qiE "(RX 7[0-9]{3}|RX 6[89][0-9]{2}|Radeon VII)"; then
+            system_score=$((system_score + 20))
+            system_factors+=("High-end AMD GPU")
+        else
+            system_score=$((system_score + 15))
+            system_factors+=("AMD GPU")
+        fi
+    # Fallback: Intel GPU detection
+    elif [[ "$gpu_detected" == "false" ]] && lspci 2>/dev/null | grep -qi 'vga.*intel'; then
+        gpu_model=$(lspci 2>/dev/null | grep -i 'vga.*intel' | sed 's/.*: //g' | head -1)
+        # Check for Intel Arc discrete GPUs
+        if echo "$gpu_model" | grep -qiE "(Arc A[0-9]{3}|Xe)"; then
+            system_score=$((system_score + 15))
+            system_factors+=("Intel Arc GPU")
+        else
+            system_score=$((system_score + 5))
+        fi
+    fi
+    
+    # Check available disk space in current directory (in GB)
+    show_detection_progress "Analyzing storage..."
+    local free_space_gb=0
+    local total_space_gb=0
+    
+    if command -v df >/dev/null 2>&1; then
+        free_space_gb=$(df -BG . 2>/dev/null | awk 'NR==2 {print $4}' | tr -d 'G')
+        total_space_gb=$(df -BG . 2>/dev/null | awk 'NR==2 {print $2}' | tr -d 'G')
+        
+        if [[ $free_space_gb -ge 500 ]]; then
+            system_score=$((system_score + 25))
+            system_factors+=("${free_space_gb}GB free")
+        elif [[ $free_space_gb -ge 100 ]]; then
+            system_score=$((system_score + 20))
+            system_factors+=("${free_space_gb}GB free")
+        elif [[ $free_space_gb -ge 50 ]]; then
+            system_score=$((system_score + 10))
+        elif [[ $free_space_gb -lt 10 ]]; then
+            system_score=$((system_score - 15))  # Penalize low disk space
+        fi
+    fi
+    
+    # Check for SSD vs HDD (SSDs are much faster for video processing)
+    local is_ssd=false
+    
+    # Parse inxi disk info if available
+    if [[ "$use_inxi" == "true" && -n "$inxi_disk_info" ]]; then
+        # Look for SSD indicators in inxi output
+        # Example: "Local Storage: 1 TiB (2 drives) SSD"
+        if echo "$inxi_disk_info" | grep -qiE "SSD|NVMe|M\.2"; then
+            is_ssd=true
+            system_score=$((system_score + 10))
+            system_factors+=("SSD storage")
+            
+            # Extra bonus for NVMe (much faster than SATA SSD)
+            if echo "$inxi_disk_info" | grep -qiE "NVMe"; then
+                system_score=$((system_score + 5))
+            fi
+        fi
+    fi
+    
+    # Fallback: Check /sys/block for rotational flag
+    if [[ "$is_ssd" == "false" ]]; then
+        # Check multiple common disk devices
+        for disk in sda nvme0n1 sdb sdc; do
+            if [[ -r /sys/block/$disk/queue/rotational ]]; then
+                local rotational=$(cat /sys/block/$disk/queue/rotational 2>/dev/null || echo "1")
+                if [[ "$rotational" == "0" ]]; then
+                    is_ssd=true
+                    system_score=$((system_score + 10))
+                    system_factors+=("SSD storage")
+                    break
+                fi
+            fi
+        done
+    fi
+    
+    # Complete the progress bar
+    show_detection_progress "Complete!"
+    printf "\n"  # Move to next line after progress bar
+    
+    # Display system analysis
+    if [[ ${#system_factors[@]} -gt 0 ]]; then
+        echo -e "  ${GREEN}✓ Detected: ${system_factors[*]}${NC}"
+    fi
+    
+    # Determine system tier based on score (updated thresholds for better detection)
+    local system_tier="standard"
+    if [[ $system_score -ge 100 ]]; then
+        system_tier="high-end"
+        echo -e "  ${CYAN}🚀 ${BOLD}Workstation/Enthusiast-class system detected!${NC} ${CYAN}Maximum quality recommended${NC}"
+        echo -e "  ${GRAY}System Score: ${BOLD}$system_score${NC} ${GRAY}(High-Performance Tier)${NC}"
+    elif [[ $system_score -ge 70 ]]; then
+        system_tier="high-end"
+        echo -e "  ${CYAN}💪 ${BOLD}High-end system detected!${NC} ${CYAN}Recommending premium quality settings${NC}"
+        echo -e "  ${GRAY}System Score: ${BOLD}$system_score${NC} ${GRAY}(High-End Tier)${NC}"
+    elif [[ $system_score -ge 40 ]]; then
+        system_tier="mid-range"
+        echo -e "  ${CYAN}⚡ ${BOLD}Mid-range system detected${NC} ${CYAN}- balanced quality recommended${NC}"
+        echo -e "  ${GRAY}System Score: ${BOLD}$system_score${NC} ${GRAY}(Mid-Range Tier)${NC}"
+    else
+        system_tier="standard"
+        echo -e "  ${CYAN}📊 ${BOLD}Standard system detected${NC} ${CYAN}- optimized for efficiency${NC}"
+        echo -e "  ${GRAY}System Score: ${BOLD}$system_score${NC} ${GRAY}(Standard Tier)${NC}"
+    fi
+    echo ""
+    
     if [[ ${#video_files[@]} -gt 0 ]]; then
         echo -e "${BLUE}🔍 AI is analyzing your videos to provide smart recommendations...${NC}"
         local sample_file="${video_files[0]}"
@@ -2681,10 +3052,11 @@ ai_quality_selection() {
         local total_pixels=$((width * height))
         local file_size_mb=$((file_size / 1024 / 1024))
         
+        # Base recommendations on video characteristics
         if [[ $total_pixels -ge 8294400 && $file_size_mb -gt 100 ]]; then
             # 4K+ high-quality source
             ai_recommendation="max"
-            recommendation_reason="4K source with high bitrate detected"
+            recommendation_reason="4K source with high bitrate"
         elif [[ $total_pixels -ge 2073600 && $bitrate -gt 5000000 ]]; then
             # 1080p+ good quality
             ai_recommendation="high"
@@ -2692,11 +3064,11 @@ ai_quality_selection() {
         elif [[ $duration -gt 300 && $file_size_mb -gt 200 ]]; then
             # Long, high-quality movie
             ai_recommendation="medium"
-            recommendation_reason="Long-form content - balanced approach recommended"
+            recommendation_reason="Long-form content - balanced approach"
         elif [[ $duration -lt 10 && $total_pixels -ge 1382400 ]]; then
             # Short high-res clip
             ai_recommendation="high"
-            recommendation_reason="Short high-resolution clip - quality preservation recommended"
+            recommendation_reason="Short high-resolution clip - quality preservation"
         elif [[ $width -ge 1280 && $height -ge 720 && $duration -lt 60 ]]; then
             # Screencast-like content
             ai_recommendation="medium"
@@ -2707,7 +3079,59 @@ ai_quality_selection() {
             recommendation_reason="Lower resolution or compressed source"
         fi
         
-        echo -e "  ${GREEN}✓ Analysis complete!${NC}"
+        # 🚀 Upgrade recommendation based on system capabilities
+        # High-end systems should prioritize quality - system capabilities matter more than source quality
+        case "$system_tier" in
+            "high-end")
+                # Workstation/Enthusiast systems (score 100+) - prioritize maximum quality
+                if [[ $system_score -ge 100 ]]; then
+                    # Top-tier systems: Always recommend max or high for any decent source
+                    if [[ "$ai_recommendation" == "low" ]]; then
+                        ai_recommendation="high"
+                        recommendation_reason="Workstation-class PC - quality prioritized over source"
+                    elif [[ "$ai_recommendation" == "medium" ]]; then
+                        ai_recommendation="max"
+                        recommendation_reason="Workstation-class PC - maximum quality recommended"
+                    elif [[ "$ai_recommendation" == "high" ]]; then
+                        ai_recommendation="max"
+                        recommendation_reason="$recommendation_reason (upgraded for workstation PC)"
+                    fi
+                # High-end systems (score 70-99) - aggressive upgrades
+                else
+                    if [[ "$ai_recommendation" == "low" ]]; then
+                        ai_recommendation="medium"
+                        recommendation_reason="$recommendation_reason (upgraded for high-end PC)"
+                    elif [[ "$ai_recommendation" == "medium" ]]; then
+                        ai_recommendation="high"
+                        recommendation_reason="$recommendation_reason (upgraded for high-end PC)"
+                    elif [[ "$ai_recommendation" == "high" && $total_pixels -ge 2073600 ]]; then
+                        ai_recommendation="max"
+                        recommendation_reason="$recommendation_reason (upgraded for high-end PC)"
+                    fi
+                fi
+                ;;
+            "mid-range")
+                # Mid-range systems get modest upgrades
+                if [[ "$ai_recommendation" == "low" && $total_pixels -ge 921600 ]]; then
+                    ai_recommendation="medium"
+                    recommendation_reason="$recommendation_reason (upgraded for capable PC)"
+                fi
+                ;;
+            "standard")
+                # Standard systems: lower recommendations if disk space is limited
+                if [[ $free_space_gb -lt 10 ]]; then
+                    if [[ "$ai_recommendation" == "max" ]]; then
+                        ai_recommendation="high"
+                        recommendation_reason="$recommendation_reason (adjusted for disk space)"
+                    elif [[ "$ai_recommendation" == "high" ]]; then
+                        ai_recommendation="medium"
+                        recommendation_reason="$recommendation_reason (adjusted for disk space)"
+                    fi
+                fi
+                ;;
+        esac
+        
+        echo -e "  ${GREEN}✓ Video analysis complete!${NC}"
         echo ""
     fi
     
@@ -2768,7 +3192,10 @@ ai_quality_selection() {
         echo ""
     done
     
-    echo -e "${MAGENTA}Enter your choice [1-5] or press Enter for AI recommendation ($ai_recommendation):${NC} "
+    # Capitalize quality name for display
+    local ai_recommendation_display="${ai_recommendation^}"  # Capitalize first letter
+    
+    echo -ne "${MAGENTA}Enter your choice [1-5] or press Enter for AI recommendation ($ai_recommendation_display):${NC} "
     read -r quality_choice
     
     if [[ -n "$quality_choice" && "$quality_choice" =~ ^[1-5]$ ]]; then
@@ -2783,7 +3210,9 @@ ai_quality_selection() {
         else
             apply_preset "$selected_quality"
             AI_AUTO_QUALITY=false
-            echo -e "${GREEN}✓ Selected: ${BOLD}$QUALITY${NC} ${GREEN}quality${NC}"
+            # Capitalize quality name for display
+            local quality_display="${QUALITY^}"
+            echo -e "${GREEN}✓ Selected: ${BOLD}$quality_display${NC} ${GREEN}quality${NC}"
         fi
         
         # Save the selected quality choice to settings
@@ -2794,7 +3223,9 @@ ai_quality_selection() {
         # Use AI recommendation as default
         apply_preset "$ai_recommendation"
         AI_AUTO_QUALITY=false
-        echo -e "${GREEN}✓ Using AI recommendation: ${BOLD}$QUALITY${NC} ${GREEN}quality${NC}"
+        # Capitalize quality name for display
+        local quality_display="${QUALITY^}"
+        echo -e "${GREEN}✓ Using AI recommendation: ${BOLD}$quality_display${NC} ${GREEN}quality${NC}"
         
         # Save the AI recommendation to settings
         if [[ -n "$SETTINGS_FILE" ]]; then
@@ -2987,7 +3418,7 @@ ai_discover_videos() {
     echo -e "    ${GREEN}[s]${NC} Save preference and set auto-selection mode"
     echo -e "    ${GREEN}[n]${NC} No thanks, I'll add videos manually\n"
     
-    echo -e "${MAGENTA}Your choice: ${NC}"
+    echo -ne "${MAGENTA}Your choice: ${NC}"
     read -r choice
     
     case "$choice" in
@@ -3030,7 +3461,7 @@ ai_discover_videos() {
             fi
             ;;
         "c"|"C")
-            echo -e "\n${CYAN}Enter video numbers to copy (e.g., 1,3,5 or 1-5): ${NC}"
+            echo -ne "\n${CYAN}Enter video numbers to copy (e.g., 1,3,5 or 1-5): ${NC}"
             read -r range_input
             copy_videos_by_range "$range_input" "${sorted_videos[@]:0:$display_count}"
             return $?
@@ -3038,7 +3469,7 @@ ai_discover_videos() {
         "w"|"W")
             echo -e "\n${BLUE}${BOLD}📂 Change Working Directory${NC}"
             echo -e "${CYAN}Current: ${BOLD}$(pwd)${NC}"
-            echo -e "${YELLOW}Enter new directory path (or press Enter to browse): ${NC}"
+            echo -ne "${YELLOW}Enter new directory path (or press Enter to browse): ${NC}"
             read -r new_dir
             
             if [[ -z "$new_dir" ]]; then
@@ -3057,7 +3488,7 @@ ai_discover_videos() {
                     "3") new_dir="$HOME/Documents" ;;
                     "4") new_dir="$HOME/Videos" ;;
                     "c"|"C")
-                        echo -e "${YELLOW}Enter full directory path: ${NC}"
+                        echo -ne "${YELLOW}Enter full directory path: ${NC}"
                         read -r new_dir
                         ;;
                     *) 
@@ -4958,7 +5389,7 @@ detect_duplicate_gifs() {
         echo ""
     done
     
-    echo -e "\n  ${YELLOW}${BOLD}Duplicate GIFs are found! Do you want to remove duplicates? (y/N): ${NC}"
+    echo -ne "\n  ${YELLOW}${BOLD}Duplicate GIFs are found! Do you want to remove duplicates? (y/N): ${NC}"
     
     local choice
     read -r choice
@@ -5150,7 +5581,7 @@ analyze_video_gif_mapping() {
         done
         
         if [[ $orphaned_count -gt 2 ]]; then
-            echo -e "\n  ${MAGENTA}Clean up orphaned GIFs? [y/N]: ${NC}"
+            echo -ne "\n  ${MAGENTA}Clean up orphaned GIFs? [y/N]: ${NC}"
             local cleanup_orphans
             read -r cleanup_orphans
             if [[ "$cleanup_orphans" =~ ^[Yy]$ ]]; then
@@ -5340,7 +5771,7 @@ detect_corrupted_gifs() {
     echo -e "  ${CYAN}3)${NC} Skip and continue (may cause conversion issues)"
     echo -e "\n  ${GRAY}Option 2 moves corrupted files to ~/.smart-gif-converter/corrupted_gifs/"
     echo -e "  so you can inspect or recover them later if needed.${NC}"
-    echo -e "\n  ${MAGENTA}Choice [1-3]: ${NC}"
+    echo -ne "\n  ${MAGENTA}Choice [1-3]: ${NC}"
     
     local choice
     if [[ "${INTERACTIVE_MODE:-true}" == "false" ]]; then
@@ -6593,7 +7024,7 @@ auto_install_dependencies() {
     echo -e "\n${MAGENTA}Install command:${NC}"
     echo -e "  ${CYAN}$install_cmd ${packages_to_install[*]}${NC}"
     
-    echo -e "\n${YELLOW}Would you like to install these dependencies now? [Y/n]:${NC} "
+    echo -ne "\n${YELLOW}Would you like to install these dependencies now? [Y/n]:${NC} "
     read -r install_choice
     
     if [[ "$install_choice" =~ ^[Nn]$ ]]; then
@@ -6824,7 +7255,7 @@ check_dependencies() {
             esac
         done
         
-        echo -e "\n${CYAN}Would you like to install optional dependencies? [y/N]:${NC} "
+        echo -ne "\n${CYAN}Would you like to install optional dependencies? [y/N]:${NC} "
         read -r optional_choice
         
         if [[ "$optional_choice" =~ ^[Yy]$ ]]; then
@@ -7166,7 +7597,7 @@ kill_ffmpeg_processes() {
     echo -e "  ${GREEN}[3]${NC} Interactive kill (choose specific processes)"
     echo -e "  ${GREEN}[0]${NC} Cancel and return to menu\n"
     
-    echo -e "${MAGENTA}Select an option [0-3]: ${NC}"
+    echo -ne "${MAGENTA}Select an option [0-3]: ${NC}"
     read -r choice
     
     case "$choice" in
@@ -7211,7 +7642,7 @@ kill_ffmpeg_processes() {
                 if kill -0 "$pid" 2>/dev/null; then
                     local cmd=$(ps -p "$pid" -o args --no-headers 2>/dev/null || echo "Unknown")
                     echo -e "\n${BLUE}PID $pid:${NC} ${cmd:0:60}..."
-                    echo -e "${MAGENTA}Kill this process? [y/N]: ${NC}"
+                    echo -ne "${MAGENTA}Kill this process? [y/N]: ${NC}"
                     read -r confirm
                     if [[ "$confirm" =~ ^[Yy]$ ]]; then
                         if kill -TERM "$pid" 2>/dev/null; then
@@ -7650,7 +8081,7 @@ quick_convert_mode() {
     echo -e "  ${BLUE}• Frame rate and dithering optimization${NC}"
     echo -e "  ${BLUE}• Resolution and scaling algorithm selection${NC}"
     
-    echo -e "\n${MAGENTA}${BOLD}🚀 Ready to start AI-powered conversion? [Y/n]:${NC} "
+    echo -ne "\n${MAGENTA}${BOLD}🚀 Ready to start AI-powered conversion? [Y/n]:${NC} "
     read -r confirm
     
     if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
