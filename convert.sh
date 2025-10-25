@@ -1701,6 +1701,52 @@ log_error() {
     } >&2
 }
 
+# ⚠️ Log warnings (non-critical issues)
+log_warning() {
+    # Don't show warnings if user interrupted the script
+    if [[ "$INTERRUPT_REQUESTED" == true ]]; then
+        return 0
+    fi
+    
+    local warning_msg="$1"
+    local file="$2"
+    local detailed_info="$3"
+    local line_num="$4"
+    local func_name="$5"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    # Ensure log directory exists
+    [[ ! -d "$(dirname "$ERROR_LOG")" ]] && mkdir -p "$(dirname "$ERROR_LOG")" 2>/dev/null
+    
+    # Comprehensive logging to file
+    {
+        echo "[$timestamp] ==================== WARNING ===================="
+        echo "[$timestamp] MESSAGE: $warning_msg"
+        [[ -n "$file" ]] && echo "[$timestamp] FILE: $file"
+        [[ -n "$line_num" ]] && echo "[$timestamp] LINE: $line_num"
+        [[ -n "$func_name" ]] && echo "[$timestamp] FUNCTION: $func_name"
+        [[ -n "$detailed_info" ]] && echo "[$timestamp] DETAILS: $detailed_info"
+        echo "[$timestamp] ===================================================="
+        echo ""
+    } >> "$ERROR_LOG" 2>/dev/null || {
+        # Fallback to current directory if log directory fails
+        echo "[$timestamp] WARNING: $warning_msg" >> "./warning-fallback.log" 2>/dev/null
+    }
+    
+    # Show warnings in terminal with less alarming format
+    {
+        echo -e "\n${YELLOW}${BOLD}⚠️ WARNING${NC}"
+        echo -e "${YELLOW}───────────────────────────────────────────────────────────────${NC}"
+        echo -e "${YELLOW}📝 Message: $warning_msg${NC}"
+        [[ -n "$file" ]] && echo -e "${YELLOW}📁 File: $(basename "$file")${NC}"
+        [[ -n "$line_num" ]] && echo -e "${YELLOW}📍 Line: $line_num${NC}"
+        [[ -n "$func_name" ]] && echo -e "${YELLOW}⚙️  Function: $func_name${NC}"
+        [[ -n "$detailed_info" ]] && echo -e "${YELLOW}🔍 Details: $detailed_info${NC}"
+        echo -e "${CYAN}📋 Full log: $ERROR_LOG${NC}"
+        echo -e "${YELLOW}───────────────────────────────────────────────────────────────${NC}"
+    } >&2
+}
+
 # 🛡️ Robust crash handler
 handle_crash() {
     local exit_code=$?
@@ -7593,8 +7639,14 @@ validate_output_file() {
         local ratio_int=${ratio_pct_str%.*}
         # Only warn if over 100,000% (1000x source) - typical GIFs are 100-30000%
         if [[ ${ratio_int:-0} -gt 100000 ]]; then  # More than 1000x the source size
-            echo -e "  ${YELLOW}⚠️ Warning: Output GIF is extremely large (${ratio_pct_str}% of source)${NC}"
-            log_error "Extremely large output file" "$source_file" "Output: $output_file, Source size: $source_size, Output size: $file_size, Ratio: ${ratio_pct_str}%" "${BASH_LINENO[0]}" "validate_output_file"
+            # Convert sizes to MB for readability
+            local source_size_mb=$(echo "scale=2; $source_size / 1024 / 1024" | bc 2>/dev/null || echo "0.00")
+            local output_size_mb=$(echo "scale=2; $file_size / 1024 / 1024" | bc 2>/dev/null || echo "0.00")
+            # Calculate actual multiplier (e.g., "1078x larger")
+            local multiplier=$(echo "scale=1; $file_size / $source_size" | bc 2>/dev/null || echo "0")
+            
+            echo -e "  ${YELLOW}⚠️ Warning: Output GIF is extremely large (${multiplier}x source size)${NC}"
+            log_warning "Extremely large output file" "$source_file" "Output: $output_file, Source: ${source_size_mb}MB, Output: ${output_size_mb}MB, Multiplier: ${multiplier}x" "${BASH_LINENO[0]}" "validate_output_file"
             # Don't fail, just warn
         fi
     fi
