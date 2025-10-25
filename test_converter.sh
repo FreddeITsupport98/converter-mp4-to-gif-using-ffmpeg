@@ -13,7 +13,7 @@
 # - At least 100MB free disk space
 # =============================================================================
 
-set -e  # Exit on error
+# Note: Do NOT use 'set -e' as we want to continue testing even after failures
 
 # Colors for output
 RED='\033[0;31m'
@@ -82,6 +82,22 @@ cleanup() {
 
 setup_test_environment() {
     print_header "🔧 SETTING UP TEST ENVIRONMENT"
+    
+    # Check if convert.sh is already running
+    local lock_file="${HOME}/.smart-gif-converter/script.lock"
+    if [[ -f "$lock_file" ]]; then
+        local existing_pid=$(cat "$lock_file" 2>/dev/null)
+        if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" 2>/dev/null; then
+            echo -e "${RED}✗ convert.sh is currently running (PID: $existing_pid)${NC}"
+            echo -e "${YELLOW}  Please wait for the conversion to finish or stop it before running tests.${NC}"
+            echo -e "${CYAN}  To stop: kill $existing_pid${NC}"
+            exit 1
+        else
+            # Stale lock file, clean it up
+            rm -f "$lock_file" 2>/dev/null || true
+        fi
+    fi
+    echo -e "${GREEN}✓ No running convert.sh instance detected${NC}"
     
     # Create test directory
     mkdir -p "$TEST_DIR"
@@ -195,7 +211,8 @@ test_dependency_check() {
 test_basic_conversion() {
     print_test "Basic video to GIF conversion"
     
-    if bash "$SCRIPT_PATH" --file test_480p.mp4 --preset low --ai-enabled false >/dev/null 2>&1; then
+    # Note: There's no --ai-enabled flag, AI is disabled by default
+    if bash "$SCRIPT_PATH" --file test_480p.mp4 --preset low >/dev/null 2>&1; then
         if [[ -f "test_480p.gif" ]]; then
             pass
         else
@@ -476,7 +493,7 @@ test_conversion_speed() {
     print_test "Conversion speed benchmark"
     
     local start_time=$(date +%s)
-    bash "$SCRIPT_PATH" --file test_short.mp4 --preset low --ai-enabled false >/dev/null 2>&1
+    bash "$SCRIPT_PATH" --file test_short.mp4 --preset low >/dev/null 2>&1
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
     
@@ -506,7 +523,8 @@ test_memory_usage() {
 test_batch_conversion() {
     print_test "Batch conversion of multiple files"
     
-    if bash "$SCRIPT_PATH" --preset low --ai-enabled false >/dev/null 2>&1; then
+    # Batch mode requires --force to skip interactive prompts
+    if bash "$SCRIPT_PATH" --preset low --force >/dev/null 2>&1; then
         local gif_count=$(ls -1 *.gif 2>/dev/null | wc -l)
         if [[ $gif_count -ge 3 ]]; then
             pass
