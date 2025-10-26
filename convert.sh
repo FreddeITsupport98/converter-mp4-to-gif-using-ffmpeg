@@ -214,6 +214,25 @@ AI_CACHE_VERSION="2.0"  # Increment to invalidate old cache
 AI_CACHE_ENABLED=true
 AI_CACHE_MAX_AGE_DAYS=30  # Cache entries older than this are cleaned up
 
+# 🔐 Checksum Cache System Configuration
+CHECKSUM_CACHE_DIR="$LOG_DIR/checksum_cache"
+CHECKSUM_CACHE_DB="$CHECKSUM_CACHE_DIR/checksums.db"
+CHECKSUM_CACHE_VERSION="1.0"
+CHECKSUM_CACHE_ENABLED=true
+CHECKSUM_CACHE_MAX_AGE_DAYS=90  # Cache checksums for 90 days
+
+# 📊 Duplicate Detection Statistics
+DUPLICATE_STATS_TOTAL_CHECKED=0
+DUPLICATE_STATS_EXACT_BINARY=0
+DUPLICATE_STATS_VISUAL_IDENTICAL=0
+DUPLICATE_STATS_CONTENT_FINGERPRINT=0
+DUPLICATE_STATS_NEAR_IDENTICAL=0
+DUPLICATE_STATS_DELETED=0
+DUPLICATE_STATS_SKIPPED=0
+DUPLICATE_STATS_SPACE_SAVED=0
+DUPLICATE_STATS_CACHE_HITS=0
+DUPLICATE_STATS_CACHE_MISSES=0
+
 # 🧠 AI Training & Learning System Configuration
 AI_TRAINING_ENABLED=true
 AI_TRAINING_DIR="$LOG_DIR/ai_training"
@@ -763,6 +782,177 @@ get_cache_stats() {
     local cache_size=$(du -h "$AI_CACHE_DIR" 2>/dev/null | cut -f1 || echo "0")
     
     echo "$total_entries entries, ${cache_size}B"
+}
+
+# 🔐 Checksum Cache System for Duplicate Detection
+# =================================================================
+# Dramatically speeds up duplicate detection by caching MD5 checksums
+# Only recalculates if file mtime has changed
+
+# Initialize checksum cache
+init_checksum_cache() {
+    if [[ "$CHECKSUM_CACHE_ENABLED" != "true" ]]; then
+        return 0
+    fi
+    
+    # Create cache directory
+    mkdir -p "$CHECKSUM_CACHE_DIR" 2>/dev/null || {
+        echo -e "${YELLOW}⚠️  Warning: Cannot create checksum cache directory, disabling cache${NC}" >&2
+        CHECKSUM_CACHE_ENABLED=false
+        return 1
+    }
+    
+    # Create cache DB if it doesn't exist
+    if [[ ! -f "$CHECKSUM_CACHE_DB" ]]; then
+        cat > "$CHECKSUM_CACHE_DB" << EOF
+# Checksum Cache Database - Version $CHECKSUM_CACHE_VERSION
+# Format: filepath|filesize|filemtime|md5_checksum|timestamp
+# Created: $(date)
+EOF
+    fi
+    
+    # Smart cleanup: only run every 14 days
+    local cleanup_marker="${CHECKSUM_CACHE_DIR}/.last_cleanup"
+    local current_time=$(date +%s)
+    local cleanup_interval=$((14 * 86400))  # 14 days
+    
+    if [[ ! -f "$cleanup_marker" ]]; then
+        ( cleanup_checksum_cache && echo "$current_time" > "$cleanup_marker" ) &
+    else
+        local last_cleanup=$(cat "$cleanup_marker" 2>/dev/null || echo "0")
+        local time_since=$((current_time - last_cleanup))
+        if [[ $time_since -gt $cleanup_interval ]]; then
+            ( cleanup_checksum_cache && echo "$current_time" > "$cleanup_marker" ) &
+        fi
+    fi
+}
+
+# Get cached checksum or calculate new one
+get_cached_checksum() {
+    local filepath="$1"
+    
+    if [[ ! -f "$filepath" ]]; then
+        echo ""
+        return 1
+    fi
+    
+    local filesize=$(stat -c%s "$filepath" 2>/dev/null || echo "0")
+    local filemtime=$(stat -c%Y "$filepath" 2>/dev/null || echo "0")
+    
+    # Check cache if enabled
+    if [[ "$CHECKSUM_CACHE_ENABLED" == "true" && -f "$CHECKSUM_CACHE_DB" ]]; then
+        # Search for cached entry
+        local cached_line=$(grep -F "$filepath|" "$CHECKSUM_CACHE_DB" 2>/dev/null | tail -n 1)
+        
+        if [[ -n "$cached_line" ]]; then
+            local cached_size=$(echo "$cached_line" | cut -d'|' -f2)
+            local cached_mtime=$(echo "$cached_line" | cut -d'|' -f3)
+            local cached_checksum=$(echo "$cached_line" | cut -d'|' -f4)
+            
+            # Validate cache entry (size and mtime must match)
+            if [[ "$cached_size" == "$filesize" && "$cached_mtime" == "$filemtime" ]]; then
+                # Cache hit!
+                ((DUPLICATE_STATS_CACHE_HITS++))
+                echo "$cached_checksum"
+                return 0
+            fi
+        fi
+    fi
+    
+    # Cache miss - calculate checksum
+    ((DUPLICATE_STATS_CACHE_MISSES++))
+    local checksum=$(md5sum "$filepath" 2>/dev/null | awk '{print $1}' || echo "")
+    
+    if [[ -n "$checksum" && "$CHECKSUM_CACHE_ENABLED" == "true" ]]; then
+        # Save to cache (atomic operation)
+        local timestamp=$(date +%s)
+        local cache_entry="$filepath|$filesize|$filemtime|$checksum|$timestamp"
+        echo "$cache_entry" >> "$CHECKSUM_CACHE_DB" 2>/dev/null || true
+    fi
+    
+    echo "$checksum"
+    return 0
+}
+
+# Clean up old checksum cache entries
+cleanup_checksum_cache() {
+    if [[ "$CHECKSUM_CACHE_ENABLED" != "true" || ! -f "$CHECKSUM_CACHE_DB" ]]; then
+        return 0
+    fi
+    
+    local cutoff_time=$(($(date +%s) - (CHECKSUM_CACHE_MAX_AGE_DAYS * 86400)))
+    local temp_db="$(mktemp)"
+    
+    # Keep header
+    head -n 3 "$CHECKSUM_CACHE_DB" > "$temp_db"
+    
+    declare -A latest_checksums
+    declare -A latest_timestamps
+    
+    local old_entries=0
+    local deleted_files=0
+    local duplicate_entries=0
+    
+    # Deduplicate and clean
+    while IFS='|' read -r filepath filesize filemtime checksum timestamp; do
+        [[ "$filepath" =~ ^# || -z "$filepath" ]] && continue
+        
+        # Skip old entries
+        if [[ $timestamp -lt $cutoff_time ]]; then
+            ((old_entries++))
+            continue
+        fi
+        
+        # Check if file exists
+        if [[ ! -f "$filepath" ]]; then
+            ((deleted_files++))
+            continue
+        fi
+        
+        # Keep only latest entry per file
+        local existing_ts="${latest_timestamps[$filepath]:-0}"
+        if [[ $timestamp -gt $existing_ts ]]; then
+            [[ $existing_ts -gt 0 ]] && ((duplicate_entries++))
+            latest_timestamps[$filepath]=$timestamp
+            latest_checksums[$filepath]="$filepath|$filesize|$filemtime|$checksum|$timestamp"
+        else
+            ((duplicate_entries++))
+        fi
+    done < <(tail -n +4 "$CHECKSUM_CACHE_DB")
+    
+    # Write deduplicated entries
+    for filepath in "${!latest_checksums[@]}"; do
+        echo "${latest_checksums[$filepath]}" >> "$temp_db"
+    done
+    
+    # Atomic replace
+    mv "$temp_db" "$CHECKSUM_CACHE_DB"
+    
+    # Report if significant cleanup
+    local total_cleaned=$((old_entries + deleted_files + duplicate_entries))
+    if [[ $total_cleaned -gt 50 ]]; then
+        echo -e "  ${BLUE}🧹 Checksum cache cleaned: removed $total_cleaned entries${NC}" >&2
+    fi
+}
+
+# Get checksum cache statistics
+get_checksum_cache_stats() {
+    if [[ "$CHECKSUM_CACHE_ENABLED" != "true" || ! -f "$CHECKSUM_CACHE_DB" ]]; then
+        echo "disabled"
+        return
+    fi
+    
+    local total=$(grep -v '^#' "$CHECKSUM_CACHE_DB" | grep -c '|' || echo "0")
+    local hits=$DUPLICATE_STATS_CACHE_HITS
+    local misses=$DUPLICATE_STATS_CACHE_MISSES
+    local total_lookups=$((hits + misses))
+    
+    if [[ $total_lookups -gt 0 ]]; then
+        local hit_rate=$((hits * 100 / total_lookups))
+        echo "$total entries, $hit_rate% hit rate"
+    else
+        echo "$total entries"
+    fi
 }
 
 # Save AI analysis results to cache
@@ -4827,10 +5017,13 @@ detect_duplicate_gifs() {
     # Initialize AI cache and training systems
     init_ai_cache
     init_ai_training
+    init_checksum_cache
     local cache_stats=$(get_cache_stats)
     local training_stats=$(get_ai_training_stats)
+    local checksum_cache_stats=$(get_checksum_cache_stats)
     echo -e "${BLUE}🗄️ AI Cache: $cache_stats${NC}"
     echo -e "${GREEN}🧠 AI Training: $training_stats${NC}"
+    echo -e "${CYAN}🔐 Checksum Cache: $checksum_cache_stats${NC}"
     
     local total_gifs=0
     local duplicate_count=0
@@ -5057,16 +5250,23 @@ detect_duplicate_gifs() {
                 update_file_progress "$current_index" "$total_files" "$(basename "$gif_file")" "Analyzing GIFs" 30
             fi
             
-            # Stage 1: Fast MD5 checksum with timeout to prevent hanging on corrupted files
-            # Removed verbose output for speed - only show on errors
+            # Stage 1: Fast MD5 checksum with intelligent caching
+            # Use cached checksum if available, only calculate if needed
             local checksum
-            if checksum=$(timeout 5 md5sum "$gif_file" 2>/dev/null | cut -d' ' -f1); then
-                [[ -z "$checksum" ]] && checksum="ERROR"
-            else
-                checksum="TIMEOUT_MD5"
-                echo -e "  ${YELLOW}⏰ MD5 timeout: $(basename "$gif_file")${NC}" >&2
-            fi
             local size=$(stat -c%s "$gif_file" 2>/dev/null || echo "0")
+            
+            # Try to get cached checksum first
+            checksum=$(get_cached_checksum "$gif_file" 2>/dev/null)
+            
+            # If cache failed or returned empty, fallback to direct calculation with timeout
+            if [[ -z "$checksum" ]]; then
+                if checksum=$(timeout 5 md5sum "$gif_file" 2>/dev/null | awk '{print $1}'); then
+                    [[ -z "$checksum" ]] && checksum="ERROR"
+                else
+                    checksum="TIMEOUT_MD5"
+                    echo -e "  ${YELLOW}⏰ MD5 timeout: $(basename "$gif_file")${NC}" >&2
+                fi
+            fi
             
             # Check if MD5 calculation failed or timed out (likely corruption)
             if [[ "$checksum" == "ERROR" || "$checksum" == "TIMEOUT_MD5" ]]; then
@@ -5605,15 +5805,20 @@ detect_duplicate_gifs() {
             local is_duplicate=false
             local similarity_reason=""
             
+            # Track total files checked
+            ((DUPLICATE_STATS_TOTAL_CHECKED++))
+            
             # Level 1: Exact binary match (highest confidence)
             if [[ "${gif_checksums[$file1]}" == "${gif_checksums[$file2]}" ]]; then
                 is_duplicate=true
                 similarity_reason="exact_binary"
+                ((DUPLICATE_STATS_EXACT_BINARY++))
             # Level 2: Visual similarity (high confidence)
             elif [[ -n "${gif_visual_hashes[$file1]}" && -n "${gif_visual_hashes[$file2]}" ]] && \
                  [[ "${gif_visual_hashes[$file1]}" == "${gif_visual_hashes[$file2]}" ]]; then
                 is_duplicate=true
                 similarity_reason="visual_identical"
+                ((DUPLICATE_STATS_VISUAL_IDENTICAL++))
             # Level 3: Content fingerprint match (medium confidence)
             elif [[ "${gif_fingerprints[$file1]}" == "${gif_fingerprints[$file2]}" ]]; then
                 # Additional validation for content fingerprint matches
@@ -5626,6 +5831,7 @@ detect_duplicate_gifs() {
                 if [[ $size_ratio -lt 5 ]]; then
                     is_duplicate=true
                     similarity_reason="content_fingerprint"
+                    ((DUPLICATE_STATS_CONTENT_FINGERPRINT++))
                 fi
             # Level 4: Near-identical content (lower confidence, requires human review)
             elif [[ "${gif_frame_counts[$file1]}" == "${gif_frame_counts[$file2]}" ]] && \
@@ -5639,6 +5845,7 @@ detect_duplicate_gifs() {
                 if [[ $size_ratio -lt 10 ]]; then
                     is_duplicate=true
                     similarity_reason="near_identical"
+                    ((DUPLICATE_STATS_NEAR_IDENTICAL++))
                 fi
             fi
             
@@ -5903,11 +6110,18 @@ detect_duplicate_gifs() {
     # User chose yes - delete duplicate GIF files only
     echo -e "\n  ${GREEN}${BOLD}🗑️  Deleting duplicate GIF files...${NC}"
     local deleted_count=0
+    local skipped_count=0
+    declare -A already_deleted  # Track files already deleted to avoid duplicate attempts
     
     for pair in "${duplicate_pairs[@]}"; do
         local remove_file="${pair%%|*}"
         local temp_pair="${pair#*|}"
         local keep_file="${temp_pair%%|*}"
+        
+        # Skip if already deleted
+        if [[ -n "${already_deleted[$remove_file]:-}" ]]; then
+            continue
+        fi
         
         # Safety check: only delete GIF files
         if [[ "${remove_file##*.}" != "gif" ]]; then
@@ -5921,22 +6135,448 @@ detect_duplicate_gifs() {
             continue
         fi
         
-        if [[ -f "$remove_file" ]] && rm -f "$remove_file" 2>/dev/null; then
-            echo -e "    ${GREEN}✓ Deleted: $remove_file (keeping $keep_file)${NC}"
-            ((deleted_count++))
+        # Extract basename (without extension) from both GIF files
+        local remove_basename="$(basename "${remove_file%.*}")"
+        local keep_basename="$(basename "${keep_file%.*}")"
+        
+        # Check if corresponding MP4/video source exists for the file we're about to delete
+        local has_source_remove=false
+        local has_source_keep=false
+        local remove_source=""
+        local keep_source=""
+        
+        # Get directory of the remove_file
+        local remove_dir="$(dirname "$remove_file")"
+        local keep_dir="$(dirname "$keep_file")"
+        
+        # Check for video source for remove_file
+        for ext in mp4 avi mov mkv webm MP4 AVI MOV MKV WEBM; do
+            if [[ -f "${remove_dir}/${remove_basename}.${ext}" ]]; then
+                has_source_remove=true
+                remove_source="${remove_dir}/${remove_basename}.${ext}"
+                break
+            fi
+        done
+        
+        # Check for video source for keep_file
+        for ext in mp4 avi mov mkv webm MP4 AVI MOV MKV WEBM; do
+            if [[ -f "${keep_dir}/${keep_basename}.${ext}" ]]; then
+                has_source_keep=true
+                keep_source="${keep_dir}/${keep_basename}.${ext}"
+                break
+            fi
+        done
+        
+        # Validation logic:
+        # - If keep_file has a matching source but remove_file doesn't, safe to delete
+        # - If both have matching sources, safe to delete (they're truly duplicates)
+        # - If remove_file has a matching source but keep_file doesn't, DON'T delete (might delete the correct one)
+        # - If neither has a source, consider it safe (orphaned duplicates)
+        
+        if [[ "$has_source_remove" == true && "$has_source_keep" == false ]]; then
+            # Remove file has source, keep file doesn't - this is dangerous, skip
+            echo -e "    ${YELLOW}⚠️  SKIPPED: $remove_file has source ($(basename "$remove_source")) but $keep_file doesn't${NC}"
+            ((skipped_count++))
+            DUPLICATE_STATS_SKIPPED=$((DUPLICATE_STATS_SKIPPED + 1))
+            already_deleted["$remove_file"]=1
+            continue
+        fi
+        
+        # Additional property validation: Compare GIF properties with source video properties
+        local property_mismatch=false
+        local property_warning=""
+        
+        # Get comprehensive file properties for both files
+        local remove_file_size=$(stat -c%s "$remove_file" 2>/dev/null || echo "0")
+        local keep_file_size=$(stat -c%s "$keep_file" 2>/dev/null || echo "0")
+        local remove_file_mtime=$(stat -c%Y "$remove_file" 2>/dev/null || echo "0")
+        local keep_file_mtime=$(stat -c%Y "$keep_file" 2>/dev/null || echo "0")
+        local remove_file_ctime=$(stat -c%Z "$remove_file" 2>/dev/null || echo "0")
+        local keep_file_ctime=$(stat -c%Z "$keep_file" 2>/dev/null || echo "0")
+        local remove_file_perms=$(stat -c%a "$remove_file" 2>/dev/null || echo "0")
+        local keep_file_perms=$(stat -c%a "$keep_file" 2>/dev/null || echo "0")
+        
+        if [[ "$has_source_remove" == true ]]; then
+            # Get properties of remove_file and its source
+            local remove_gif_frames="${gif_frame_counts[$remove_file]:-0}"
+            local remove_gif_duration="${gif_durations[$remove_file]:-0}"
+            local remove_gif_size="${gif_sizes[$remove_file]:-0}"
             
-            # Log the deletion
+            # Get source video file properties
+            local remove_source_size=$(stat -c%s "$remove_source" 2>/dev/null || echo "0")
+            local remove_source_mtime=$(stat -c%Y "$remove_source" 2>/dev/null || echo "0")
+            local remove_source_ctime=$(stat -c%Z "$remove_source" 2>/dev/null || echo "0")
+            
+            # Get source video properties
+            local source_duration=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$remove_source" 2>/dev/null | cut -d'.' -f1 || echo "0")
+            local source_frames=$(ffprobe -v error -select_streams v:0 -show_entries stream=nb_frames -of default=noprint_wrappers=1:nokey=1 "$remove_source" 2>/dev/null || echo "0")
+            
+            # If source frames not available, estimate from duration and fps
+            if [[ "$source_frames" == "0" || "$source_frames" == "N/A" ]]; then
+                local source_fps=$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=noprint_wrappers=1:nokey=1 "$remove_source" 2>/dev/null | head -1 || echo "0/1")
+                if [[ "$source_fps" =~ ^([0-9]+)/([0-9]+)$ ]]; then
+                    local fps_num="${BASH_REMATCH[1]}"
+                    local fps_den="${BASH_REMATCH[2]}"
+                    if [[ $fps_den -gt 0 && $source_duration -gt 0 ]]; then
+                        source_frames=$((fps_num * source_duration / fps_den))
+                    fi
+                fi
+            fi
+            
+            # Intelligent timestamp validation: GIF should be created AFTER source video
+            # If GIF is older than source video, it can't be derived from it
+            if [[ $remove_file_mtime -gt 0 && $remove_source_mtime -gt 0 ]]; then
+                if [[ $remove_file_mtime -lt $remove_source_mtime ]]; then
+                    # GIF was modified before the source video - suspicious
+                    local time_diff=$((remove_source_mtime - remove_file_mtime))
+                    if [[ $time_diff -gt 60 ]]; then  # More than 1 minute older
+                        property_mismatch=true
+                        property_warning="GIF is older than source video (by ${time_diff}s)"
+                    fi
+                fi
+            fi
+            
+            # Check if GIF properties match source video (with tolerance)
+            if [[ $remove_gif_duration -gt 0 && $source_duration -gt 0 ]]; then
+                local duration_diff=$(( (remove_gif_duration > source_duration ? remove_gif_duration - source_duration : source_duration - remove_gif_duration) ))
+                local duration_ratio=0
+                if [[ $source_duration -gt 0 ]]; then
+                    duration_ratio=$((duration_diff * 100 / source_duration))
+                fi
+                
+                # If duration differs by more than 20%, flag it
+                if [[ $duration_ratio -gt 20 ]]; then
+                    property_mismatch=true
+                    property_warning="${property_warning:+$property_warning; }Duration mismatch: GIF=${remove_gif_duration}s vs Source=${source_duration}s"
+                fi
+            fi
+            
+            # Intelligent size validation: GIF should be smaller than source video
+            # If GIF is larger than source, something is wrong
+            if [[ $remove_gif_size -gt 0 && $remove_source_size -gt 0 ]]; then
+                if [[ $remove_gif_size -gt $remove_source_size ]]; then
+                    property_mismatch=true
+                    property_warning="${property_warning:+$property_warning; }GIF larger than source (GIF=$(numfmt --to=iec $remove_gif_size 2>/dev/null || echo ${remove_gif_size}) vs Source=$(numfmt --to=iec $remove_source_size 2>/dev/null || echo ${remove_source_size}))"
+                fi
+            fi
+            
+            # Check frame count similarity (more lenient, GIFs typically have fewer frames)
+            if [[ $remove_gif_frames -gt 0 && $source_frames -gt 0 ]]; then
+                # GIFs should have fewer frames than source (due to frame rate reduction)
+                # Flag only if GIF has MORE frames than source (suspicious)
+                if [[ $remove_gif_frames -gt $((source_frames * 120 / 100)) ]]; then
+                    property_mismatch=true
+                    property_warning="${property_warning:+$property_warning; }Frame count suspicious: GIF=${remove_gif_frames} vs Source=${source_frames}"
+                fi
+            fi
+            
+            # If properties don't match, it might not be derived from this source
+            if [[ "$property_mismatch" == true ]]; then
+                echo -e "    ${YELLOW}⚠️  SKIPPED: $remove_file properties don't match source $(basename "$remove_source")${NC}"
+                echo -e "    ${GRAY}   $property_warning${NC}"
+                ((skipped_count++))
+                DUPLICATE_STATS_SKIPPED=$((DUPLICATE_STATS_SKIPPED + 1))
+                already_deleted["$remove_file"]=1
+                continue
+            fi
+        fi
+        
+        # Similar validation for keep_file if it has a source
+        if [[ "$has_source_keep" == true ]]; then
+            local keep_gif_frames="${gif_frame_counts[$keep_file]:-0}"
+            local keep_gif_duration="${gif_durations[$keep_file]:-0}"
+            local keep_gif_size="${gif_sizes[$keep_file]:-0}"
+            
+            # Get source video file properties
+            local keep_source_size=$(stat -c%s "$keep_source" 2>/dev/null || echo "0")
+            local keep_source_mtime=$(stat -c%Y "$keep_source" 2>/dev/null || echo "0")
+            local keep_source_ctime=$(stat -c%Z "$keep_source" 2>/dev/null || echo "0")
+            
+            local keep_source_duration=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$keep_source" 2>/dev/null | cut -d'.' -f1 || echo "0")
+            local keep_source_frames=$(ffprobe -v error -select_streams v:0 -show_entries stream=nb_frames -of default=noprint_wrappers=1:nokey=1 "$keep_source" 2>/dev/null || echo "0")
+            
+            # Estimate frames if not available
+            if [[ "$keep_source_frames" == "0" || "$keep_source_frames" == "N/A" ]]; then
+                local keep_source_fps=$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=noprint_wrappers=1:nokey=1 "$keep_source" 2>/dev/null | head -1 || echo "0/1")
+                if [[ "$keep_source_fps" =~ ^([0-9]+)/([0-9]+)$ ]]; then
+                    local fps_num="${BASH_REMATCH[1]}"
+                    local fps_den="${BASH_REMATCH[2]}"
+                    if [[ $fps_den -gt 0 && $keep_source_duration -gt 0 ]]; then
+                        keep_source_frames=$((fps_num * keep_source_duration / fps_den))
+                    fi
+                fi
+            fi
+            
+            # Validate keep_file properties
+            local keep_property_valid=true
+            
+            # Check timestamp relationship
+            if [[ $keep_file_mtime -gt 0 && $keep_source_mtime -gt 0 ]]; then
+                if [[ $keep_file_mtime -lt $keep_source_mtime ]]; then
+                    local keep_time_diff=$((keep_source_mtime - keep_file_mtime))
+                    if [[ $keep_time_diff -gt 60 ]]; then
+                        keep_property_valid=false
+                        echo -e "    ${YELLOW}⚠️  WARNING: Keep file $keep_file is older than source $(basename "$keep_source") (by ${keep_time_diff}s)${NC}"
+                    fi
+                fi
+            fi
+            
+            # Check size relationship
+            if [[ $keep_gif_size -gt 0 && $keep_source_size -gt 0 ]]; then
+                if [[ $keep_gif_size -gt $keep_source_size ]]; then
+                    keep_property_valid=false
+                    echo -e "    ${YELLOW}⚠️  WARNING: Keep file $keep_file is larger than source $(basename "$keep_source")${NC}"
+                    echo -e "    ${GRAY}   Size: GIF=$(numfmt --to=iec $keep_gif_size 2>/dev/null || echo $keep_gif_size) vs Source=$(numfmt --to=iec $keep_source_size 2>/dev/null || echo $keep_source_size)${NC}"
+                fi
+            fi
+            
+            if [[ $keep_gif_duration -gt 0 && $keep_source_duration -gt 0 ]]; then
+                local keep_duration_diff=$(( (keep_gif_duration > keep_source_duration ? keep_gif_duration - keep_source_duration : keep_source_duration - keep_gif_duration) ))
+                local keep_duration_ratio=0
+                if [[ $keep_source_duration -gt 0 ]]; then
+                    keep_duration_ratio=$((keep_duration_diff * 100 / keep_source_duration))
+                fi
+                
+                if [[ $keep_duration_ratio -gt 20 ]]; then
+                    keep_property_valid=false
+                    echo -e "    ${YELLOW}⚠️  WARNING: Keep file $keep_file also has property mismatch with source $(basename "$keep_source")${NC}"
+                    echo -e "    ${GRAY}   Duration: GIF=${keep_gif_duration}s vs Source=${keep_source_duration}s${NC}"
+                fi
+            fi
+            
+            # Check keep_file frame count
+            if [[ $keep_gif_frames -gt 0 && $keep_source_frames -gt 0 ]]; then
+                if [[ $keep_gif_frames -gt $((keep_source_frames * 120 / 100)) ]]; then
+                    keep_property_valid=false
+                    echo -e "    ${YELLOW}⚠️  WARNING: Keep file $keep_file has suspicious frame count${NC}"
+                    echo -e "    ${GRAY}   Frames: GIF=${keep_gif_frames} vs Source=${keep_source_frames}${NC}"
+                fi
+            fi
+        fi
+        
+        # Comparative quality analysis: Compare the two files intelligently
+        local quality_info=""
+        
+        # Calculate quality indicators
+        if [[ $remove_file_size -gt 0 && $keep_file_size -gt 0 ]]; then
+            local size_diff=$((keep_file_size - remove_file_size))
+            local size_diff_human=$(numfmt --to=iec $((size_diff > 0 ? size_diff : -size_diff)) 2>/dev/null || echo "${size_diff}B")
+            
+            if [[ $size_diff -gt 0 ]]; then
+                quality_info="keep is ${size_diff_human} larger"
+            elif [[ $size_diff -lt 0 ]]; then
+                quality_info="remove was ${size_diff_human} larger"
+            else
+                quality_info="same size"
+            fi
+        fi
+        
+        # Add modification date comparison
+        if [[ $remove_file_mtime -gt 0 && $keep_file_mtime -gt 0 ]]; then
+            local time_diff=$((keep_file_mtime - remove_file_mtime))
+            if [[ $time_diff -gt 0 ]]; then
+                local days=$((time_diff / 86400))
+                local hours=$(( (time_diff % 86400) / 3600 ))
+                if [[ $days -gt 0 ]]; then
+                    quality_info="${quality_info:+$quality_info, }keep is ${days}d ${hours}h newer"
+                elif [[ $hours -gt 0 ]]; then
+                    quality_info="${quality_info:+$quality_info, }keep is ${hours}h newer"
+                else
+                    quality_info="${quality_info:+$quality_info, }keep is ${time_diff}s newer"
+                fi
+            elif [[ $time_diff -lt 0 ]]; then
+                local abs_time_diff=$((time_diff * -1))
+                local days=$((abs_time_diff / 86400))
+                local hours=$(( (abs_time_diff % 86400) / 3600 ))
+                if [[ $days -gt 0 ]]; then
+                    quality_info="${quality_info:+$quality_info, }remove was ${days}d ${hours}h newer"
+                elif [[ $hours -gt 0 ]]; then
+                    quality_info="${quality_info:+$quality_info, }remove was ${hours}h newer"
+                else
+                    quality_info="${quality_info:+$quality_info, }remove was ${abs_time_diff}s newer"
+                fi
+            else
+                quality_info="${quality_info:+$quality_info, }same modification time"
+            fi
+        fi
+        
+        # Add permission comparison if different
+        if [[ "$remove_file_perms" != "$keep_file_perms" ]]; then
+            quality_info="${quality_info:+$quality_info, }perms: remove=$remove_file_perms keep=$keep_file_perms"
+        fi
+        
+        if [[ -f "$remove_file" ]] && rm -f "$remove_file" 2>/dev/null; then
+            # Track space saved
+            DUPLICATE_STATS_SPACE_SAVED=$((DUPLICATE_STATS_SPACE_SAVED + remove_file_size))
+            DUPLICATE_STATS_DELETED=$((DUPLICATE_STATS_DELETED + 1))
+            
+            if [[ "$has_source_remove" == true ]]; then
+                echo -e "    ${GREEN}✓ Deleted: $remove_file (keeping $keep_file)${NC}"
+                echo -e "    ${CYAN}  → Both have sources: $(basename "$remove_source"), $(basename "$keep_source")${NC}"
+            elif [[ "$has_source_keep" == true ]]; then
+                echo -e "    ${GREEN}✓ Deleted: $remove_file (keeping $keep_file)${NC}"
+                echo -e "    ${CYAN}  → Keep has source: $(basename "$keep_source")${NC}"
+            else
+                echo -e "    ${GREEN}✓ Deleted: $remove_file (keeping $keep_file)${NC}"
+                echo -e "    ${CYAN}  → Orphaned duplicates${NC}"
+            fi
+            
+            if [[ -n "$quality_info" ]]; then
+                echo -e "    ${GRAY}  📊 Quality: $quality_info${NC}"
+            fi
+            ((deleted_count++))
+            already_deleted["$remove_file"]=1  # Mark as deleted
+            
+            # Log the deletion with comprehensive properties
             {
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] DUPLICATE GIF DELETED: $remove_file (kept $keep_file)"
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] DUPLICATE GIF DELETED:"
+                echo "  Removed: $remove_file"
+                echo "    Size: $(numfmt --to=iec $remove_file_size 2>/dev/null || echo ${remove_file_size}B)"
+                echo "    Modified: $(date -d @$remove_file_mtime '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo 'unknown')"
+                echo "    Created: $(date -d @$remove_file_ctime '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo 'unknown')"
+                echo "    Permissions: $remove_file_perms"
+                echo "    Source: ${remove_source:-none}"
+                echo "  Kept: $keep_file"
+                echo "    Size: $(numfmt --to=iec $keep_file_size 2>/dev/null || echo ${keep_file_size}B)"
+                echo "    Modified: $(date -d @$keep_file_mtime '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo 'unknown')"
+                echo "    Created: $(date -d @$keep_file_ctime '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo 'unknown')"
+                echo "    Permissions: $keep_file_perms"
+                echo "    Source: ${keep_source:-none}"
+                echo "  Analysis: $quality_info"
+                echo ""
             } >> "$CONVERSION_LOG" 2>/dev/null || true
         else
             echo -e "    ${RED}❌ Failed to delete: $remove_file${NC}"
+            already_deleted["$remove_file"]=1  # Mark as attempted to avoid repeated failures
         fi
     done
     
-    echo -e "  ${GREEN}${BOLD}✨ Success! Cleaned up $deleted_count duplicate GIF(s)${NC}"
+    if [[ $skipped_count -gt 0 ]]; then
+        echo -e "  ${GREEN}${BOLD}✨ Success! Cleaned up $deleted_count duplicate GIF(s)${NC}"
+        echo -e "  ${YELLOW}⚠️  Skipped $skipped_count file(s) with ambiguous source mapping${NC}"
+    else
+        echo -e "  ${GREEN}${BOLD}✨ Success! Cleaned up $deleted_count duplicate GIF(s)${NC}"
+    fi
+    
+    # Show comprehensive statistical summary
+    show_duplicate_detection_statistics
     
     echo ""
+}
+
+# 📊 Comprehensive Statistical Summary for Duplicate Detection
+show_duplicate_detection_statistics() {
+    echo -e "\n  ${CYAN}${BOLD}╭────────────────────────────────────────────────────────────╮${NC}"
+    echo -e "  ${CYAN}${BOLD}│           📊 DUPLICATE DETECTION STATISTICS           │${NC}"
+    echo -e "  ${CYAN}${BOLD}╰────────────────────────────────────────────────────────────╯${NC}\n"
+    
+    # Detection Method Breakdown
+    echo -e "  ${BLUE}${BOLD}🔍 Detection Methods Used:${NC}"
+    local total_detected=$((DUPLICATE_STATS_EXACT_BINARY + DUPLICATE_STATS_VISUAL_IDENTICAL + DUPLICATE_STATS_CONTENT_FINGERPRINT + DUPLICATE_STATS_NEAR_IDENTICAL))
+    
+    if [[ $total_detected -gt 0 ]]; then
+        if [[ $DUPLICATE_STATS_EXACT_BINARY -gt 0 ]]; then
+            local exact_pct=$((DUPLICATE_STATS_EXACT_BINARY * 100 / total_detected))
+            echo -e "    ${GREEN}✓ Exact Binary Match:     ${BOLD}$DUPLICATE_STATS_EXACT_BINARY${NC} ${GREEN}duplicates (${exact_pct}%)${NC}"
+        fi
+        if [[ $DUPLICATE_STATS_VISUAL_IDENTICAL -gt 0 ]]; then
+            local visual_pct=$((DUPLICATE_STATS_VISUAL_IDENTICAL * 100 / total_detected))
+            echo -e "    ${BLUE}✓ Visual Identical:        ${BOLD}$DUPLICATE_STATS_VISUAL_IDENTICAL${NC} ${BLUE}duplicates (${visual_pct}%)${NC}"
+        fi
+        if [[ $DUPLICATE_STATS_CONTENT_FINGERPRINT -gt 0 ]]; then
+            local content_pct=$((DUPLICATE_STATS_CONTENT_FINGERPRINT * 100 / total_detected))
+            echo -e "    ${CYAN}✓ Content Fingerprint:     ${BOLD}$DUPLICATE_STATS_CONTENT_FINGERPRINT${NC} ${CYAN}duplicates (${content_pct}%)${NC}"
+        fi
+        if [[ $DUPLICATE_STATS_NEAR_IDENTICAL -gt 0 ]]; then
+            local near_pct=$((DUPLICATE_STATS_NEAR_IDENTICAL * 100 / total_detected))
+            echo -e "    ${YELLOW}✓ Near-Identical:          ${BOLD}$DUPLICATE_STATS_NEAR_IDENTICAL${NC} ${YELLOW}duplicates (${near_pct}%)${NC}"
+        fi
+    else
+        echo -e "    ${GRAY}• No duplicates detected${NC}"
+    fi
+    
+    # Space Savings
+    echo -e "\n  ${MAGENTA}${BOLD}💾 Space Optimization:${NC}"
+    if [[ $DUPLICATE_STATS_SPACE_SAVED -gt 0 ]]; then
+        local space_mb=$((DUPLICATE_STATS_SPACE_SAVED / 1024 / 1024))
+        local space_human=$(numfmt --to=iec $DUPLICATE_STATS_SPACE_SAVED 2>/dev/null || echo "${space_mb}MB")
+        echo -e "    ${GREEN}✓ Space Saved:             ${BOLD}$space_human${NC} ${GREEN}freed${NC}"
+        echo -e "    ${GREEN}✓ Files Deleted:           ${BOLD}$DUPLICATE_STATS_DELETED${NC} ${GREEN}duplicates${NC}"
+        
+        if [[ $DUPLICATE_STATS_DELETED -gt 0 ]]; then
+            local avg_size=$((DUPLICATE_STATS_SPACE_SAVED / DUPLICATE_STATS_DELETED))
+            local avg_human=$(numfmt --to=iec $avg_size 2>/dev/null || echo "${avg_size}B")
+            echo -e "    ${GRAY}• Average file size:       ${avg_human} per duplicate${NC}"
+        fi
+    else
+        echo -e "    ${GRAY}• No space saved (no duplicates deleted)${NC}"
+    fi
+    
+    # Checksum Cache Performance
+    echo -e "\n  ${CYAN}${BOLD}🔐 Checksum Cache Performance:${NC}"
+    local total_lookups=$((DUPLICATE_STATS_CACHE_HITS + DUPLICATE_STATS_CACHE_MISSES))
+    if [[ $total_lookups -gt 0 ]]; then
+        local hit_rate=$((DUPLICATE_STATS_CACHE_HITS * 100 / total_lookups))
+        echo -e "    ${GREEN}✓ Cache Hits:              ${BOLD}$DUPLICATE_STATS_CACHE_HITS${NC} ${GREEN}(${hit_rate}%)${NC}"
+        echo -e "    ${YELLOW}• Cache Misses:            ${BOLD}$DUPLICATE_STATS_CACHE_MISSES${NC} ${YELLOW}(calculated)${NC}"
+        echo -e "    ${BLUE}• Total Lookups:           ${BOLD}$total_lookups${NC}"
+        
+        # Calculate time saved (rough estimate: 500ms per cached checksum)
+        local time_saved_ms=$((DUPLICATE_STATS_CACHE_HITS * 500))
+        local time_saved_sec=$((time_saved_ms / 1000))
+        if [[ $time_saved_sec -gt 60 ]]; then
+            local time_saved_min=$((time_saved_sec / 60))
+            echo -e "    ${MAGENTA}• Estimated time saved:    ~${time_saved_min} minutes${NC}"
+        elif [[ $time_saved_sec -gt 0 ]]; then
+            echo -e "    ${MAGENTA}• Estimated time saved:    ~${time_saved_sec} seconds${NC}"
+        fi
+    else
+        echo -e "    ${GRAY}• No cache lookups performed${NC}"
+    fi
+    
+    # Actions Taken
+    echo -e "\n  ${YELLOW}${BOLD}🎯 Actions Summary:${NC}"
+    if [[ $DUPLICATE_STATS_SKIPPED -gt 0 ]]; then
+        echo -e "    ${YELLOW}⚠️  Skipped:                  ${BOLD}$DUPLICATE_STATS_SKIPPED${NC} ${YELLOW}files (ambiguous or property mismatch)${NC}"
+    fi
+    if [[ $DUPLICATE_STATS_DELETED -gt 0 ]]; then
+        echo -e "    ${GREEN}✓ Deleted:                 ${BOLD}$DUPLICATE_STATS_DELETED${NC} ${GREEN}duplicate files${NC}"
+    fi
+    if [[ $DUPLICATE_STATS_DELETED -eq 0 && $DUPLICATE_STATS_SKIPPED -eq 0 && $total_detected -eq 0 ]]; then
+        echo -e "    ${GREEN}✓ No duplicates found - collection is optimal!${NC}"
+    fi
+    
+    # Duplicate Pattern Analysis
+    if [[ $total_detected -gt 0 ]]; then
+        echo -e "\n  ${BLUE}${BOLD}🧠 Pattern Analysis:${NC}"
+        if [[ $DUPLICATE_STATS_EXACT_BINARY -gt $((total_detected / 2)) ]]; then
+            echo -e "    ${CYAN}• Most duplicates are exact copies${NC}"
+            echo -e "    ${GRAY}  → Recommendation: Check for copy/paste patterns in your workflow${NC}"
+        fi
+        if [[ $DUPLICATE_STATS_VISUAL_IDENTICAL -gt 0 ]]; then
+            echo -e "    ${CYAN}• Some files have identical visual content but different binary data${NC}"
+            echo -e "    ${GRAY}  → Recommendation: These may be re-conversions of the same source${NC}"
+        fi
+        if [[ $DUPLICATE_STATS_NEAR_IDENTICAL -gt 0 ]]; then
+            echo -e "    ${CYAN}• Near-identical files detected (may need manual review)${NC}"
+            echo -e "    ${GRAY}  → Recommendation: Consider consolidating similar content${NC}"
+        fi
+        if [[ $DUPLICATE_STATS_SKIPPED -gt $((DUPLICATE_STATS_DELETED / 2)) && $DUPLICATE_STATS_SKIPPED -gt 0 ]]; then
+            echo -e "    ${YELLOW}• High skip rate suggests filename mismatches${NC}"
+            echo -e "    ${GRAY}  → Recommendation: Ensure GIFs match their source video filenames${NC}"
+        fi
+    fi
+    
+    # Tips for preventing future duplicates
+    if [[ $total_detected -gt 2 ]]; then
+        echo -e "\n  ${GREEN}${BOLD}💡 Tips to Prevent Future Duplicates:${NC}"
+        echo -e "    ${GRAY}1. Always name GIFs to match source video filenames${NC}"
+        echo -e "    ${GRAY}2. Use version control for your media files${NC}"
+        echo -e "    ${GRAY}3. Run duplicate detection regularly (cache makes it fast!)${NC}"
+        echo -e "    ${GRAY}4. Avoid manual file copying - use the converter instead${NC}"
+    fi
+    
+    echo -e "\n  ${CYAN}${BOLD}╰────────────────────────────────────────────────────────────╯${NC}"
 }
 
 # 🔍 Advanced pre-conversion validation with intelligent duplicate prevention
