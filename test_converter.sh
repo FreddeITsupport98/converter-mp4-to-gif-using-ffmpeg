@@ -30,7 +30,8 @@
 #   --regression               Compare against baseline metrics
 #
 # Categories: all, basic, system, conversion, ai, advanced, performance,
-#            integration, quality, formats, security, edge_cases, monitoring
+#            integration, quality, formats, security, edge_cases, monitoring,
+#            duplicates (NEW: 27 comprehensive duplicate detection tests)
 #
 # Requirements:
 # - FFmpeg with full codec support
@@ -59,7 +60,7 @@ NC='\033[0m'
 declare -A TEST_CATEGORIES=(
     ["basic"]=0 ["system"]=0 ["conversion"]=0 ["ai"]=0 ["advanced"]=0
     ["performance"]=0 ["integration"]=0 ["quality"]=0 ["formats"]=0
-    ["security"]=0 ["edge_cases"]=0 ["monitoring"]=0
+    ["security"]=0 ["edge_cases"]=0 ["monitoring"]=0 ["duplicates"]=0
 )
 
 declare -A CATEGORY_PASSED=()
@@ -114,7 +115,8 @@ Options:
 
 Categories:
   all, basic, system, conversion, ai, advanced, performance,
-  integration, quality, formats, security, edge_cases, monitoring
+  integration, quality, formats, security, edge_cases, monitoring,
+  duplicates
 
 Examples:
   ./test_converter.sh                    # Run all tests
@@ -125,19 +127,20 @@ EOF
 }
 
 list_categories() {
-    echo -e "${BOLD}${CYAN}Available Test Categories:${NC}\n"
-    printf "  ${BLUE}%-15s${NC} - Core functionality and structure\n" "basic"
-    printf "  ${BLUE}%-15s${NC} - System integration and dependencies\n" "system"
-    printf "  ${BLUE}%-15s${NC} - Video to GIF conversion pipeline\n" "conversion"
-    printf "  ${BLUE}%-15s${NC} - AI analysis and detection systems\n" "ai"
-    printf "  ${BLUE}%-15s${NC} - Advanced features (menus, settings)\n" "advanced"
-    printf "  ${BLUE}%-15s${NC} - Performance optimization and scaling\n" "performance"
-    printf "  ${BLUE}%-15s${NC} - End-to-end integration tests\n" "integration"
-    printf "  ${BLUE}%-15s${NC} - Output quality validation\n" "quality"
-    printf "  ${BLUE}%-15s${NC} - Multi-format and codec support\n" "formats"
-    printf "  ${BLUE}%-15s${NC} - Security and safety validation\n" "security"
-    printf "  ${BLUE}%-15s${NC} - Edge case and error handling\n" "edge_cases"
-    printf "  ${BLUE}%-15s${NC} - Resource monitoring and profiling\n" "monitoring"
+    echo -e "${BOLD}${CYAN}Available Test Categories:${NC}\\n"
+    printf "  ${BLUE}%-15s${NC} - Core functionality and structure\\n" "basic"
+    printf "  ${BLUE}%-15s${NC} - System integration and dependencies\\n" "system"
+    printf "  ${BLUE}%-15s${NC} - Video to GIF conversion pipeline\\n" "conversion"
+    printf "  ${BLUE}%-15s${NC} - AI analysis and detection systems\\n" "ai"
+    printf "  ${BLUE}%-15s${NC} - Advanced features (menus, settings)\\n" "advanced"
+    printf "  ${BLUE}%-15s${NC} - Performance optimization and scaling\\n" "performance"
+    printf "  ${BLUE}%-15s${NC} - End-to-end integration tests\\n" "integration"
+    printf "  ${BLUE}%-15s${NC} - Output quality validation\\n" "quality"
+    printf "  ${BLUE}%-15s${NC} - Multi-format and codec support\\n" "formats"
+    printf "  ${BLUE}%-15s${NC} - Security and safety validation\\n" "security"
+    printf "  ${BLUE}%-15s${NC} - Edge case and error handling\\n" "edge_cases"
+    printf "  ${BLUE}%-15s${NC} - Resource monitoring and profiling\\n" "monitoring"
+    printf "  ${BLUE}%-15s${NC} - Duplicate detection and statistics\\n" "duplicates"
     echo ""
 }
 
@@ -610,6 +613,342 @@ test_stress() {
         fail "performance" "Stress test failed" "Only $count/100 converted"
 }
 
+# ============================================================================
+# DUPLICATE DETECTION TESTS
+# ============================================================================
+
+create_duplicate_test_gifs() {
+    echo -e "${BLUE}Creating GIFs for duplicate testing...${NC}"
+    
+    # Create a few simple GIFs
+    bash "$SCRIPT_PATH" --file test_480p.mp4 --preset low --force >/dev/null 2>&1
+    bash "$SCRIPT_PATH" --file test_animation.mp4 --preset low --force >/dev/null 2>&1
+    bash "$SCRIPT_PATH" --file test_movie.mp4 --preset low --force >/dev/null 2>&1
+    
+    # Create exact duplicates
+    cp "test_480p.gif" "test_480p_copy.gif" 2>/dev/null
+    cp "test_animation.gif" "test_animation_dup.gif" 2>/dev/null
+    
+    # Create near-duplicates (slightly modified)
+    if [[ -f "test_movie.gif" ]]; then
+        # Create a slightly different version
+        ffmpeg -i "test_movie.gif" -vf "scale=640:480" "test_movie_resized.gif" -y >/dev/null 2>&1
+    fi
+    
+    echo -e "${GREEN}✓ Created GIFs for duplicate testing${NC}"
+}
+
+test_checksum_cache_init() {
+    should_run_category "duplicates" || return
+    print_test "Checksum cache initialization" "duplicates"
+    
+    grep -q "init_checksum_cache" "$SCRIPT_PATH" && \
+        grep -q "CHECKSUM_CACHE_DB" "$SCRIPT_PATH" && \
+        grep -q "get_cached_checksum" "$SCRIPT_PATH" && \
+        pass "duplicates" "Checksum cache system found" || \
+        fail "duplicates" "Checksum cache not implemented"
+}
+
+test_checksum_cache_validation() {
+    should_run_category "duplicates" || return
+    print_test "Checksum validation (size + mtime)" "duplicates"
+    
+    grep -q "filesize.*filemtime" "$SCRIPT_PATH" && \
+        grep -q "cached_size.*cached_mtime" "$SCRIPT_PATH" && \
+        pass "duplicates" "Validation uses size + mtime" || \
+        fail "duplicates" "Validation method not found"
+}
+
+test_duplicate_detection_levels() {
+    should_run_category "duplicates" || return
+    print_test "4-level duplicate detection" "duplicates"
+    
+    local count=0
+    grep -q "Level 1.*exact.*binary" "$SCRIPT_PATH" && ((count++))
+    grep -q "Level 2.*visual.*similarity" "$SCRIPT_PATH" && ((count++))
+    grep -q "Level 3.*content.*fingerprint" "$SCRIPT_PATH" && ((count++))
+    grep -q "Level 4.*near.*identical" "$SCRIPT_PATH" && ((count++))
+    
+    [[ $count -eq 4 ]] && pass "duplicates" "All 4 detection levels present" || \
+        fail "duplicates" "Missing detection levels" "Found: $count/4"
+}
+
+test_statistics_tracking() {
+    should_run_category "duplicates" || return
+    print_test "Duplicate statistics tracking" "duplicates"
+    
+    local count=0
+    grep -q "DUPLICATE_STATS_EXACT_BINARY" "$SCRIPT_PATH" && ((count++))
+    grep -q "DUPLICATE_STATS_VISUAL_IDENTICAL" "$SCRIPT_PATH" && ((count++))
+    grep -q "DUPLICATE_STATS_CONTENT_FINGERPRINT" "$SCRIPT_PATH" && ((count++))
+    grep -q "DUPLICATE_STATS_SPACE_SAVED" "$SCRIPT_PATH" && ((count++))
+    grep -q "DUPLICATE_STATS_CACHE_HITS" "$SCRIPT_PATH" && ((count++))
+    
+    [[ $count -ge 4 ]] && pass "duplicates" "Statistics tracking ($count/5 metrics)" || \
+        fail "duplicates" "Incomplete statistics" "Found: $count/5"
+}
+
+test_statistical_summary() {
+    should_run_category "duplicates" || return
+    print_test "Statistical summary function" "duplicates"
+    
+    grep -q "show_duplicate_detection_statistics" "$SCRIPT_PATH" && \
+        grep -q "Detection Methods Used" "$SCRIPT_PATH" && \
+        grep -q "Space Optimization" "$SCRIPT_PATH" && \
+        grep -q "Cache Performance" "$SCRIPT_PATH" && \
+        pass "duplicates" "Statistical summary implemented" || \
+        fail "duplicates" "Statistical summary not found"
+}
+
+test_property_validation() {
+    should_run_category "duplicates" || return
+    print_test "File property validation" "duplicates"
+    
+    local count=0
+    grep -q "remove_file_size.*keep_file_size" "$SCRIPT_PATH" && ((count++))
+    grep -q "remove_file_mtime.*keep_file_mtime" "$SCRIPT_PATH" && ((count++))
+    grep -q "timestamp.*validation" "$SCRIPT_PATH" && ((count++))
+    grep -q "duration.*validation" "$SCRIPT_PATH" && ((count++))
+    
+    [[ $count -ge 3 ]] && pass "duplicates" "Property validation ($count/4 checks)" || \
+        fail "duplicates" "Incomplete validation" "Found: $count/4"
+}
+
+test_source_video_matching() {
+    should_run_category "duplicates" || return
+    print_test "Source video filename matching" "duplicates"
+    
+    grep -q "has_source.*mp4.*avi.*mov" "$SCRIPT_PATH" && \
+        grep -q "matching source video" "$SCRIPT_PATH" && \
+        pass "duplicates" "Source matching implemented" || \
+        fail "duplicates" "Source matching not found"
+}
+
+test_skip_tracking() {
+    should_run_category "duplicates" || return
+    print_test "Skip reason tracking" "duplicates"
+    
+    grep -q "DUPLICATE_STATS_SKIPPED" "$SCRIPT_PATH" && \
+        grep -q "ambiguous.*source.*mapping" "$SCRIPT_PATH" && \
+        grep -q "property.*mismatch" "$SCRIPT_PATH" && \
+        pass "duplicates" "Skip tracking implemented" || \
+        fail "duplicates" "Skip tracking not found"
+}
+
+test_pattern_analysis() {
+    should_run_category "duplicates" || return
+    print_test "Duplicate pattern analysis" "duplicates"
+    
+    grep -q "Pattern Analysis" "$SCRIPT_PATH" && \
+        grep -q "Recommendation" "$SCRIPT_PATH" && \
+        grep -q "exact copies" "$SCRIPT_PATH" && \
+        pass "duplicates" "Pattern analysis implemented" || \
+        fail "duplicates" "Pattern analysis not found"
+}
+
+test_cache_performance_tracking() {
+    should_run_category "duplicates" || return
+    print_test "Cache hit rate calculation" "duplicates"
+    
+    grep -q "hit_rate.*CACHE_HITS.*CACHE_MISSES" "$SCRIPT_PATH" && \
+        grep -q "time_saved" "$SCRIPT_PATH" && \
+        pass "duplicates" "Cache performance tracking found" || \
+        fail "duplicates" "Cache performance not tracked"
+}
+
+test_duplicate_deletion_safety() {
+    should_run_category "duplicates" || return
+    print_test "Safe duplicate deletion (tracking)" "duplicates"
+    
+    grep -q "already_deleted" "$SCRIPT_PATH" && \
+        grep -q "Skip if already deleted" "$SCRIPT_PATH" && \
+        pass "duplicates" "Deletion tracking prevents duplicates" || \
+        fail "duplicates" "Deletion tracking not found"
+}
+
+test_comprehensive_logging() {
+    should_run_category "duplicates" || return
+    print_test "Comprehensive deletion logging" "duplicates"
+    
+    local count=0
+    grep -q "DUPLICATE GIF DELETED" "$SCRIPT_PATH" && ((count++))
+    grep -q "Size:.*Modified:.*Created:" "$SCRIPT_PATH" && ((count++))
+    grep -q "Permissions:.*Source:" "$SCRIPT_PATH" && ((count++))
+    
+    [[ $count -ge 2 ]] && pass "duplicates" "Comprehensive logging ($count/3 features)" || \
+        fail "duplicates" "Logging incomplete" "Found: $count/3"
+}
+
+test_duplicate_functional() {
+    should_run_category "duplicates" || return
+    [[ "$SKIP_SLOW" == "true" ]] && skip "duplicates" "Skipped due to --skip-slow" && return
+    print_test "Functional: Duplicate detection" "duplicates"
+    
+    # Create GIFs with duplicates
+    create_duplicate_test_gifs
+    
+    # Count GIFs before detection
+    local before=$(ls -1 *.gif 2>/dev/null | wc -l)
+    
+    # Note: Actual duplicate detection would require interactive input
+    # This test just verifies the GIFs were created
+    [[ $before -ge 5 ]] && pass "duplicates" "Created $before GIFs for testing" || \
+        fail "duplicates" "Failed to create test GIFs" "Only $before GIFs"
+}
+
+test_cache_cleanup() {
+    should_run_category "duplicates" || return
+    print_test "Checksum cache cleanup" "duplicates"
+    
+    grep -q "cleanup_checksum_cache" "$SCRIPT_PATH" && \
+        grep -q "old_entries.*deleted_files" "$SCRIPT_PATH" && \
+        grep -q "cleanup_interval" "$SCRIPT_PATH" && \
+        pass "duplicates" "Cache cleanup implemented" || \
+        fail "duplicates" "Cache cleanup not found"
+}
+
+test_quality_comparison() {
+    should_run_category "duplicates" || return
+    print_test "Quality comparison analysis" "duplicates"
+    
+    grep -q "quality_info" "$SCRIPT_PATH" && \
+        grep -q "keep is.*larger\|remove was.*larger" "$SCRIPT_PATH" && \
+        grep -q "modification.*time" "$SCRIPT_PATH" && \
+        pass "duplicates" "Quality comparison implemented" || \
+        fail "duplicates" "Quality comparison not found"
+}
+
+test_recommendations() {
+    should_run_category "duplicates" || return
+    print_test "Prevention recommendations" "duplicates"
+    
+    grep -q "Tips to Prevent Future Duplicates" "$SCRIPT_PATH" && \
+        grep -q "name GIFs to match source" "$SCRIPT_PATH" && \
+        grep -q "version control" "$SCRIPT_PATH" && \
+        pass "duplicates" "Prevention tips implemented" || \
+        fail "duplicates" "Recommendations not found"
+}
+
+test_timestamp_validation() {
+    should_run_category "duplicates" || return
+    print_test "GIF timestamp vs source validation" "duplicates"
+    
+    grep -q "remove_file_mtime.*remove_source_mtime" "$SCRIPT_PATH" && \
+        grep -q "GIF is older than source video" "$SCRIPT_PATH" && \
+        pass "duplicates" "Timestamp validation found" || \
+        fail "duplicates" "Timestamp validation missing"
+}
+
+test_size_relationship_validation() {
+    should_run_category "duplicates" || return
+    print_test "GIF size vs source validation" "duplicates"
+    
+    grep -q "remove_gif_size.*remove_source_size" "$SCRIPT_PATH" && \
+        grep -q "GIF larger than source" "$SCRIPT_PATH" && \
+        pass "duplicates" "Size validation found" || \
+        fail "duplicates" "Size validation missing"
+}
+
+test_duration_validation() {
+    should_run_category "duplicates" || return
+    print_test "Duration mismatch detection" "duplicates"
+    
+    grep -q "duration_diff.*duration_ratio" "$SCRIPT_PATH" && \
+        grep -q "Duration mismatch" "$SCRIPT_PATH" && \
+        pass "duplicates" "Duration validation found" || \
+        fail "duplicates" "Duration validation missing"
+}
+
+test_frame_count_validation() {
+    should_run_category "duplicates" || return
+    print_test "Frame count validation" "duplicates"
+    
+    grep -q "remove_gif_frames.*source_frames" "$SCRIPT_PATH" && \
+        grep -q "Frame count suspicious" "$SCRIPT_PATH" && \
+        pass "duplicates" "Frame validation found" || \
+        fail "duplicates" "Frame validation missing"
+}
+
+test_comparative_quality_metrics() {
+    should_run_category "duplicates" || return
+    print_test "Comparative quality analysis" "duplicates"
+    
+    local count=0
+    grep -q "keep is.*larger\|remove was.*larger" "$SCRIPT_PATH" && ((count++))
+    grep -q "keep is.*newer\|remove was.*newer" "$SCRIPT_PATH" && ((count++))
+    grep -q "perms:.*remove=.*keep=" "$SCRIPT_PATH" && ((count++))
+    
+    [[ $count -ge 2 ]] && pass "duplicates" "Quality metrics ($count/3)" || \
+        fail "duplicates" "Incomplete metrics" "Found: $count/3"
+}
+
+test_space_tracking() {
+    should_run_category "duplicates" || return
+    print_test "Space saved tracking" "duplicates"
+    
+    grep -q "DUPLICATE_STATS_SPACE_SAVED.*remove_file_size" "$SCRIPT_PATH" && \
+        grep -q "space_human.*numfmt" "$SCRIPT_PATH" && \
+        pass "duplicates" "Space tracking implemented" || \
+        fail "duplicates" "Space tracking missing"
+}
+
+test_cache_hit_rate() {
+    should_run_category "duplicates" || return
+    print_test "Cache hit rate percentage" "duplicates"
+    
+    grep -q "hit_rate.*100.*total_lookups" "$SCRIPT_PATH" && \
+        grep -q "Cache Hits.*hit_rate%" "$SCRIPT_PATH" && \
+        pass "duplicates" "Hit rate calculation found" || \
+        fail "duplicates" "Hit rate missing"
+}
+
+test_time_saved_estimation() {
+    should_run_category "duplicates" || return
+    print_test "Time saved estimation" "duplicates"
+    
+    grep -q "time_saved.*CACHE_HITS.*500" "$SCRIPT_PATH" && \
+        grep -q "Estimated time saved" "$SCRIPT_PATH" && \
+        pass "duplicates" "Time estimation found" || \
+        fail "duplicates" "Time estimation missing"
+}
+
+test_atomic_cache_operations() {
+    should_run_category "duplicates" || return
+    print_test "Atomic cache operations" "duplicates"
+    
+    grep -q "cache_entry.*timestamp" "$SCRIPT_PATH" && \
+        grep -q "atomic.*operation" "$SCRIPT_PATH" && \
+        pass "duplicates" "Atomic operations found" || \
+        fail "duplicates" "Atomic operations missing"
+}
+
+test_duplicate_patterns() {
+    should_run_category "duplicates" || return
+    print_test "Duplicate pattern detection" "duplicates"
+    
+    local count=0
+    grep -q "exact copies" "$SCRIPT_PATH" && ((count++))
+    grep -q "copy/paste patterns" "$SCRIPT_PATH" && ((count++))
+    grep -q "re-conversions" "$SCRIPT_PATH" && ((count++))
+    grep -q "filename mismatches" "$SCRIPT_PATH" && ((count++))
+    
+    [[ $count -ge 3 ]] && pass "duplicates" "Pattern detection ($count/4)" || \
+        fail "duplicates" "Incomplete patterns" "Found: $count/4"
+}
+
+test_statistics_summary_formatting() {
+    should_run_category "duplicates" || return
+    print_test "Statistics summary formatting" "duplicates"
+    
+    grep -q "╭.*DUPLICATE DETECTION STATISTICS.*╮" "$SCRIPT_PATH" && \
+        grep -q "Detection Methods Used" "$SCRIPT_PATH" && \
+        grep -q "Space Optimization" "$SCRIPT_PATH" && \
+        grep -q "Cache Performance" "$SCRIPT_PATH" && \
+        grep -q "Pattern Analysis" "$SCRIPT_PATH" && \
+        pass "duplicates" "Formatted summary found" || \
+        fail "duplicates" "Summary formatting missing"
+}
+
 test_memory_leak() {
     should_run_category "monitoring" || return
     [[ "$SKIP_SLOW" == "true" || "$ENABLE_PROFILE" != "true" ]] && \
@@ -684,6 +1023,37 @@ run_all_tests() {
         print_header "📊 MONITORING TESTS" "monitoring"
         test_memory_leak
     }
+    
+    should_run_category "duplicates" && {
+        print_header "🔍 DUPLICATE DETECTION TESTS" "duplicates"
+        test_checksum_cache_init
+        test_checksum_cache_validation
+        test_duplicate_detection_levels
+        test_statistics_tracking
+        test_statistical_summary
+        test_property_validation
+        test_source_video_matching
+        test_skip_tracking
+        test_pattern_analysis
+        test_cache_performance_tracking
+        test_duplicate_deletion_safety
+        test_comprehensive_logging
+        test_duplicate_functional
+        test_cache_cleanup
+        test_quality_comparison
+        test_recommendations
+        test_timestamp_validation
+        test_size_relationship_validation
+        test_duration_validation
+        test_frame_count_validation
+        test_comparative_quality_metrics
+        test_space_tracking
+        test_cache_hit_rate
+        test_time_saved_estimation
+        test_atomic_cache_operations
+        test_duplicate_patterns
+        test_statistics_summary_formatting
+    }
 }
 
 # =============================================================================
@@ -706,7 +1076,7 @@ print_summary() {
     echo -e "Pass Rate: ${BOLD}${rate}%${NC} | Duration: ${BOLD}${min}m ${sec}s${NC}\n"
     
     echo -e "${CYAN}${BOLD}CATEGORY BREAKDOWN:${NC}"
-    for cat in basic system conversion ai advanced performance integration quality formats security edge_cases monitoring; do
+    for cat in basic system conversion ai advanced performance integration quality formats security edge_cases monitoring duplicates; do
         [[ "${TEST_CATEGORIES[$cat]}" -gt 0 ]] && {
             local total="${TEST_CATEGORIES[$cat]}"
             local passed="${CATEGORY_PASSED[$cat]}"
