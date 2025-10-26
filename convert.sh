@@ -344,11 +344,8 @@ update_file_progress() {
     local filled=$(( progress * bar_length / 100 ))
     local empty=$(( bar_length - filled ))
     
-    # Truncate filename if too long (keep it shorter to avoid overflow)
+    # Show full filename without truncation
     local display_file="$current_file"
-    if [[ ${#display_file} -gt 35 ]]; then
-        display_file="...${display_file: -32}"
-    fi
     
     # Clear the entire line first to prevent display corruption
     printf "\r\033[K"  # Clear from cursor to end of line
@@ -389,8 +386,32 @@ init_ai_cache() {
     # Create backup of cache index
     create_cache_backup
     
-    # Clean up old cache entries
-    cleanup_ai_cache
+    # Smart cleanup: only run every 7 days to avoid slowdown on every launch
+    local cleanup_marker="${AI_CACHE_DIR}/.last_cleanup"
+    local current_time=$(date +%s)
+    local cleanup_interval=$((7 * 86400))  # 7 days in seconds
+    local should_cleanup=false
+    
+    if [[ ! -f "$cleanup_marker" ]]; then
+        # No marker file, definitely clean up
+        should_cleanup=true
+    else
+        local last_cleanup=$(cat "$cleanup_marker" 2>/dev/null || echo "0")
+        local time_since_cleanup=$((current_time - last_cleanup))
+        if [[ $time_since_cleanup -gt $cleanup_interval ]]; then
+            should_cleanup=true
+        fi
+    fi
+    
+    if [[ "$should_cleanup" == "true" ]]; then
+        # Run cleanup in background to not slow down script startup
+        (
+            cleanup_ai_cache
+            echo "$current_time" > "$cleanup_marker" 2>/dev/null
+        ) &
+        # Save the cleanup PID so we can wait for it later if needed
+        CLEANUP_PID=$!
+    fi
 }
 
 # Validate cache index integrity
@@ -404,6 +425,18 @@ validate_cache_index() {
     # Check if file has proper header
     local header_line=$(head -n 1 "$AI_CACHE_INDEX" 2>/dev/null || echo "")
     [[ "$header_line" =~ ^#.*Version ]] || return 1
+    
+    # Check if using old format (md5hash in field 2) - needs migration
+    local sample_line=$(grep -v '^#' "$AI_CACHE_INDEX" | head -n 1)
+    if [[ -n "$sample_line" ]]; then
+        local field2=$(echo "$sample_line" | cut -d'|' -f2)
+        # Old format has 32-char hex MD5, new format has numeric filesize
+        if [[ "$field2" =~ ^[0-9a-f]{32}$ ]]; then
+            echo -e "${YELLOW}🔄 Old cache format detected, migrating to new format...${NC}" >&2
+            migrate_cache_format
+            return $?
+        fi
+    fi
     
     # Check if file structure is valid (no broken lines)
     local line_count=0
@@ -430,6 +463,55 @@ validate_cache_index() {
     return 0
 }
 
+# Migrate cache from old format (md5|size) to new format (size|mtime)
+migrate_cache_format() {
+    local old_cache="${AI_CACHE_INDEX}.old_format.$(date +%s)"
+    
+    # Backup old cache
+    cp "$AI_CACHE_INDEX" "$old_cache" 2>/dev/null
+    
+    echo -e "  ${BLUE}💾 Backing up old cache to: $(basename "$old_cache")${NC}" >&2
+    
+    # Create new format cache with header
+    cat > "$AI_CACHE_INDEX" << EOF
+# AI Analysis Cache Index - Version $AI_CACHE_VERSION (Migrated)
+# Format: filename|filesize|filemtime|timestamp|analysis_data
+# Note: Uses size+mtime for FAST validation (no MD5 recalc needed!)
+# Migrated from old format: $(date)
+EOF
+    
+    local migrated=0
+    local skipped=0
+    
+    # Read old format and convert
+    while IFS='|' read -r filename md5hash filesize timestamp analysis_data; do
+        # Skip headers and empty lines
+        [[ "$filename" =~ ^# || -z "$filename" ]] && continue
+        
+        # Get current mtime for this file (if it still exists)
+        local file_path="$filename"
+        if [[ ! -f "$file_path" ]]; then
+            # Try just the basename in current directory
+            file_path="./$(basename "$filename" 2>/dev/null)"
+        fi
+        
+        if [[ -f "$file_path" ]]; then
+            local filemtime=$(stat -c%Y "$file_path" 2>/dev/null || echo "0")
+            # Write new format: filename|filesize|filemtime|timestamp|analysis_data
+            echo "$filename|$filesize|$filemtime|$timestamp|$analysis_data" >> "$AI_CACHE_INDEX"
+            ((migrated++))
+        else
+            # File doesn't exist anymore, skip it
+            ((skipped++))
+        fi
+    done < "$old_cache"
+    
+    echo -e "  ${GREEN}✓ Migrated $migrated cache entries${NC}" >&2
+    [[ $skipped -gt 0 ]] && echo -e "  ${GRAY}⚠️  Skipped $skipped entries (files no longer exist)${NC}" >&2
+    
+    return 0
+}
+
 # Rebuild corrupted cache index
 rebuild_cache_index() {
     local backup_file="${AI_CACHE_INDEX}.backup.$(date +%s)"
@@ -440,7 +522,8 @@ rebuild_cache_index() {
     # Create fresh index
     cat > "$AI_CACHE_INDEX" << EOF
 # AI Analysis Cache Index - Version $AI_CACHE_VERSION (Rebuilt)
-# Format: filename|md5hash|filesize|timestamp|analysis_data
+# Format: filename|filesize|filemtime|timestamp|analysis_data
+# Note: Uses size+mtime for FAST validation (no MD5 recalc needed!)
 # Rebuilt: $(date)
 EOF
     
@@ -476,7 +559,7 @@ create_cache_backup() {
     fi
 }
 
-# Clean up old cache entries
+# Clean up old cache entries, remove duplicates, and purge deleted files
 cleanup_ai_cache() {
     if [[ "$AI_CACHE_ENABLED" != "true" || ! -f "$AI_CACHE_INDEX" ]]; then
         return 0
@@ -485,30 +568,82 @@ cleanup_ai_cache() {
     local cutoff_time=$(($(date +%s) - (AI_CACHE_MAX_AGE_DAYS * 86400)))
     local temp_index="$(mktemp)"
     
-    # Keep header and recent entries
+    # Keep header
     head -n 3 "$AI_CACHE_INDEX" > "$temp_index"
     
-    # Filter out old entries
-    local cleaned_count=0
-    while IFS='|' read -r filename md5hash filesize timestamp analysis_data; do
+    # Use associative array to keep only the LATEST entry per file (deduplication)
+    declare -A latest_entries
+    declare -A latest_timestamps
+    
+    local old_entries=0
+    local deleted_files=0
+    local duplicate_entries=0
+    
+    # Read all entries and keep only the most recent per filename
+    while IFS='|' read -r filename filesize filemtime timestamp analysis_data; do
         [[ "$filename" =~ ^# ]] && continue  # Skip comments
         [[ -z "$filename" ]] && continue     # Skip empty lines
         
-        if [[ $timestamp -gt $cutoff_time ]]; then
-            echo "$filename|$md5hash|$filesize|$timestamp|$analysis_data" >> "$temp_index"
+        # Skip old entries (beyond max age)
+        if [[ $timestamp -lt $cutoff_time ]]; then
+            ((old_entries++))
+            continue
+        fi
+        
+        # Check if file still exists (check both absolute path and basename)
+        local file_exists=false
+        if [[ -f "$filename" ]]; then
+            file_exists=true
+        elif [[ -f "$(basename "$filename")" ]]; then
+            file_exists=true
+        fi
+        
+        if [[ "$file_exists" == "false" ]]; then
+            ((deleted_files++))
+            continue
+        fi
+        
+        # Keep only the latest entry for each filename (deduplication)
+        local existing_ts="${latest_timestamps[$filename]:-0}"
+        if [[ $timestamp -gt $existing_ts ]]; then
+            # This is a newer entry, check if we're replacing an old one
+            [[ $existing_ts -gt 0 ]] && ((duplicate_entries++))
+            
+            latest_timestamps[$filename]=$timestamp
+            latest_entries[$filename]="$filename|$filesize|$filemtime|$timestamp|$analysis_data"
         else
-            ((cleaned_count++))
+            # Older duplicate entry
+            ((duplicate_entries++))
         fi
     done < <(tail -n +4 "$AI_CACHE_INDEX")
     
+    # Write deduplicated entries to temp file
+    for filename in "${!latest_entries[@]}"; do
+        echo "${latest_entries[$filename]}" >> "$temp_index"
+    done
+    
+    # Atomically replace cache with cleaned version
     mv "$temp_index" "$AI_CACHE_INDEX"
     
-    if [[ $cleaned_count -gt 0 ]]; then
-        echo -e "${BLUE}🧹 Cleaned up $cleaned_count old cache entries${NC}" >&2
+    # Report cleanup results
+    local total_cleaned=$((old_entries + deleted_files + duplicate_entries))
+    if [[ $total_cleaned -gt 0 ]]; then
+        echo -e "  ${BLUE}🧹 Cache cleanup complete:${NC}" >&2
+        [[ $old_entries -gt 0 ]] && echo -e "    ${GRAY}⏰ Removed $old_entries old entries (>${AI_CACHE_MAX_AGE_DAYS} days)${NC}" >&2
+        [[ $deleted_files -gt 0 ]] && echo -e "    ${YELLOW}🗑️  Removed $deleted_files entries (files deleted)${NC}" >&2
+        [[ $duplicate_entries -gt 0 ]] && echo -e "    ${GREEN}✔️ Removed $duplicate_entries duplicate entries${NC}" >&2
+        
+        # Show size reduction
+        local new_count=$(tail -n +4 "$AI_CACHE_INDEX" 2>/dev/null | wc -l)
+        local cache_size=$(du -h "$AI_CACHE_INDEX" 2>/dev/null | cut -f1 || echo "0")
+        echo -e "    ${CYAN}📊 Cache size: ${cache_size}B, ${new_count} entries${NC}" >&2
     fi
+    
+    # Clean up old backup files
+    find "$AI_CACHE_DIR" -name "analysis_cache.db.backup.*" -mtime +7 -delete 2>/dev/null || true
 }
 
-# Get file fingerprint for change detection
+# Get file fingerprint for change detection (FAST - uses size + mtime, not MD5!)
 get_file_fingerprint() {
     local file="$1"
     
@@ -517,11 +652,12 @@ get_file_fingerprint() {
         return 1
     fi
     
-    # Use MD5 hash and file size for robust change detection
-    local md5hash=$(md5sum "$file" 2>/dev/null | cut -d' ' -f1 || echo "ERROR")
+    # Use file size and modification time for FAST change detection
+    # MD5 is stored in cache data, no need to recalculate here!
     local filesize=$(stat -c%s "$file" 2>/dev/null || echo "0")
+    local filemtime=$(stat -c%Y "$file" 2>/dev/null || echo "0")
     
-    echo "${md5hash}:${filesize}"
+    echo "${filesize}:${filemtime}"
 }
 
 # Check if file analysis is cached and valid (with corruption protection)
@@ -585,10 +721,10 @@ save_to_ai_cache() {
     fi
     
     local fingerprint=$(get_file_fingerprint "$file")
-    [[ "$fingerprint" == "MISSING" || "$fingerprint" == "ERROR:0" ]] && return 1
+    [[ "$fingerprint" == "MISSING" ]] && return 1
     
-    local md5hash=$(echo "$fingerprint" | cut -d':' -f1)
-    local filesize=$(echo "$fingerprint" | cut -d':' -f2)
+    local filesize=$(echo "$fingerprint" | cut -d':' -f1)
+    local filemtime=$(echo "$fingerprint" | cut -d':' -f2)
     local timestamp=$(date +%s)
     local filename=$(basename "$file")
     
@@ -600,7 +736,7 @@ save_to_ai_cache() {
     
     # Atomic write operation using temporary file
     local temp_entry="$(mktemp)"
-    local cache_entry="$filename|$md5hash|$filesize|$timestamp|$analysis_data"
+    local cache_entry="$filename|$filesize|$filemtime|$timestamp|$analysis_data"
     
     # Write to temp file first
     if echo "$cache_entry" > "$temp_entry" 2>/dev/null; then
@@ -4714,14 +4850,46 @@ detect_duplicate_gifs() {
     local gif_files_list=()
     declare -A seen_files  # Track files to avoid duplicates
     
+    echo -e "  ${CYAN}🔍 Scanning GIF files...${NC}"
+    
     shopt -s nullglob
-    for gif_file in *.gif; do
+    local all_gifs=(*.gif)
+    local total_to_scan=${#all_gifs[@]}
+    local scan_count=0
+    
+    for gif_file in "${all_gifs[@]}"; do
         if [[ -f "$gif_file" && "${gif_file##*.}" == "gif" && -z "${seen_files["$gif_file"]}" ]]; then
             gif_files_list+=("$gif_file")
             seen_files["$gif_file"]=1
+            ((scan_count++))
+            
+            # Show progress bar every few files
+            if [[ $((scan_count % 5)) -eq 0 || $scan_count -eq $total_to_scan ]]; then
+                local progress=$((scan_count * 100 / total_to_scan))
+                local filled=$((progress * 20 / 100))
+                local empty=$((20 - filled))
+                
+                # Truncate filename if too long
+                local display_name="$(basename "$gif_file")"
+                if [[ ${#display_name} -gt 50 ]]; then
+                    display_name="${display_name:0:47}..."
+                fi
+                
+                printf "\r  ${CYAN}["
+                for ((j=0; j<filled; j++)); do printf "${GREEN}█${NC}"; done
+                for ((j=0; j<empty; j++)); do printf "${GRAY}░${NC}"; done
+                printf "${CYAN}] ${BOLD}%3d%%${NC} ${BLUE}Found %d files${NC}" "$progress" "$scan_count"
+                printf "\n  ${GRAY}📄 %s${NC}" "$display_name"
+                printf "\r\033[1A"  # Move cursor back up to progress bar line
+            fi
         fi
     done
     shopt -u nullglob
+    
+    # Show final count (keep it visible)
+    printf "\r  ${GREEN}["
+    for ((j=0; j<20; j++)); do printf "${GREEN}█${NC}"; done
+    printf "${GREEN}] ${BOLD}100%%${NC} ${BLUE}Found %d GIF files${NC}\n" "$scan_count"
     
     # Remove any duplicates from the array
     local unique_files_list=()
@@ -4752,12 +4920,93 @@ detect_duplicate_gifs() {
     local estimated_time_sec=$((total_files * 2))  # Rough estimate: 2 seconds per file
     local estimated_time_min=$((estimated_time_sec / 60))
     
-    # Debug: Show some sample files being processed
-    echo -e "  ${GRAY}Sample files: $(printf '%s, ' "${gif_files_list[@]:0:3}")...${NC}"
+    # Show sample files after scanning complete (truncated for readability)
+    local samples=""
+    for ((i=0; i<3 && i<${#gif_files_list[@]}; i++)); do
+        local fname="$(basename "${gif_files_list[$i]}")"
+        # Truncate long filenames
+        if [[ ${#fname} -gt 30 ]]; then
+            fname="${fname:0:27}..."
+        fi
+        samples+="$fname, "
+    done
+    echo -e "  ${GRAY}📂 Sample: ${samples}...${NC}"
+    
+    # Pre-scan to count cached vs uncached files AND build list of only uncached files
+    echo -e "  ${BLUE}${BOLD}🔍 Smart detection: Checking which files need analysis...${NC}"
+    local files_to_analyze=0
+    local files_cached=0
+    declare -a uncached_files_list  # Only files that need processing
+    
+    # OPTIMIZATION: Load cache index into memory once instead of calling check_ai_cache 200+ times
+    declare -A cache_lookup
+    if [[ "$AI_CACHE_ENABLED" == "true" && -f "$AI_CACHE_INDEX" ]]; then
+        # Load entire cache into associative array for O(1) lookups
+        while IFS='|' read -r filename filesize filemtime timestamp analysis_data; do
+            [[ "$filename" =~ ^# ]] && continue  # Skip comments
+            [[ -z "$filename" ]] && continue     # Skip empty lines
+            # Store with filename as key, fingerprint:data as value
+            cache_lookup["$filename"]="${filesize}:${filemtime}|${analysis_data}"
+        done < <(tail -n +4 "$AI_CACHE_INDEX" 2>/dev/null)
+    fi
+    
+    # Build list of ONLY files that need analysis (NEW, CHANGED, or NOT CACHED)
+    local idx_prescan
+    for ((idx_prescan=0; idx_prescan<total_files; idx_prescan++)); do
+        local prescan_file="${gif_files_list[$idx_prescan]}"
+        local prescan_basename=$(basename "$prescan_file")
+        
+        local needs_analysis=true
+        
+        # Fast O(1) cache lookup using associative array
+        if [[ -n "${cache_lookup[$prescan_basename]}" ]]; then
+            # Check if file changed by comparing fingerprints
+            local cached_entry="${cache_lookup[$prescan_basename]}"
+            local cached_fingerprint=$(echo "$cached_entry" | cut -d'|' -f1)
+            local cached_data=$(echo "$cached_entry" | cut -d'|' -f2-)
+            
+            # Get current file fingerprint (fast: just size + mtime)
+            local current_filesize=$(stat -c%s "$prescan_file" 2>/dev/null || echo "0")
+            local current_filemtime=$(stat -c%Y "$prescan_file" 2>/dev/null || echo "0")
+            local current_fingerprint="${current_filesize}:${current_filemtime}"
+            
+            # If fingerprint matches and it's duplicate detection data, file is cached
+            if [[ "$cached_fingerprint" == "$current_fingerprint" && "$cached_data" =~ ^DUPLICATE_DETECT: ]]; then
+                ((files_cached++))
+                needs_analysis=false  # File unchanged, skip it!
+                
+                # Load cached data directly into results (no processing needed)
+                local results_file="$temp_analysis_dir/analysis_results.txt"
+                echo "${cached_data#DUPLICATE_DETECT:}" >> "$results_file"
+            fi
+        fi
+        
+        # Add to processing list only if needs analysis
+        if [[ "$needs_analysis" == "true" ]]; then
+            uncached_files_list+=("$prescan_file")
+            ((files_to_analyze++))
+        fi
+    done
+    
+    # From now on, ONLY process files in uncached_files_list (not all files!)
+    # Clean up cache lookup
+    unset cache_lookup
     
     echo -e "  ${BLUE}${BOLD}🧠 Stage 1: Parallel content fingerprinting (${AI_DUPLICATE_THREADS} threads)...${NC}"
-    echo -e "  ${YELLOW}📊 Processing ${BOLD}${total_files}${NC}${YELLOW} GIF files (${BOLD}${total_size_mb}MB${NC}${YELLOW} total)${NC}"
-    echo -e "  ${CYAN}⏱️  Estimated time: ~${estimated_time_min} minutes (varies by file size)${NC}"
+    if [[ $files_cached -gt 0 ]]; then
+        echo -e "  ${YELLOW}📊 Found ${BOLD}${total_files}${NC}${YELLOW} GIF files (${BOLD}${total_size_mb}MB${NC}${YELLOW} total)${NC}"
+        echo -e "  ${GREEN}💾 Cached: ${BOLD}${files_cached}${NC}${GREEN} files (instant load)${NC}"
+        echo -e "  ${CYAN}⚡ To analyze: ${BOLD}${files_to_analyze}${NC}${CYAN} files (need MD5 calculation)${NC}"
+        if [[ $files_to_analyze -gt 0 ]]; then
+            # Recalculate estimated time for only files needing analysis
+            local estimated_time_min=$(( (total_size_mb / files_to_analyze) * files_to_analyze / 60 ))
+            [[ $estimated_time_min -lt 1 ]] && estimated_time_min=1
+            echo -e "  ${CYAN}⏱️  Estimated time: ~${estimated_time_min} minutes (varies by file size)${NC}"
+        fi
+    else
+        echo -e "  ${YELLOW}📊 Processing ${BOLD}${total_files}${NC}${YELLOW} GIF files (${BOLD}${total_size_mb}MB${NC}${YELLOW} total)${NC}"
+        echo -e "  ${CYAN}⏱️  Estimated time: ~${estimated_time_min} minutes (varies by file size)${NC}"
+    fi
     echo -e "  ${GRAY}💡 Larger files take longer to calculate MD5 checksums${NC}"
     
     # Parallel analysis function for individual GIF files with timeout
@@ -4795,6 +5044,8 @@ detect_duplicate_gifs() {
                 if [[ -n "$current_index" && -n "$total_files" ]]; then
                     update_file_progress "$current_index" "$total_files" "$(basename "$gif_file") [cached]" "Analyzing GIFs" 30
                 fi
+                # Increment cache hit counter (use file to share between function calls)
+                echo "1" >> "$temp_dir/cache_hits.count" 2>/dev/null || true
                 return 0
             fi
         fi
@@ -4884,6 +5135,9 @@ detect_duplicate_gifs() {
             # Save to cache for future runs with DUPLICATE_DETECT prefix to distinguish from AI analysis cache
             save_to_ai_cache "$gif_file" "DUPLICATE_DETECT:$analysis_data" 2>/dev/null || true
             
+            # Increment cache miss counter (MD5 was calculated)
+            echo "1" >> "$temp_dir/cache_misses.count" 2>/dev/null || true
+            
             # Write results atomically (no background processing - keep it simple and fast)
             echo "$analysis_data" >> "$result_file"
             
@@ -4908,8 +5162,17 @@ detect_duplicate_gifs() {
     declare -a deleted_files_list
     declare -a skipped_files_list
     
-    echo -e "  ${BLUE}🚀 Processing $total_files GIF files in parallel (${AI_DUPLICATE_THREADS} threads)${NC}"
-    echo -e "  ${GRAY}🛈 Using fast parallel MD5 processing - much faster than sequential!${NC}"
+    # Track cache statistics
+    local cache_hits=0
+    local cache_misses=0
+    
+    if [[ $files_to_analyze -gt 0 ]]; then
+        echo -e "  ${BLUE}🚀 Processing ${files_to_analyze} GIF files that need analysis (${AI_DUPLICATE_THREADS} threads)${NC}"
+        echo -e "  ${GREEN}💾 Skipping ${files_cached} cached files (instant load)${NC}"
+    else
+        echo -e "  ${GREEN}🚀 All ${total_files} GIF files are cached - loading instantly!${NC}"
+    fi
+    echo -e "  ${GRAY}🔈 Cache-enabled: Files analyzed before will load instantly!${NC}"
     
     # Emergency break mechanism to prevent infinite loops
     declare -A processed_files_tracker
@@ -4920,14 +5183,24 @@ detect_duplicate_gifs() {
     unset processed_files_tracker
     declare -A processed_files_tracker
     
-    # Use simple while loop with unique variable name to avoid conflicts
+    # Track actual processing (exclude cached)
+    local files_actually_processed=0
+    local files_loaded_from_cache=0
+    
+    # Use simple while loop - process ONLY uncached files
     local loop_idx=0
-    while [[ $loop_idx -lt $total_files ]]; do
-        local gif_file="${gif_files_list[$loop_idx]}"
-        processed_files=$((loop_idx + 1))
+    local total_to_process=${#uncached_files_list[@]}
+    while [[ $loop_idx -lt $total_to_process ]]; do
+        # Check if user requested interrupt (Ctrl+C)
+        if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
+            echo -e "\n  ${YELLOW}⏸️  Analysis interrupted by user${NC}"
+            echo -e "  ${CYAN}💾 Processed: $files_actually_processed, Cached: $files_loaded_from_cache${NC}"
+            break
+        fi
         
-        # Update progress bar every file for smooth display
-        update_file_progress "$processed_files" "$total_files" "$(basename "$gif_file")" "Analyzing GIFs" 30
+        local gif_file="${uncached_files_list[$loop_idx]}"
+        
+        # This file needs processing (not cached)
         
         # Emergency break: If we've seen this EXACT file before in THIS session
         # This should NEVER happen in a proper loop, so it indicates array has duplicates
@@ -5100,8 +5373,12 @@ detect_duplicate_gifs() {
             continue
         fi
         
-        # Process the (potentially corrected) file
-        analyze_gif_parallel "$gif_file" "$temp_analysis_dir" "$results_file" $processed_files $total_files
+        # This file is in uncached list, so it needs processing
+        ((files_actually_processed++))
+        
+        # Process the file
+        # Pass files_actually_processed and files_to_analyze for accurate progress
+        analyze_gif_parallel "$gif_file" "$temp_analysis_dir" "$results_file" $files_actually_processed $files_to_analyze
         
         # Increment loop counter at end of iteration
         ((loop_idx++))
@@ -5115,8 +5392,31 @@ detect_duplicate_gifs() {
         return 1
     fi
     
-    # Final progress update to ensure we show 100%
-    printf "\r  ${GREEN}✓ Analysis complete! Processed $total_files GIF files ${NC}\n"
+    # Final progress update - show accurate counts
+    if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
+        printf "\r  ${YELLOW}⏸️  Analysis stopped!${NC}\n"
+    else
+        printf "\r  ${GREEN}✓ Analysis complete! ${NC}\n"
+    fi
+    
+    # Display cache statistics
+    if [[ -f "$temp_analysis_dir/cache_hits.count" ]]; then
+        cache_hits=$(wc -l < "$temp_analysis_dir/cache_hits.count" 2>/dev/null || echo "0")
+    fi
+    if [[ -f "$temp_analysis_dir/cache_misses.count" ]]; then
+        cache_misses=$(wc -l < "$temp_analysis_dir/cache_misses.count" 2>/dev/null || echo "0")
+    fi
+    
+    if [[ $cache_hits -gt 0 || $cache_misses -gt 0 ]]; then
+        local cache_percentage=$((cache_hits * 100 / (cache_hits + cache_misses)))
+        echo -e "  ${CYAN}💾 Cache Performance:${NC}"
+        echo -e "    ${GREEN}✓ Cached (instant): $cache_hits files${NC}"
+        echo -e "    ${YELLOW}⚡ Calculated (MD5): $cache_misses files${NC}"
+        echo -e "    ${BLUE}📊 Cache hit rate: ${cache_percentage}%${NC}"
+        if [[ $cache_misses -gt 0 ]]; then
+            echo -e "    ${GRAY}💡 Next run: ${cache_misses} more files will be cached!${NC}"
+        fi
+    fi
     
     # Show file maintenance summary
     local auto_actions_count=$(grep -E "AUTO_(FIXED|DELETED|SKIP)" "$results_file" 2>/dev/null | wc -l)
@@ -5205,11 +5505,17 @@ detect_duplicate_gifs() {
     
     # Clear progress line and show completion with error summary
     local final_cache_stats=$(get_cache_stats)
-    printf "\r  ${GREEN}✓ Parallel content analysis complete! ${NC}\n"
     
-    # Show detailed analysis summary with AI insights
-    echo -e "  ${CYAN}${BOLD}📈 AI-ENHANCED ANALYSIS SUMMARY:${NC}"
-    echo -e "    ${GREEN}✓ Successfully analyzed: ${BOLD}$successful_files${NC} ${GREEN}files${NC}"
+    # Show accurate status based on interruption
+    if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
+        printf "\r  ${YELLOW}⏸️  Analysis interrupted! ${NC}\n"
+        echo -e "  ${CYAN}${BOLD}📈 PARTIAL ANALYSIS SUMMARY:${NC}"
+        echo -e "    ${YELLOW}⏸️  Analyzed so far: ${BOLD}$successful_files${NC} ${YELLOW}files (out of $total_files)${NC}"
+    else
+        printf "\r  ${GREEN}✓ Parallel content analysis complete! ${NC}\n"
+        echo -e "  ${CYAN}${BOLD}📈 AI-ENHANCED ANALYSIS SUMMARY:${NC}"
+        echo -e "    ${GREEN}✓ Successfully analyzed: ${BOLD}$successful_files${NC} ${GREEN}files${NC}"
+    fi
     
     # Count AI-enhanced categories
     local ai_complex_files=0
@@ -5273,6 +5579,12 @@ detect_duplicate_gifs() {
     # Advanced duplicate detection with multiple similarity levels
     local gif_files=("${!gif_checksums[@]}")
     for ((i=0; i<${#gif_files[@]}; i++)); do
+        # Check for interrupt
+        if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
+            echo -e "\n  ${YELLOW}⏸️  Duplicate detection interrupted by user${NC}"
+            return 0
+        fi
+        
         local file1="${gif_files[i]}"
         for ((j=i+1; j<${#gif_files[@]}; j++)); do
             local file2="${gif_files[j]}"
@@ -5629,25 +5941,49 @@ detect_duplicate_gifs() {
 
 # 🔍 Advanced pre-conversion validation with intelligent duplicate prevention
 perform_pre_conversion_validation() {
-    echo -e "${CYAN}${BOLD}🔍 ADVANCED PRE-CONVERSION VALIDATION${NC}\n"
+    echo -e "${CYAN}${BOLD}🔍 ADVANCED PRE-CONVERSION VALIDATION${NC}\\n"
     
     # Step 1: Check for duplicate GIFs and offer to remove them
     echo -e "${BLUE}Step 1: Duplicate GIF Detection${NC}"
     detect_duplicate_gifs
     
+    # Check for interrupt after Step 1
+    if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
+        echo -e "\\n  ${YELLOW}⏸️  Validation interrupted by user${NC}"
+        return 1
+    fi
+    
     # Step 2: Check for corrupted GIFs and offer to fix them  
     echo -e "${BLUE}Step 2: Corruption Detection${NC}"
     detect_corrupted_gifs
+    
+    # Check for interrupt after Step 2
+    if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
+        echo -e "\\n  ${YELLOW}⏸️  Validation interrupted by user${NC}"
+        return 1
+    fi
     
     # Step 3: Advanced video-to-GIF mapping analysis
     echo -e "${BLUE}Step 3: Video-to-GIF Mapping Analysis${NC}"
     analyze_video_gif_mapping
     
+    # Check for interrupt after Step 3
+    if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
+        echo -e "\\n  ${YELLOW}⏸️  Validation interrupted by user${NC}"
+        return 1
+    fi
+    
     # Step 4: Show intelligent conversion recommendations
     echo -e "${BLUE}Step 4: Conversion Planning${NC}"
     generate_conversion_plan
     
-    echo -e "\n  ${GREEN}✓ Advanced validation completed${NC}\n"
+    # Check for interrupt after Step 4
+    if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
+        echo -e "\\n  ${YELLOW}⏸️  Validation interrupted by user${NC}"
+        return 1
+    fi
+    
+    echo -e "\\n  ${GREEN}✓ Advanced validation completed${NC}\\n"
     return 0
 }
 
@@ -5951,6 +6287,13 @@ detect_corrupted_gifs() {
     # Find all GIF files in current directory
     shopt -s nullglob
     for gif_file in *.gif; do
+        # Check for interrupt
+        if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
+            echo -e "  ${YELLOW}⏸️  Corruption check interrupted by user${NC}"
+            shopt -u nullglob
+            return 0
+        fi
+        
         [[ -f "$gif_file" ]] || continue
         ((total_gifs++))
         
@@ -8318,13 +8661,25 @@ quick_convert_mode() {
         fi
         
         if start_conversion; then
-            echo -e "\n${GREEN}🎉 AI-powered quick conversion completed successfully!${NC}"
-            echo -e "${BLUE}📦 Your GIF files are ready in the current directory!${NC}"
-            echo -e "${CYAN}📊 Check Statistics to see detailed results, or run again with new videos!${NC}"
+            # Check if process was interrupted
+            if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
+                echo -e "\n${YELLOW}👋 Process incomplete - stopped by user${NC}"
+                echo -e "${CYAN}💾 Progress saved! Run again to continue where you left off.${NC}"
+                echo -e "${BLUE}💡 Tip: Completed files are already converted and will be skipped.${NC}"
+            else
+                echo -e "\n${GREEN}🎉 AI-powered quick conversion completed successfully!${NC}"
+                echo -e "${BLUE}📦 Your GIF files are ready in the current directory!${NC}"
+                echo -e "${CYAN}📊 Check Statistics to see detailed results, or run again with new videos!${NC}"
+            fi
             show_ai_summary
         else
-            echo -e "\n${YELLOW}📋 Quick conversion completed (no action needed)${NC}"
-            echo -e "${BLUE}💡 Tip: Add video files to this directory and run again!${NC}"
+            if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
+                echo -e "\n${YELLOW}👋 Process stopped - no files were converted${NC}"
+                echo -e "${BLUE}💡 Tip: Run again when ready to continue.${NC}"
+            else
+                echo -e "\n${YELLOW}📋 Quick conversion completed (no action needed)${NC}"
+                echo -e "${BLUE}💡 Tip: Add video files to this directory and run again!${NC}"
+            fi
         fi
     fi
     
@@ -10420,7 +10775,11 @@ start_conversion() {
     
     # Run pre-conversion validation and cleanup
     if ! perform_pre_conversion_validation; then
-        echo -e "${YELLOW}🏁 Validation completed - no conversion needed${NC}"
+        if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
+            echo -e "${YELLOW}👋 Process stopped by user - no files converted${NC}"
+        else
+            echo -e "${YELLOW}🏁 Validation completed - no conversion needed${NC}"
+        fi
         return 0
     fi
     
@@ -10468,6 +10827,12 @@ start_conversion() {
     CACHE_MISSES=0
     
     for file in "${all_video_files[@]}"; do
+        # Check for interrupt during validation
+        if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
+            echo -e "\n  ${YELLOW}⏸️  Validation interrupted by user${NC}"
+            break
+        fi
+        
         if [[ -f "$file" && -r "$file" ]]; then
             ((checked++))
             
@@ -10967,6 +11332,7 @@ ${YELLOW}SMART FEATURES:${NC}
     --auto-detect       Auto-detect optimal settings per video
     --ai-status         Show AI cache, training, and health diagnostics
     --ai-stats          Same as --ai-status
+    --clean-cache       Clean cache: remove duplicates and deleted files
     --batch-optimize    Optimize all files after conversion
     --size-limit MB     Target file size limit
     --duration-limit S  Maximum GIF duration (clips longer videos)
@@ -13091,6 +13457,13 @@ main() {
             --ai-status|--ai-stats)
                 echo -e "${CYAN}${BOLD}🤖 AI SYSTEM STATUS${NC}\\\\n"
                 show_ai_status
+                exit 0
+                ;;
+            --clean-cache)
+                echo -e "${CYAN}${BOLD}🧹 CLEANING AI CACHE${NC}\\n"
+                init_ai_cache >/dev/null 2>&1
+                cleanup_ai_cache
+                echo -e "\n${GREEN}✓ Cache cleanup complete!${NC}"
                 exit 0
                 ;;
             --show-settings)
