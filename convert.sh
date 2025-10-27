@@ -6996,11 +6996,26 @@ detect_corrupted_gifs() {
     local total_gifs=0
     local corrupted_files=()
     
-    # Find all GIF files in current directory
+    # First pass: count total GIF files
+    shopt -s nullglob
+    local all_gifs=(*.gif)
+    local total_to_check=${#all_gifs[@]}
+    shopt -u nullglob
+    
+    if [[ $total_to_check -eq 0 ]]; then
+        echo -e "  ${CYAN}ℹ️  No existing GIF files found${NC}"
+        return 0
+    fi
+    
+    echo -e "  ${CYAN}📊 Found $total_to_check GIF files to validate${NC}"
+    
+    # Second pass: check each file with progress bar
+    local checked=0
     shopt -s nullglob
     for gif_file in *.gif; do
         # Check for interrupt
         if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
+            printf "\r\033[K"
             echo -e "  ${YELLOW}⏸️  Corruption check interrupted by user${NC}"
             shopt -u nullglob
             return 0
@@ -7008,6 +7023,26 @@ detect_corrupted_gifs() {
         
         [[ -f "$gif_file" ]] || continue
         ((total_gifs++))
+        ((checked++))
+        
+        # Show progress bar
+        local percent=$((checked * 100 / total_to_check))
+        local filled=$((checked * 50 / total_to_check))
+        local empty=$((50 - filled))
+        
+        # Build progress bar
+        local bar=""
+        for ((i=0; i<filled; i++)); do bar+="█"; done
+        for ((i=0; i<empty; i++)); do bar+="░"; done
+        
+        # Truncate filename if too long (max 35 chars)
+        local display_file="$(basename -- "$gif_file")"
+        if [[ ${#display_file} -gt 35 ]]; then
+            display_file="${display_file:0:32}..."
+        fi
+        
+        # Single-line progress with filename
+        printf "\r\033[K  ${BLUE}🔍 [${GREEN}%s${GRAY}%s${BLUE}] ${YELLOW}%3d%%${NC} ${GRAY}(%d/%d)${NC} ${CYAN}%s${NC}" "${bar:0:filled}" "${bar:filled:empty}" "$percent" "$checked" "$total_to_check" "$display_file"
         
         # Test GIF integrity with ffprobe
         if ! ffprobe -v error -select_streams v:0 -show_entries stream=nb_frames -of csv=p=0 "$gif_file" >/dev/null 2>&1; then
@@ -7016,6 +7051,9 @@ detect_corrupted_gifs() {
         fi
     done
     shopt -u nullglob
+    
+    # Clear progress bar
+    printf "\r\033[K"
     
     if [[ $total_gifs -eq 0 ]]; then
         echo -e "  ${CYAN}ℹ️  No existing GIF files found${NC}"
@@ -8478,6 +8516,142 @@ stop_file_monitoring() {
     rm -f "/tmp/smart_gif_converter_new_files_$$" 2>/dev/null || true
 }
 
+# 🔍 Detect package manager and distro
+detect_package_manager() {
+    if command -v zypper >/dev/null 2>&1; then
+        echo "zypper"
+    elif command -v apt >/dev/null 2>&1; then
+        echo "apt"
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "dnf"
+    elif command -v yum >/dev/null 2>&1; then
+        echo "yum"
+    elif command -v pacman >/dev/null 2>&1; then
+        echo "pacman"
+    else
+        echo "unknown"
+    fi
+}
+
+# 📦 Map tool name to package name per distro
+get_package_name() {
+    local tool="$1"
+    local pkg_manager="$2"
+    
+    case "$tool" in
+        "ffmpeg")
+            case "$pkg_manager" in
+                "zypper") echo "ffmpeg-7" ;;
+                "apt") echo "ffmpeg" ;;
+                "dnf"|"yum") echo "ffmpeg" ;;
+                "pacman") echo "ffmpeg" ;;
+                *) echo "ffmpeg" ;;
+            esac
+            ;;
+        "gifsicle")
+            echo "gifsicle"
+            ;;
+        "jq")
+            echo "jq"
+            ;;
+        "convert")
+            case "$pkg_manager" in
+                "zypper") echo "ImageMagick" ;;
+                "apt") echo "imagemagick" ;;
+                "dnf"|"yum") echo "ImageMagick" ;;
+                "pacman") echo "imagemagick" ;;
+                *) echo "imagemagick" ;;
+            esac
+            ;;
+        *)
+            echo "$tool"
+            ;;
+    esac
+}
+
+# 🔄 Check if a package update is available
+check_package_update_available() {
+    local tool="$1"
+    local pkg_manager=$(detect_package_manager)
+    local package_name=$(get_package_name "$tool" "$pkg_manager")
+    local update_available=false
+    local installed_version=""
+    local available_version=""
+    local update_command=""
+    
+    case "$pkg_manager" in
+        "zypper")
+            # Special handling for FFmpeg versioning on openSUSE
+            if [[ "$tool" == "ffmpeg" ]]; then
+                local installed_pkg=$(rpm -qa | grep -E '^ffmpeg-[0-9]' | head -1)
+                if [[ -n "$installed_pkg" ]]; then
+                    installed_version=$(echo "$installed_pkg" | grep -oP 'ffmpeg-\K[0-9]+')
+                    # Check if ffmpeg-7 is available
+                    if zypper search -s ffmpeg-7 2>/dev/null | grep -q "^i.*ffmpeg-7"; then
+                        # Already on ffmpeg-7
+                        return 0
+                    elif zypper search -s ffmpeg-7 2>/dev/null | grep -q "ffmpeg-7"; then
+                        if [[ "$installed_version" -lt 7 ]]; then
+                            update_available=true
+                            available_version="7"
+                            update_command="sudo zypper install --allow-vendor-change ffmpeg-7"
+                        fi
+                    fi
+                fi
+            else
+                # Check if update available using zypper
+                if zypper list-updates 2>/dev/null | grep -q "^v.*$package_name"; then
+                    update_available=true
+                    update_command="sudo zypper update $package_name"
+                fi
+            fi
+            ;;
+        "apt")
+            # Check with apt
+            apt list --upgradable 2>/dev/null | grep -q "^$package_name/" && {
+                update_available=true
+                update_command="sudo apt update && sudo apt upgrade $package_name"
+            }
+            ;;
+        "dnf")
+            # Check with dnf
+            dnf check-update "$package_name" >/dev/null 2>&1 && {
+                update_available=true
+                update_command="sudo dnf update $package_name"
+            }
+            ;;
+        "yum")
+            # Check with yum
+            yum check-update "$package_name" >/dev/null 2>&1 && {
+                update_available=true
+                update_command="sudo yum update $package_name"
+            }
+            ;;
+        "pacman")
+            # Check with pacman
+            pacman -Qu 2>/dev/null | grep -q "^$package_name " && {
+                update_available=true
+                update_command="sudo pacman -Syu $package_name"
+            }
+            ;;
+    esac
+    
+    if [[ "$update_available" == true ]]; then
+        if [[ "$tool" == "ffmpeg" && -n "$available_version" ]]; then
+            echo -e "    ${YELLOW}⚠️  Newer version available: ffmpeg-$available_version (you have ffmpeg-$installed_version)${NC}"
+        else
+            echo -e "    ${YELLOW}⚠️  Update available for $tool${NC}"
+        fi
+        echo -e "    ${CYAN}💡 Update: $update_command${NC}"
+        
+        # Store for batch update prompt
+        OUTDATED_PACKAGES+=("$tool:$update_command")
+        return 1
+    fi
+    
+    return 0
+}
+
 # 🔍 Enhanced system requirements check
 check_dependencies() {
     echo -e "${CYAN}🔍 Checking system dependencies...${NC}"
@@ -8486,6 +8660,10 @@ check_dependencies() {
     local optional_tools=("gifsicle" "jq" "convert")  # convert is from ImageMagick
     local missing_required=()
     local missing_optional=()
+    local outdated_tools=()
+    
+    # Initialize global array for outdated packages
+    OUTDATED_PACKAGES=()
     
     # Check required tools
     for tool in "${required_tools[@]}"; do
@@ -8494,6 +8672,9 @@ check_dependencies() {
         else
             local version=$("$tool" -version 2>/dev/null | head -1 | cut -d' ' -f1-3 2>/dev/null || echo "unknown version")
             echo -e "  ${GREEN}✓ $tool: $version${NC}"
+            
+            # Check if package is up-to-date (all distros)
+            check_package_update_available "$tool"
         fi
     done
     
@@ -8504,6 +8685,9 @@ check_dependencies() {
         else
             local version=$("$tool" --version 2>/dev/null | head -1 2>/dev/null || echo "available")
             echo -e "  ${GREEN}✓ $tool: $version${NC}"
+            
+            # Check if package is up-to-date (all distros)
+            check_package_update_available "$tool"
         fi
     done
     
@@ -8558,6 +8742,32 @@ check_dependencies() {
             fi
         else
             echo -e "${CYAN}Continuing without optional dependencies...${NC}"
+        fi
+    fi
+    
+    # Prompt to update outdated packages
+    if [[ ${#OUTDATED_PACKAGES[@]} -gt 0 ]]; then
+        echo -e "\n${YELLOW}⚠️  Found ${#OUTDATED_PACKAGES[@]} package(s) with updates available${NC}"
+        echo -ne "${CYAN}Would you like to update them now? [y/N]:${NC} "
+        read -r update_choice
+        
+        if [[ "$update_choice" =~ ^[Yy]$ ]]; then
+            echo -e "\n${BLUE}🔄 Updating packages...${NC}"
+            for entry in "${OUTDATED_PACKAGES[@]}"; do
+                local tool="${entry%%:*}"
+                local cmd="${entry#*:}"
+                echo -e "\n${CYAN}➡️  Updating $tool...${NC}"
+                echo -e "${GRAY}Command: $cmd${NC}"
+                eval "$cmd"
+                if [[ $? -eq 0 ]]; then
+                    echo -e "${GREEN}✓ $tool updated successfully${NC}"
+                else
+                    echo -e "${YELLOW}⚠️  $tool update failed or was skipped${NC}"
+                fi
+            done
+            echo -e "\n${GREEN}✅ Package updates completed${NC}"
+        else
+            echo -e "${CYAN}📝 You can update later using the commands shown above${NC}"
         fi
     fi
     
