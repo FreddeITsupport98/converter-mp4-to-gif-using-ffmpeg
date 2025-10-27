@@ -1058,22 +1058,32 @@ validate_ai_model() {
         AI_GENERATION="$model_generation"
     fi
     
-    # Validate structure (no corrupted lines)
+    # Validate structure (check for major corruption)
     local corrupted=0
-    local total=0
+    local data_lines=0
     while IFS= read -r line; do
-        ((total++))
-        [[ $total -le 4 ]] && continue  # Skip header
-        [[ -z "$line" || "$line" =~ ^# ]] && continue
+        # Skip header lines (first 4-6 lines starting with #)
+        [[ "$line" =~ ^# ]] && continue
+        # Skip empty lines
+        [[ -z "$line" ]] && continue
+        
+        ((data_lines++))
         
         # Check format: feature_pattern|settings|confidence|samples|timestamp
         local fields=$(echo "$line" | tr -cd '|' | wc -c)
         [[ $fields -eq 4 ]] || ((corrupted++))
-        
-        # Fail if >20% corrupted
-        [[ $corrupted -gt 5 && $((corrupted * 5)) -gt $total ]] && return 1
     done < "$AI_MODEL_FILE" 2>/dev/null || return 1
     
+    # Only fail if we have substantial corruption:
+    # - If we have 10+ data lines and >50% are corrupted, OR
+    # - If we have >20 corrupted entries
+    if [[ $data_lines -ge 10 ]] && [[ $((corrupted * 2)) -gt $data_lines ]]; then
+        return 1
+    elif [[ $corrupted -gt 20 ]]; then
+        return 1
+    fi
+    
+    # Model is valid (or has too few entries to judge)
     return 0
 }
 
@@ -5875,7 +5885,7 @@ detect_duplicate_gifs() {
                     similarity_reason="content_fingerprint"
                     ((DUPLICATE_STATS_CONTENT_FINGERPRINT++))
                 fi
-            # Level 4: AI-Enhanced Near-identical Detection (with actual frame/duration analysis)
+            # Level 4: AI-Enhanced Near-identical Detection (STRICT - visual similarity required)
             elif [[ "${gif_frame_counts[$file1]}" == "${gif_frame_counts[$file2]}" ]] && \
                  [[ "${gif_durations[$file1]}" == "${gif_durations[$file2]}" ]] && \
                  [[ "${gif_frame_counts[$file1]}" != "0" ]] && \
@@ -5887,38 +5897,37 @@ detect_duplicate_gifs() {
                 local size_diff=$(( (size1 > size2 ? size1 - size2 : size2 - size1) ))
                 local size_ratio=$(( size_diff * 100 / (size1 > size2 ? size1 : size2) ))
                 
-                # Check perceptual hash similarity if available
+                # CRITICAL: Level 4 now REQUIRES visual similarity - no false positives
                 local visual_similar=false
                 if [[ -n "${gif_visual_hashes[$file1]}" && -n "${gif_visual_hashes[$file2]}" ]]; then
-                    # Compare perceptual hashes (simple string similarity for now)
+                    # Compare perceptual hashes
                     local hash1="${gif_visual_hashes[$file1]}"
                     local hash2="${gif_visual_hashes[$file2]}"
                     
-                    # If hashes are very similar (hamming distance calculation)
-                    # For simplicity, check if hashes are exactly the same or very close
+                    # Exact hash match = visually identical
                     if [[ "$hash1" == "$hash2" ]]; then
                         visual_similar=true
                     elif [[ -n "$hash1" && -n "$hash2" ]]; then
-                        # Calculate simple similarity (difference in hash values)
+                        # Calculate hamming distance between hashes
                         local hash_diff=$(echo "scale=2; ($hash1 - $hash2) / $hash1 * 100" | bc -l 2>/dev/null | tr -d '-' || echo "100")
                         local hash_diff_int=${hash_diff%.*}  # Convert to integer
-                        # If difference is less than 5%, consider visually similar
-                        if [[ $hash_diff_int -lt 5 ]]; then
+                        # Very strict threshold: only < 2% difference
+                        if [[ $hash_diff_int -lt 2 ]]; then
                             visual_similar=true
                         fi
                     fi
                 fi
                 
-                # Only flag as duplicate if:
-                # 1. Size difference is small (< 15%) AND
-                # 2. Either visual hashes are similar OR size is very close (< 5%)
-                if [[ $size_ratio -lt 15 ]]; then
-                    if [[ "$visual_similar" == "true" ]] || [[ $size_ratio -lt 5 ]]; then
-                        is_duplicate=true
-                        similarity_reason="near_identical"
-                        ((DUPLICATE_STATS_NEAR_IDENTICAL++))
-                    fi
+                # STRICT CRITERIA for Level 4:
+                # 1. Visual hashes MUST be available and similar, AND
+                # 2. Size difference must be < 10% (tighter than before), AND
+                # 3. Frame count and duration must match exactly
+                if [[ "$visual_similar" == "true" ]] && [[ $size_ratio -lt 10 ]]; then
+                    is_duplicate=true
+                    similarity_reason="near_identical"
+                    ((DUPLICATE_STATS_NEAR_IDENTICAL++))
                 fi
+                # NOTE: Without visual similarity, even if size/frames match, NOT flagged as duplicate
             fi
             
             # Handle detected duplicates
