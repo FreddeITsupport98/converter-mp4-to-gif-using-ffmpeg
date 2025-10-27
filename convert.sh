@@ -5308,30 +5308,69 @@ detect_duplicate_gifs() {
                 fi
             fi
             
-            # Stage 2: Fast file metadata (no FFmpeg analysis to avoid timeouts)
+            # Stage 2: Enhanced metadata with FFprobe (fast and reliable for frame/duration)
             local frame_count="0"
             local duration="0" 
             local resolution="unknown"
+            local perceptual_hash=""
             
-            # Get basic file info without FFmpeg (much faster, no timeouts)
-            # Use file command and stat for basic validation
-            local file_info=$(file "$gif_file" 2>/dev/null || echo "unknown")
-            if [[ "$file_info" == *"GIF"* ]]; then
-                # Valid GIF detected by file command
-                resolution="valid_gif"
-            elif [[ "$file_info" == *"data"* ]] && [[ $size -gt 1024 ]]; then
-                # Might be GIF but file command uncertain
-                resolution="possible_gif"
-            else
-                # Likely not a valid GIF
-                resolution="invalid_format"
+            # Use FFprobe to get accurate frame count and duration (much faster than FFmpeg)
+            # Timeout after 3 seconds to avoid hanging on corrupted files
+            if command -v ffprobe >/dev/null 2>&1; then
+                local ffprobe_output=$(timeout 3 ffprobe -v error -select_streams v:0 \
+                    -count_packets -show_entries stream=nb_read_packets,duration,width,height \
+                    -of csv=p=0 "$gif_file" 2>/dev/null)
+                
+                if [[ -n "$ffprobe_output" ]]; then
+                    # Parse ffprobe output: nb_read_packets,duration,width,height
+                    frame_count=$(echo "$ffprobe_output" | cut -d',' -f1)
+                    duration=$(echo "$ffprobe_output" | cut -d',' -f2 | cut -d'.' -f1)  # Round to integer
+                    local width=$(echo "$ffprobe_output" | cut -d',' -f3)
+                    local height=$(echo "$ffprobe_output" | cut -d',' -f4)
+                    resolution="${width}x${height}"
+                    
+                    # Ensure we have valid numbers
+                    [[ ! "$frame_count" =~ ^[0-9]+$ ]] && frame_count="0"
+                    [[ ! "$duration" =~ ^[0-9]+$ ]] && duration="0"
+                fi
             fi
             
-            # Create simple content fingerprint based on size and format only
-            local content_fingerprint="${size}:${resolution}"
+            # AI-powered perceptual hash for visual similarity detection
+            # Extract middle frame and create a simple perceptual hash
+            if [[ "$frame_count" -gt 0 ]] && command -v ffmpeg >/dev/null 2>&1; then
+                # Extract a frame from middle of GIF for perceptual hashing
+                local temp_frame="$temp_dir/frame_${RANDOM}.png"
+                if timeout 2 ffmpeg -i "$gif_file" -vf "select=eq(n\,$(( frame_count / 2 )))" \
+                    -vframes 1 -f image2 "$temp_frame" >/dev/null 2>&1; then
+                    
+                    # Create simple perceptual hash: average hash (aHash) algorithm
+                    # Resize to 8x8, convert to grayscale, get average brightness
+                    if command -v convert >/dev/null 2>&1; then
+                        # Using ImageMagick for fast perceptual hash
+                        perceptual_hash=$(convert "$temp_frame" -resize 8x8! -colorspace gray \
+                            -format "%[fx:mean]" info: 2>/dev/null | tr -d '.')
+                    fi
+                    rm -f "$temp_frame" 2>/dev/null
+                fi
+            fi
             
-            # Prepare analysis data - MD5 is the primary identifier  
-            local analysis_data="$gif_file|$checksum|$size|$content_fingerprint||$frame_count|$duration"
+            # Fallback to basic file validation if FFprobe unavailable
+            if [[ "$resolution" == "unknown" ]]; then
+                local file_info=$(file "$gif_file" 2>/dev/null || echo "unknown")
+                if [[ "$file_info" == *"GIF"* ]]; then
+                    resolution="valid_gif"
+                elif [[ "$file_info" == *"data"* ]] && [[ $size -gt 1024 ]]; then
+                    resolution="possible_gif"
+                else
+                    resolution="invalid_format"
+                fi
+            fi
+            
+            # Create enhanced content fingerprint with frame/duration data
+            local content_fingerprint="${size}:${resolution}:${frame_count}:${duration}"
+            
+            # Prepare analysis data with perceptual hash
+            local analysis_data="$gif_file|$checksum|$size|$content_fingerprint|$perceptual_hash|$frame_count|$duration"
             
             # Save to cache for future runs with DUPLICATE_DETECT prefix to distinguish from AI analysis cache
             save_to_ai_cache "$gif_file" "DUPLICATE_DETECT:$analysis_data" 2>/dev/null || true
@@ -5834,19 +5873,49 @@ detect_duplicate_gifs() {
                     similarity_reason="content_fingerprint"
                     ((DUPLICATE_STATS_CONTENT_FINGERPRINT++))
                 fi
-            # Level 4: Near-identical content (lower confidence, requires human review)
+            # Level 4: AI-Enhanced Near-identical Detection (with actual frame/duration analysis)
             elif [[ "${gif_frame_counts[$file1]}" == "${gif_frame_counts[$file2]}" ]] && \
-                 [[ "${gif_durations[$file1]}" == "${gif_durations[$file2]}" ]]; then
+                 [[ "${gif_durations[$file1]}" == "${gif_durations[$file2]}" ]] && \
+                 [[ "${gif_frame_counts[$file1]}" != "0" ]] && \
+                 [[ "${gif_durations[$file1]}" != "0" ]]; then
+                
+                # Both have actual frame/duration data (not just zeros)
                 local size1="${gif_sizes[$file1]}"
                 local size2="${gif_sizes[$file2]}"
                 local size_diff=$(( (size1 > size2 ? size1 - size2 : size2 - size1) ))
                 local size_ratio=$(( size_diff * 100 / (size1 > size2 ? size1 : size2) ))
                 
-                # Only flag as potential duplicate if very similar
-                if [[ $size_ratio -lt 10 ]]; then
-                    is_duplicate=true
-                    similarity_reason="near_identical"
-                    ((DUPLICATE_STATS_NEAR_IDENTICAL++))
+                # Check perceptual hash similarity if available
+                local visual_similar=false
+                if [[ -n "${gif_visual_hashes[$file1]}" && -n "${gif_visual_hashes[$file2]}" ]]; then
+                    # Compare perceptual hashes (simple string similarity for now)
+                    local hash1="${gif_visual_hashes[$file1]}"
+                    local hash2="${gif_visual_hashes[$file2]}"
+                    
+                    # If hashes are very similar (hamming distance calculation)
+                    # For simplicity, check if hashes are exactly the same or very close
+                    if [[ "$hash1" == "$hash2" ]]; then
+                        visual_similar=true
+                    elif [[ -n "$hash1" && -n "$hash2" ]]; then
+                        # Calculate simple similarity (difference in hash values)
+                        local hash_diff=$(echo "scale=2; ($hash1 - $hash2) / $hash1 * 100" | bc -l 2>/dev/null | tr -d '-' || echo "100")
+                        local hash_diff_int=${hash_diff%.*}  # Convert to integer
+                        # If difference is less than 5%, consider visually similar
+                        if [[ $hash_diff_int -lt 5 ]]; then
+                            visual_similar=true
+                        fi
+                    fi
+                fi
+                
+                # Only flag as duplicate if:
+                # 1. Size difference is small (< 15%) AND
+                # 2. Either visual hashes are similar OR size is very close (< 5%)
+                if [[ $size_ratio -lt 15 ]]; then
+                    if [[ "$visual_similar" == "true" ]] || [[ $size_ratio -lt 5 ]]; then
+                        is_duplicate=true
+                        similarity_reason="near_identical"
+                        ((DUPLICATE_STATS_NEAR_IDENTICAL++))
+                    fi
                 fi
             fi
             
@@ -8174,6 +8243,17 @@ get_package_names() {
                 *) echo "jq" ;;
             esac
             ;;
+        "convert")
+            # ImageMagick (convert command)
+            case "$distro" in
+                "debian-based") echo "imagemagick" ;;
+                "redhat-based") echo "ImageMagick" ;;
+                "arch-based") echo "imagemagick" ;;
+                "suse-based") echo "ImageMagick" ;;
+                "alpine") echo "imagemagick" ;;
+                *) echo "imagemagick" ;;
+            esac
+            ;;
     esac
 }
 
@@ -8398,7 +8478,7 @@ check_dependencies() {
     echo -e "${CYAN}🔍 Checking system dependencies...${NC}"
     
     local required_tools=("ffmpeg")
-    local optional_tools=("gifsicle" "jq")
+    local optional_tools=("gifsicle" "jq" "convert")  # convert is from ImageMagick
     local missing_required=()
     local missing_optional=()
     
@@ -8450,6 +8530,10 @@ check_dependencies() {
                     ;;
                 "jq")
                     echo -e "  ${YELLOW}• $dep${NC} - Advanced auto-detection features will be limited"
+                    ;;
+                "convert")
+                    echo -e "  ${YELLOW}• $dep (ImageMagick)${NC} - AI perceptual hashing for duplicate detection will be disabled"
+                    echo -e "  ${GRAY}    Level 4 duplicate detection will use basic size/frame comparison only${NC}"
                     ;;
             esac
         done
