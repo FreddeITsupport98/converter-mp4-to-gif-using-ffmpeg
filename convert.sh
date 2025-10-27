@@ -12048,6 +12048,10 @@ show_first_time_setup() {
             ;;
     esac
     
+    # Actually save the settings to file
+    init_log_directory  # Ensure settings directory exists
+    save_settings
+    
     echo -e "\n${CYAN}💾 Settings saved! You can change them anytime in Advanced Mode.${NC}\n"
     sleep 2
 }
