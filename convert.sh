@@ -2017,19 +2017,21 @@ log_error() {
         echo "[$timestamp] ERROR: $error_msg" >> "./error-fallback.log" 2>/dev/null
     }
     
-    # Always show errors in terminal with full context
-    {
-        echo -e "\n${RED}${BOLD}💥 CRITICAL ERROR${NC}"
-        echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        echo -e "${RED}📋 Message: $error_msg${NC}"
-        [[ -n "$file" ]] && echo -e "${RED}📁 File: $(basename -- "$file")${NC}"
-        [[ -n "$line_num" ]] && echo -e "${RED}📍 Line: $line_num${NC}"
-        [[ -n "$func_name" ]] && echo -e "${RED}⚙️  Function: $func_name${NC}"
-        [[ -n "$detailed_error" ]] && echo -e "${RED}🔍 Details: $detailed_error${NC}"
-        echo -e "${YELLOW}📋 Full log: $ERROR_LOG${NC}"
-        echo -e "${CYAN}🔧 Debug: tail -20 \"$ERROR_LOG\"${NC}"
-        echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    } >&2
+    # Only show errors in terminal if not in silent validation mode
+    if [[ "$VALIDATION_SILENT_MODE" != "true" ]]; then
+        {
+            echo -e "\n${RED}${BOLD}💥 CRITICAL ERROR${NC}"
+            echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "${RED}📋 Message: $error_msg${NC}"
+            [[ -n "$file" ]] && echo -e "${RED}📁 File: $(basename -- "$file")${NC}"
+            [[ -n "$line_num" ]] && echo -e "${RED}📍 Line: $line_num${NC}"
+            [[ -n "$func_name" ]] && echo -e "${RED}⚙️  Function: $func_name${NC}"
+            [[ -n "$detailed_error" ]] && echo -e "${RED}🔍 Details: $detailed_error${NC}"
+            echo -e "${YELLOW}📋 Full log: $ERROR_LOG${NC}"
+            echo -e "${CYAN}🔧 Debug: tail -20 \"$ERROR_LOG\"${NC}"
+            echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        } >&2
+    fi
 }
 
 # ⚠️ Log warnings (non-critical issues)
@@ -8008,7 +8010,10 @@ configure_ffmpeg_memory_options() {
     # Set input-specific options (for placement before input files)
     FFMPEG_INPUT_OPTS=""
     if [[ $memory_gb -ge 8 ]]; then
-        FFMPEG_INPUT_OPTS="-readrate_initial_burst 2.0"
+        # Check if readrate_initial_burst is supported (FFmpeg 5.0+)
+        if ffmpeg -h full 2>&1 | grep -q "readrate_initial_burst"; then
+            FFMPEG_INPUT_OPTS="-readrate_initial_burst 2.0"
+        fi
     fi
 }
 
@@ -11651,6 +11656,17 @@ start_conversion() {
         if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
             echo -e "\n  ${YELLOW}⏸️  Validation interrupted by user${NC}"
             break
+        fi
+        
+        # Skip zero-byte or very small files early to avoid repeated errors
+        if [[ -f "$file" ]]; then
+            local file_size=$(stat -c%s "$file" 2>/dev/null || echo "0")
+            if [[ $file_size -lt 1024 ]]; then
+                ((checked++))
+                ((total_files++))
+                ((corrupt_input_files++))
+                continue
+            fi
         fi
         
         if [[ -f "$file" && -r "$file" ]]; then
