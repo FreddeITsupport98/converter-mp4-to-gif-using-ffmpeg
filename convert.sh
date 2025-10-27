@@ -192,6 +192,7 @@ AI_QUALITY_SCALING=true  # Enable intelligent quality parameter scaling
 AI_CONTENT_FINGERPRINT=true   # Enable content fingerprinting for duplicates
 AI_THREADS_OPTIMAL="auto"  # AI-optimized thread count
 AI_MEMORY_OPT="auto"        # AI-optimized memory settings
+CONTENT_TYPE_PREFERENCE="mixed"  # animation, movie, screencast, mixed (auto-detect)
 
 # 🔍 AI Video Discovery Preferences
 AI_DISCOVERY_ENABLED=true      # Enable AI video discovery when no files found
@@ -10563,24 +10564,25 @@ show_advanced_settings_menu() {
     echo -e "  ${GREEN}[4]${NC} Debug mode: $(get_status_icon "$DEBUG_MODE")"
     echo -e "  ${GREEN}[5]${NC} AI smart analysis: $(get_status_icon "$AI_ENABLED")\n"
     
-    # AI & Performance Options (6-10)
+    # AI & Performance Options (6-11)
     echo -e "${MAGENTA}${BOLD}🤖 AI & PERFORMANCE:${NC}"
     echo -e "  ${GREEN}[6]${NC} AI Mode: ${BOLD}${AI_MODE:-smart}${NC} (smart/content/motion/quality)"
-    echo -e "  ${GREEN}[7]${NC} FFmpeg Threads: ${BOLD}${FFMPEG_THREADS}${NC}"
-    echo -e "  ${GREEN}[8]${NC} Parallel Jobs: ${BOLD}${PARALLEL_JOBS}${NC}"
-    echo -e "  ${GREEN}[9]${NC} GPU Acceleration: ${BOLD}${GPU_ACCELERATION}${NC}"
-    echo -e "  ${GREEN}[10]${NC} Memory Settings: ${BOLD}${RAM_CACHE_SIZE:-auto}${NC}\n"
+    echo -e "  ${GREEN}[7]${NC} Content Type Preference: ${BOLD}${CONTENT_TYPE_PREFERENCE}${NC}"
+    echo -e "  ${GREEN}[8]${NC} FFmpeg Threads: ${BOLD}${FFMPEG_THREADS}${NC}"
+    echo -e "  ${GREEN}[9]${NC} Parallel Jobs: ${BOLD}${PARALLEL_JOBS}${NC}"
+    echo -e "  ${GREEN}[10]${NC} GPU Acceleration: ${BOLD}${GPU_ACCELERATION}${NC}"
+    echo -e "  ${GREEN}[11]${NC} Memory Settings: ${BOLD}${RAM_CACHE_SIZE:-auto}${NC}\n"
     
-    # Quality & Compression (11-12)
+    # Quality & Compression (12-13)
     echo -e "${YELLOW}${BOLD}🎨 QUALITY & COMPRESSION:${NC}"
-    echo -e "  ${GREEN}[11]${NC} Quality Preset: ${BOLD}${QUALITY}${NC} | Colors: ${BOLD}${MAX_COLORS}${NC} | Dither: ${BOLD}${DITHER_MODE}${NC}"
-    echo -e "  ${GREEN}[12]${NC} Compression: ${BOLD}${COMPRESSION_LEVEL}${NC} | Max Size: ${BOLD}${MAX_GIF_SIZE_MB}MB${NC}\n"
+    echo -e "  ${GREEN}[12]${NC} Quality Preset: ${BOLD}${QUALITY}${NC} | Colors: ${BOLD}${MAX_COLORS}${NC} | Dither: ${BOLD}${DITHER_MODE}${NC}"
+    echo -e "  ${GREEN}[13]${NC} Compression: ${BOLD}${COMPRESSION_LEVEL}${NC} | Max Size: ${BOLD}${MAX_GIF_SIZE_MB}MB${NC}\n"
     
-    # System & Validation (13-15)
+    # System & Validation (14-16)
     echo -e "${CYAN}${BOLD}⚙️ SYSTEM & VALIDATION:${NC}"
-    echo -e "  ${GREEN}[13]${NC} Interactive Mode: $(get_status_icon "$INTERACTIVE_MODE")"
-    echo -e "  ${GREEN}[14]${NC} Skip Validation: $(get_status_icon "$SKIP_VALIDATION")"
-    echo -e "  ${GREEN}[15]${NC} Log Level: ${BOLD}${LOG_LEVEL}${NC} | Progress Bar: $(get_status_icon "$PROGRESS_BAR")\n"
+    echo -e "  ${GREEN}[14]${NC} Interactive Mode: $(get_status_icon "$INTERACTIVE_MODE")"
+    echo -e "  ${GREEN}[15]${NC} Skip Validation: $(get_status_icon "$SKIP_VALIDATION")"
+    echo -e "  ${GREEN}[16]${NC} Log Level: ${BOLD}${LOG_LEVEL}${NC} | Progress Bar: $(get_status_icon "$PROGRESS_BAR")\n"
     
     echo -e "${GRAY}[c] Custom FFmpeg Settings | [Enter] Start Conversion${NC}\n"
 }
@@ -10617,7 +10619,7 @@ configure_ai_mode() {
     echo -e "  ${GREEN}[11]${NC} 🔍 Content Fingerprint: $(get_status_icon "$AI_CONTENT_FINGERPRINT")"
     echo -e "  ${GREEN}[12]${NC} 🔍 Video Discovery: $(get_status_icon "$AI_DISCOVERY_ENABLED") (Mode: $AI_DISCOVERY_AUTO_SELECT)\n"
     
-    echo -e "${MAGENTA}Select option [1-12] or Enter to finish: ${NC}"
+    echo -en "${MAGENTA}Select option [1-12] or Enter to finish: ${NC}"
     read -r ai_choice
     
     case "$ai_choice" in
@@ -10685,6 +10687,99 @@ get_status_text() {
     fi
 }
 
+# 🎬 Configure Content Type Preference
+configure_content_type_preference() {
+    echo -e "\n${BLUE}${BOLD}🎬 CONTENT TYPE PREFERENCE CONFIGURATION${NC}"
+    echo -e "${CYAN}Current Setting: ${BOLD}${CONTENT_TYPE_PREFERENCE}${NC}\n"
+    
+    echo -e "${YELLOW}${BOLD}🎬 SELECT YOUR TYPICAL CONTENT:${NC}"
+    echo -e "${GRAY}This helps optimize default settings for your content type${NC}\n"
+    
+    echo -e "  ${GREEN}[1]${NC} 🎨 Animation (Anime/Cartoons)"
+    echo -e "      ${GRAY}• Optimized for: Sharp edges, solid colors, high contrast${NC}"
+    echo -e "      ${GRAY}• Settings: High quality, Floyd-Steinberg dither, 128 colors${NC}"
+    echo -e "      ${GRAY}• Best for: Anime, cartoons, 2D animations${NC}\n"
+    
+    echo -e "  ${GREEN}[2]${NC} 🎬 Movie (Live Action/Real Video)"
+    echo -e "      ${GRAY}• Optimized for: Natural motion, complex scenes, gradients${NC}"
+    echo -e "      ${GRAY}• Settings: Medium quality, Bayer dither, 256 colors${NC}"
+    echo -e "      ${GRAY}• Best for: Movies, TV shows, real-world footage${NC}\n"
+    
+    echo -e "  ${GREEN}[3]${NC} 💻 Screencast (Screen Recordings/Tutorials)"
+    echo -e "      ${GRAY}• Optimized for: Text clarity, UI elements, minimal motion${NC}"
+    echo -e "      ${GRAY}• Settings: High quality, no dither, 64 colors, 10fps${NC}"
+    echo -e "      ${GRAY}• Best for: Tutorials, gameplay, software demos${NC}\n"
+    
+    echo -e "  ${GREEN}[4]${NC} 🧠 Mixed Content (AI Auto-Detect) ${BOLD}[Recommended]${NC}"
+    echo -e "      ${GRAY}• Optimized for: Automatic detection per video${NC}"
+    echo -e "      ${GRAY}• Settings: Smart AI analysis with learning${NC}"
+    echo -e "      ${GRAY}• Best for: Varied content types, batch processing${NC}"
+    echo -e "      ${CYAN}• Enables: Full AI system with caching and training${NC}\n"
+    
+    echo -en "${MAGENTA}Select content type [1-4] or Enter to keep current: ${NC}"
+    read -r content_choice
+    
+    case "$content_choice" in
+        "1") 
+            CONTENT_TYPE_PREFERENCE="animation"
+            QUALITY="high"
+            MAX_COLORS="128"
+            DITHER_MODE="floyd_steinberg"
+            AI_MODE="content"
+            echo -e "${GREEN}✓ Content type set to Animation${NC}"
+            echo -e "${CYAN}• Quality: high | Colors: 128 | Dither: floyd_steinberg${NC}"
+            ;;
+        "2") 
+            CONTENT_TYPE_PREFERENCE="movie"
+            QUALITY="medium"
+            MAX_COLORS="256"
+            DITHER_MODE="bayer"
+            AI_MODE="motion"
+            echo -e "${GREEN}✓ Content type set to Movie${NC}"
+            echo -e "${CYAN}• Quality: medium | Colors: 256 | Dither: bayer${NC}"
+            ;;
+        "3") 
+            CONTENT_TYPE_PREFERENCE="screencast"
+            QUALITY="high"
+            MAX_COLORS="64"
+            DITHER_MODE="none"
+            FRAMERATE="10"
+            AI_MODE="quality"
+            echo -e "${GREEN}✓ Content type set to Screencast${NC}"
+            echo -e "${CYAN}• Quality: high | Colors: 64 | Dither: none | FPS: 10${NC}"
+            ;;
+        "4") 
+            CONTENT_TYPE_PREFERENCE="mixed"
+            AI_ENABLED=true
+            AI_MODE="smart"
+            AI_AUTO_QUALITY=true
+            AI_SCENE_ANALYSIS=true
+            AI_VISUAL_SIMILARITY=true
+            AI_SMART_CROP=true
+            AI_DYNAMIC_FRAMERATE=true
+            AI_QUALITY_SCALING=true
+            AI_CONTENT_FINGERPRINT=true
+            AI_CACHE_ENABLED=true
+            AI_TRAINING_ENABLED=true
+            echo -e "${GREEN}✓ Content type set to Mixed (AI Auto-Detect)${NC}"
+            echo -e "${CYAN}• Full AI system activated with learning enabled${NC}"
+            echo -e "${CYAN}• AI will analyze and optimize each video automatically${NC}"
+            ;;
+        "") 
+            echo -e "${CYAN}No change - keeping current setting: ${BOLD}${CONTENT_TYPE_PREFERENCE}${NC}"
+            ;;
+        *) 
+            echo -e "${YELLOW}Invalid selection - no change made${NC}"
+            ;;
+    esac
+    
+    # Save settings after change
+    if [[ -n "$content_choice" && "$content_choice" != "" ]]; then
+        save_settings >/dev/null 2>&1
+        sleep 1
+    fi
+}
+
 # 💻 Configure Threading
 configure_threads() {
     local cpu_cores=$(nproc 2>/dev/null || echo "4")
@@ -10698,7 +10793,7 @@ configure_threads() {
     echo -e "  ${GREEN}[4]${NC} Conservative (2 threads)"
     echo -e "  ${GREEN}[5]${NC} Custom number\n"
     
-    echo -e "${MAGENTA}Select threading option [1-5]: ${NC}"
+    echo -en "${MAGENTA}Select threading option [1-5]: ${NC}"
     read -r thread_choice
     
     case "$thread_choice" in
@@ -10707,7 +10802,7 @@ configure_threads() {
         "3") FFMPEG_THREADS="$((cpu_cores / 2))"; echo -e "${GREEN}✓ Threads set to $((cpu_cores / 2))${NC}" ;;
         "4") FFMPEG_THREADS="2"; echo -e "${GREEN}✓ Threads set to 2${NC}" ;;
         "5") 
-            echo -e "${MAGENTA}Enter custom thread count (1-${cpu_cores}): ${NC}"
+            echo -en "${MAGENTA}Enter custom thread count (1-${cpu_cores}): ${NC}"
             read -r custom_threads
             if [[ "$custom_threads" =~ ^[0-9]+$ ]] && [[ $custom_threads -ge 1 && $custom_threads -le $cpu_cores ]]; then
                 FFMPEG_THREADS="$custom_threads"
@@ -10733,7 +10828,7 @@ configure_parallel_jobs() {
     echo -e "  ${GREEN}[4]${NC} Sequential (1 job)"
     echo -e "  ${GREEN}[5]${NC} Custom number\n"
     
-    echo -e "${MAGENTA}Select parallel jobs [1-5]: ${NC}"
+    echo -en "${MAGENTA}Select parallel jobs [1-5]: ${NC}"
     read -r parallel_choice
     
     case "$parallel_choice" in
@@ -10742,7 +10837,7 @@ configure_parallel_jobs() {
         "3") PARALLEL_JOBS="2"; echo -e "${GREEN}✓ Parallel jobs set to 2${NC}" ;;
         "4") PARALLEL_JOBS="1"; echo -e "${GREEN}✓ Parallel jobs set to 1 (sequential)${NC}" ;;
         "5") 
-            echo -e "${MAGENTA}Enter custom job count (1-${cpu_cores}): ${NC}"
+            echo -en "${MAGENTA}Enter custom job count (1-${cpu_cores}): ${NC}"
             read -r custom_jobs
             if [[ "$custom_jobs" =~ ^[0-9]+$ ]] && [[ $custom_jobs -ge 1 && $custom_jobs -le $cpu_cores ]]; then
                 PARALLEL_JOBS="$custom_jobs"
@@ -10770,7 +10865,7 @@ configure_memory_settings() {
     echo -e "  ${GREEN}[5]${NC} Maximum (4GB)"
     echo -e "  ${GREEN}[6]${NC} Enable RAM disk: $(get_status_icon "$RAM_DISK_ENABLED")\n"
     
-    echo -e "${MAGENTA}Select memory option [1-6]: ${NC}"
+    echo -en "${MAGENTA}Select memory option [1-6]: ${NC}"
     read -r memory_choice
     
     case "$memory_choice" in
@@ -10797,7 +10892,7 @@ configure_quality_settings() {
     echo -e "  ${GREEN}[4]${NC} Custom max colors (current: ${MAX_COLORS})"
     echo -e "  ${GREEN}[5]${NC} Dither mode (current: ${DITHER_MODE})\n"
     
-    echo -e "${MAGENTA}Select quality option [1-5]: ${NC}"
+    echo -en "${MAGENTA}Select quality option [1-5]: ${NC}"
     read -r quality_choice
     
     case "$quality_choice" in
@@ -10805,7 +10900,7 @@ configure_quality_settings() {
         "2") QUALITY="medium"; MAX_COLORS="128"; DITHER_MODE="bayer"; echo -e "${GREEN}✓ Set to Medium quality${NC}" ;;
         "3") QUALITY="high"; MAX_COLORS="256"; DITHER_MODE="floyd_steinberg"; echo -e "${GREEN}✓ Set to High quality${NC}" ;;
         "4") 
-            echo -e "${MAGENTA}Enter max colors (8-256): ${NC}"
+            echo -en "${MAGENTA}Enter max colors (8-256): ${NC}"
             read -r custom_colors
             if [[ "$custom_colors" =~ ^[0-9]+$ ]] && [[ $custom_colors -ge 8 && $custom_colors -le 256 ]]; then
                 MAX_COLORS="$custom_colors"
@@ -10815,7 +10910,7 @@ configure_quality_settings() {
             fi
             ;;
         "5")
-            echo -e "${MAGENTA}Select dither mode:${NC}"
+            echo -en "${MAGENTA}Select dither mode: ${NC}"
             echo -e "  ${GREEN}[a]${NC} none, ${GREEN}[b]${NC} bayer, ${GREEN}[c]${NC} floyd_steinberg, ${GREEN}[d]${NC} sierra2_4a"
             read -r dither_choice
             case "$dither_choice" in
@@ -10841,12 +10936,12 @@ configure_compression_settings() {
     echo -e "  ${GREEN}[3]${NC} Auto reduce quality: $(get_status_icon "$AUTO_REDUCE_QUALITY")"
     echo -e "  ${GREEN}[4]${NC} Smart size down: $(get_status_icon "$SMART_SIZE_DOWN")\n"
     
-    echo -e "${MAGENTA}Select compression option [1-4]: ${NC}"
+    echo -en "${MAGENTA}Select compression option [1-4]: ${NC}"
     read -r comp_choice
     
     case "$comp_choice" in
         "1")
-            echo -e "${MAGENTA}Select compression level:${NC}"
+            echo -en "${MAGENTA}Select compression level: ${NC}"
             echo -e "  ${GREEN}[a]${NC} low, ${GREEN}[b]${NC} medium, ${GREEN}[c]${NC} high, ${GREEN}[d]${NC} maximum"
             read -r level_choice
             case "$level_choice" in
@@ -10858,7 +10953,7 @@ configure_compression_settings() {
             esac
             ;;
         "2")
-            echo -e "${MAGENTA}Enter max GIF size in MB (1-100): ${NC}"
+            echo -en "${MAGENTA}Enter max GIF size in MB (1-100): ${NC}"
             read -r custom_size
             if [[ "$custom_size" =~ ^[0-9]+$ ]] && [[ $custom_size -ge 1 && $custom_size -le 100 ]]; then
                 MAX_GIF_SIZE_MB="$custom_size"
@@ -10885,7 +10980,7 @@ configure_validation_settings() {
     echo -e "  ${GREEN}[2]${NC} Dynamic file detection: $(get_status_icon "$DYNAMIC_FILE_DETECTION")"
     echo -e "  ${GREEN}[3]${NC} File monitor interval: ${BOLD}${FILE_MONITOR_INTERVAL}s${NC}\n"
     
-    echo -e "${MAGENTA}Select validation option [1-3]: ${NC}"
+    echo -en "${MAGENTA}Select validation option [1-3]: ${NC}"
     read -r val_choice
     
     case "$val_choice" in
@@ -10894,7 +10989,7 @@ configure_validation_settings() {
         "2") DYNAMIC_FILE_DETECTION=$([[ "$DYNAMIC_FILE_DETECTION" == "true" ]] && echo "false" || echo "true")
              echo -e "${GREEN}✓ Dynamic file detection $([ "$DYNAMIC_FILE_DETECTION" == "true" ] && echo "enabled" || echo "disabled")${NC}" ;;
         "3")
-            echo -e "${MAGENTA}Enter monitor interval in seconds (5-60): ${NC}"
+            echo -en "${MAGENTA}Enter monitor interval in seconds (5-60): ${NC}"
             read -r custom_interval
             if [[ "$custom_interval" =~ ^[0-9]+$ ]] && [[ $custom_interval -ge 5 && $custom_interval -le 60 ]]; then
                 FILE_MONITOR_INTERVAL="$custom_interval"
@@ -10918,12 +11013,12 @@ configure_logging_settings() {
     echo -e "  ${GREEN}[3]${NC} CPU benchmark: $(get_status_icon "$CPU_BENCHMARK")"
     echo -e "  ${GREEN}[4]${NC} Cleanup on exit: $(get_status_icon "$CLEANUP_ON_EXIT")\n"
     
-    echo -e "${MAGENTA}Select logging option [1-4]: ${NC}"
+    echo -en "${MAGENTA}Select logging option [1-4]: ${NC}"
     read -r log_choice
     
     case "$log_choice" in
         "1")
-            echo -e "${MAGENTA}Select log level:${NC}"
+            echo -en "${MAGENTA}Select log level: ${NC}"
             echo -e "  ${GREEN}[a]${NC} error, ${GREEN}[b]${NC} warning, ${GREEN}[c]${NC} info, ${GREEN}[d]${NC} debug"
             read -r level_choice
             case "$level_choice" in
@@ -10961,12 +11056,12 @@ configure_custom_settings() {
     echo -e "  ${GREEN}[4]${NC} Export current settings to file"
     echo -e "  ${GREEN}[5]${NC} Import settings from file\n"
     
-    echo -e "${MAGENTA}Select custom option [1-5]: ${NC}"
+    echo -en "${MAGENTA}Select custom option [1-5]: ${NC}"
     read -r custom_choice
     
     case "$custom_choice" in
         "1")
-            echo -e "${MAGENTA}Enter resolution (width:height, e.g. 1280:720): ${NC}"
+            echo -en "${MAGENTA}Enter resolution (width:height, e.g. 1280:720): ${NC}"
             read -r custom_res
             if [[ "$custom_res" =~ ^[0-9]+:[0-9]+$ ]]; then
                 RESOLUTION="$custom_res"
@@ -10976,7 +11071,7 @@ configure_custom_settings() {
             fi
             ;;
         "2")
-            echo -e "${MAGENTA}Enter framerate (1-60): ${NC}"
+            echo -en "${MAGENTA}Enter framerate (1-60): ${NC}"
             read -r custom_fps
             if [[ "$custom_fps" =~ ^[0-9]+$ ]] && [[ $custom_fps -ge 1 && $custom_fps -le 60 ]]; then
                 FRAMERATE="$custom_fps"
@@ -10986,7 +11081,7 @@ configure_custom_settings() {
             fi
             ;;
         "3")
-            echo -e "${MAGENTA}Select scaling algorithm:${NC}"
+            echo -en "${MAGENTA}Select scaling algorithm: ${NC}"
             echo -e "  ${GREEN}[a]${NC} lanczos (best quality), ${GREEN}[b]${NC} bicubic, ${GREEN}[c]${NC} bilinear, ${GREEN}[d]${NC} neighbor (fastest)"
             read -r scale_choice
             case "$scale_choice" in
@@ -11063,7 +11158,7 @@ advanced_convert_mode() {
     # Show comprehensive advanced settings
     show_advanced_settings_menu
     
-    echo -e "${MAGENTA}Enter option number (1-15), 'c' to configure custom settings, or Enter to start: ${NC}"
+    echo -e "${MAGENTA}Enter option number (1-16), 'c' to configure custom settings, or Enter to start: ${NC}"
     read -r choice
     
     case "$choice" in
@@ -11073,15 +11168,16 @@ advanced_convert_mode() {
         "4") DEBUG_MODE=$([[ "$DEBUG_MODE" == "true" ]] && echo "false" || echo "true") ;;
         "5") AI_ENABLED=$([[ "$AI_ENABLED" == "true" ]] && echo "false" || echo "true") ;;
         "6") configure_ai_mode ;;
-        "7") configure_threads ;;
-        "8") configure_parallel_jobs ;;
-        "9") GPU_ACCELERATION=$([[ "$GPU_ACCELERATION" == "auto" ]] && echo "disabled" || echo "auto") ;;
-        "10") configure_memory_settings ;;
-        "11") configure_quality_settings ;;
-        "12") configure_compression_settings ;;
-        "13") INTERACTIVE_MODE=$([[ "$INTERACTIVE_MODE" == "true" ]] && echo "false" || echo "true") ;;
-        "14") configure_validation_settings ;;
-        "15") configure_logging_settings ;;
+        "7") configure_content_type_preference ;;
+        "8") configure_threads ;;
+        "9") configure_parallel_jobs ;;
+        "10") GPU_ACCELERATION=$([[ "$GPU_ACCELERATION" == "auto" ]] && echo "disabled" || echo "auto") ;;
+        "11") configure_memory_settings ;;
+        "12") configure_quality_settings ;;
+        "13") configure_compression_settings ;;
+        "14") INTERACTIVE_MODE=$([[ "$INTERACTIVE_MODE" == "true" ]] && echo "false" || echo "true") ;;
+        "15") configure_validation_settings ;;
+        "16") configure_logging_settings ;;
         "c"|"C") configure_custom_settings ;;
         "")
             INTERACTIVE_MODE=false
@@ -11094,7 +11190,7 @@ advanced_convert_mode() {
             ;;
     esac
     
-    if [[ -n "$choice" && ("$choice" =~ ^[1-9]$ || "$choice" =~ ^1[0-5]$ || "$choice" =~ ^[cC]$) ]]; then
+    if [[ -n "$choice" && ("$choice" =~ ^[1-9]$ || "$choice" =~ ^1[0-6]$ || "$choice" =~ ^[cC]$) ]]; then
         advanced_convert_mode  # Recursive call to show updated options
     else
         echo -e "\n${YELLOW}Press any key to return to main menu...${NC}"
@@ -11811,9 +11907,9 @@ show_first_time_setup() {
     echo -e "  ${GREEN}[2]${NC} Movies/TV Shows (live action content)"
     echo -e "  ${GREEN}[3]${NC} Screen recordings (tutorials, gameplay)"
     echo -e "  ${GREEN}[4]${NC} Mixed content (I'll use smart AI detection)"
-    echo -e "  ${GREEN}[5]${NC} Skip setup (use defaults)\n"
+    echo -e "  ${GREEN}[5]${NC} Skip setup (use defaults)\\n"
     
-    echo -e "${MAGENTA}Your choice [1-5]:${NC} "
+    echo -en "${MAGENTA}Your choice [1-5]:${NC} "
     read -r setup_choice
     
     case "$setup_choice" in
@@ -11822,6 +11918,7 @@ show_first_time_setup() {
             MAX_COLORS="128"
             DITHER_MODE="floyd_steinberg"
             AI_MODE="content"
+            CONTENT_TYPE_PREFERENCE="animation"
             echo -e "\n${GREEN}✓ Optimized for anime/animation content!${NC}"
             ;;
         "2")
@@ -11829,6 +11926,7 @@ show_first_time_setup() {
             MAX_COLORS="256"
             DITHER_MODE="bayer"
             AI_MODE="motion"
+            CONTENT_TYPE_PREFERENCE="movie"
             echo -e "\n${GREEN}✓ Optimized for movies and live action!${NC}"
             ;;
         "3")
@@ -11837,12 +11935,29 @@ show_first_time_setup() {
             DITHER_MODE="none"
             FRAMERATE="10"
             AI_MODE="quality"
+            CONTENT_TYPE_PREFERENCE="screencast"
             echo -e "\n${GREEN}✓ Optimized for screen recordings!${NC}"
             ;;
         "4")
+            # Enable FULL AI system with all advanced features
             AI_ENABLED=true
             AI_MODE="smart"
-            echo -e "\n${GREEN}✓ Smart AI will automatically detect and optimize!${NC}"
+            AI_AUTO_QUALITY=true  # Let AI choose quality per video
+            AI_SCENE_ANALYSIS=true
+            AI_VISUAL_SIMILARITY=true
+            AI_SMART_CROP=true
+            AI_DYNAMIC_FRAMERATE=true
+            AI_QUALITY_SCALING=true
+            AI_CONTENT_FINGERPRINT=true
+            AI_CACHE_ENABLED=true
+            AI_TRAINING_ENABLED=true
+            CONTENT_TYPE_PREFERENCE="mixed"
+            echo -e "\n${GREEN}✓ 🧠 Full AI system activated with learning enabled!${NC}"
+            echo -e "${CYAN}   • Smart content detection and classification${NC}"
+            echo -e "${CYAN}   • Automatic quality optimization per video${NC}"
+            echo -e "${CYAN}   • Advanced scene analysis and frame rate adjustment${NC}"
+            echo -e "${CYAN}   • Intelligent caching for faster re-processing${NC}"
+            echo -e "${CYAN}   • AI learning from successful conversions${NC}"
             ;;
         *)
             echo -e "\n${YELLOW}✓ Using balanced default settings.${NC}"
@@ -12060,6 +12175,7 @@ MAX_RETRIES="$MAX_RETRIES"
 AI_ENABLED="$AI_ENABLED"
 AI_MODE="$AI_MODE"
 AI_CONFIDENCE_THRESHOLD="$AI_CONFIDENCE_THRESHOLD"
+CONTENT_TYPE_PREFERENCE="$CONTENT_TYPE_PREFERENCE"
 AI_AUTO_QUALITY="$AI_AUTO_QUALITY"
 AI_SCENE_ANALYSIS="$AI_SCENE_ANALYSIS"
 AI_VISUAL_SIMILARITY="$AI_VISUAL_SIMILARITY"
@@ -12128,6 +12244,7 @@ load_settings() {
                 AI_ENABLED) AI_ENABLED="$value" ;;
                 AI_MODE) AI_MODE="$value" ;;
                 AI_CONFIDENCE_THRESHOLD) AI_CONFIDENCE_THRESHOLD="$value" ;;
+                CONTENT_TYPE_PREFERENCE) CONTENT_TYPE_PREFERENCE="$value" ;;
                 AI_AUTO_QUALITY) AI_AUTO_QUALITY="$value" ;;
                 AI_SCENE_ANALYSIS) AI_SCENE_ANALYSIS="$value" ;;
                 AI_VISUAL_SIMILARITY) AI_VISUAL_SIMILARITY="$value" ;;
