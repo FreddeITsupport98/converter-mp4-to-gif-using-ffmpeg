@@ -490,7 +490,7 @@ migrate_cache_format() {
     # Backup old cache
     cp "$AI_CACHE_INDEX" "$old_cache" 2>/dev/null
     
-    echo -e "  ${BLUE}💾 Backing up old cache to: $(basename "$old_cache")${NC}" >&2
+    echo -e "  ${BLUE}💾 Backing up old cache to: $(basename -- "$old_cache")${NC}" >&2
     
     # Create new format cache with header
     cat > "$AI_CACHE_INDEX" << EOF
@@ -512,7 +512,7 @@ EOF
         local file_path="$filename"
         if [[ ! -f "$file_path" ]]; then
             # Try just the basename in current directory
-            file_path="./$(basename "$filename" 2>/dev/null)"
+            file_path="./$(basename -- "$filename" 2>/dev/null)"
         fi
         
         if [[ -f "$file_path" ]]; then
@@ -614,7 +614,7 @@ cleanup_ai_cache() {
         local file_exists=false
         if [[ -f "$filename" ]]; then
             file_exists=true
-        elif [[ -f "$(basename "$filename")" ]]; then
+        elif [[ -f "$(basename -- "$filename")" ]]; then
             file_exists=true
         fi
         
@@ -700,7 +700,7 @@ check_ai_cache() {
     
     # Search for cached entry with error handling
     local cached_line
-    if ! cached_line=$(grep -F "$(basename "$file")|" "$AI_CACHE_INDEX" 2>/dev/null | tail -n 1); then
+    if ! cached_line=$(grep -F "$(basename -- "$file")|" "$AI_CACHE_INDEX" 2>/dev/null | tail -n 1); then
         return 1
     fi
     
@@ -746,7 +746,7 @@ save_to_ai_cache() {
     local filesize=$(echo "$fingerprint" | cut -d':' -f1)
     local filemtime=$(echo "$fingerprint" | cut -d':' -f2)
     local timestamp=$(date +%s)
-    local filename=$(basename "$file")
+    local filename=$(basename -- "$file")
     
     # Validate data before saving
     if [[ -z "$analysis_data" || ${#analysis_data} -gt 10000 ]]; then
@@ -2022,7 +2022,7 @@ log_error() {
         echo -e "\n${RED}${BOLD}💥 CRITICAL ERROR${NC}"
         echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo -e "${RED}📋 Message: $error_msg${NC}"
-        [[ -n "$file" ]] && echo -e "${RED}📁 File: $(basename "$file")${NC}"
+        [[ -n "$file" ]] && echo -e "${RED}📁 File: $(basename -- "$file")${NC}"
         [[ -n "$line_num" ]] && echo -e "${RED}📍 Line: $line_num${NC}"
         [[ -n "$func_name" ]] && echo -e "${RED}⚙️  Function: $func_name${NC}"
         [[ -n "$detailed_error" ]] && echo -e "${RED}🔍 Details: $detailed_error${NC}"
@@ -2069,7 +2069,7 @@ log_warning() {
         echo -e "\n${YELLOW}${BOLD}⚠️ WARNING${NC}"
         echo -e "${YELLOW}───────────────────────────────────────────────────────────────${NC}"
         echo -e "${YELLOW}📝 Message: $warning_msg${NC}"
-        [[ -n "$file" ]] && echo -e "${YELLOW}📁 File: $(basename "$file")${NC}"
+        [[ -n "$file" ]] && echo -e "${YELLOW}📁 File: $(basename -- "$file")${NC}"
         [[ -n "$line_num" ]] && echo -e "${YELLOW}📍 Line: $line_num${NC}"
         [[ -n "$func_name" ]] && echo -e "${YELLOW}⚙️  Function: $func_name${NC}"
         [[ -n "$detailed_info" ]] && echo -e "${YELLOW}🔍 Details: $detailed_info${NC}"
@@ -2372,7 +2372,7 @@ ai_smart_analyze() {
     
     # Log comprehensive AI decisions
     {
-        echo "[$ai_log_ts] AI-ANALYSIS: mode=$AI_MODE file=$(basename "$file")"
+        echo "[$ai_log_ts] AI-ANALYSIS: mode=$AI_MODE file=$(basename -- "$file")"
         echo "[$ai_log_ts] AI-INPUT: duration=${duration}s resolution=${width}x${height} fps=$fps bitrate=$bitrate"
         echo "[$ai_log_ts] AI-OUTPUT: framerate=$FRAMERATE dither=$DITHER_MODE crop=${CROP_FILTER:-none} max_colors=$MAX_COLORS"
         [[ -n "$AI_CONTENT_CACHE" ]] && echo "[$ai_log_ts] AI-DETECTED: $AI_CONTENT_CACHE"
@@ -3684,7 +3684,7 @@ ai_discover_videos() {
         local filled=$((progress * 20 / 100))
         for ((i=0; i<filled; i++)); do printf "${GREEN}█${NC}"; done
         for ((i=filled; i<20; i++)); do printf "${GRAY}░${NC}"; done
-        printf "${BLUE}] ${BOLD}%3d%%${NC} ${CYAN}%s${NC}" "$progress" "$(basename "$search_dir")"
+        printf "${BLUE}] ${BOLD}%3d%%${NC} ${CYAN}%s${NC}" "$progress" "$(basename -- "$search_dir")"
         
         # Search for video files (non-recursive for performance)
         shopt -s nullglob
@@ -3971,7 +3971,7 @@ display_video_option() {
     local size="${video_info#*|}"; size="${size%|*}"
     local modified="${video_info##*|}"
     
-    local filename=$(basename "$video_path")
+    local filename=$(basename -- "$video_path")
     local dirname=$(dirname "$video_path")
     local size_human=$(numfmt --to=iec $size 2>/dev/null || echo "${size}B")
     local mod_date=$(date -d @$modified '+%Y-%m-%d %H:%M' 2>/dev/null || echo "unknown")
@@ -3987,7 +3987,7 @@ display_video_option() {
     fi
     
     printf "    ${GREEN}[%2d]${NC} %s ${BOLD}%s${NC}\n" "$number" "$content_hint" "$filename"
-    printf "         ${GRAY}%s ${CYAN}%s${NC} ${YELLOW}%s${NC}\n" "$(basename "$dirname")" "$size_human" "$mod_date"
+    printf "         ${GRAY}%s ${CYAN}%s${NC} ${YELLOW}%s${NC}\n" "$(basename -- "$dirname")" "$size_human" "$mod_date"
 }
 
 # Copy selected videos to current directory
@@ -4002,7 +4002,7 @@ copy_videos_to_current() {
     
     for video_info in "${selected_videos[@]}"; do
         local video_path="${video_info%%|*}"
-        local filename=$(basename "$video_path")
+        local filename=$(basename -- "$video_path")
         
         # Skip if already in current directory
         if [[ "$(dirname "$video_path")" == "$current_dir" ]]; then
@@ -4577,7 +4577,7 @@ log_conversion() {
     local size_info="$4"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     
-    echo "[$timestamp] $status: $(basename "$source_file") -> $(basename "$output_file") $size_info" >> "$CONVERSION_LOG"
+    echo "[$timestamp] $status: $(basename -- "$source_file") -> $(basename -- "$output_file") $size_info" >> "$CONVERSION_LOG"
     
     # Autosave progress after each file
     if [[ "$AUTOSAVE_ENABLED" == "true" ]]; then
@@ -4599,7 +4599,7 @@ autosave_progress() {
     fi
     
     # Log the file status
-    echo "[$timestamp] $status:$(basename "$file")" >> "$PROGRESS_FILE"
+    echo "[$timestamp] $status:$(basename -- "$file")" >> "$PROGRESS_FILE"
     
     # Keep only the last 1000 entries to prevent huge files
     if [[ $(wc -l < "$PROGRESS_FILE") -gt 1000 ]]; then
@@ -4680,7 +4680,7 @@ cleanup_temp_files() {
     trace_function "cleanup_temp_files"
     
     if [[ -n "$file_prefix" ]]; then
-        local base_name=$(basename "$file_prefix")
+        local base_name=$(basename -- "$file_prefix")
         
         # Clean temp files in work directory
         if [[ -n "$TEMP_WORK_DIR" && -d "$TEMP_WORK_DIR" ]]; then
@@ -4720,13 +4720,13 @@ handle_corrupt_file() {
     
     echo -e "${RED}${BOLD}🚨 CORRUPT FILE DETECTED${NC}"
     echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${RED}📁 File: $(basename "$corrupt_file")${NC}"
-    echo -e "${RED}📄 Source: $(basename "$source_file")${NC}"
+    echo -e "${RED}📁 File: $(basename -- "$corrupt_file")${NC}"
+    echo -e "${RED}📄 Source: $(basename -- "$source_file")${NC}"
     echo -e "${RED}🔍 Type: $corruption_type${NC}"
     
     # Move corrupt file to quarantine directory
     local quarantine_dir="$LOG_DIR/corrupt_files"
-    local quarantine_file="$quarantine_dir/$(basename "$corrupt_file").$(date +%s).corrupt"
+    local quarantine_file="$quarantine_dir/$(basename -- "$corrupt_file").$(date +%s).corrupt"
     
     if mkdir -p "$quarantine_dir" 2>/dev/null; then
         if mv "$corrupt_file" "$quarantine_file" 2>/dev/null; then
@@ -4883,7 +4883,7 @@ force_cleanup_on_exit() {
             # If GIF is suspiciously small or incomplete, delete it
             if [[ $output_size -lt 1000 ]]; then
                 rm -f "$incomplete_gif" 2>/dev/null || true
-                echo -e "${YELLOW}🧹 Cleaned up incomplete conversion: $(basename "$incomplete_gif")${NC}"
+                echo -e "${YELLOW}🧹 Cleaned up incomplete conversion: $(basename -- "$incomplete_gif")${NC}"
             fi
         fi
     fi
@@ -5064,7 +5064,7 @@ detect_duplicate_gifs() {
                 local empty=$((20 - filled))
                 
                 # Truncate filename if too long
-                local display_name="$(basename "$gif_file")"
+                local display_name="$(basename -- "$gif_file")"
                 if [[ ${#display_name} -gt 50 ]]; then
                     display_name="${display_name:0:47}..."
                 fi
@@ -5117,7 +5117,7 @@ detect_duplicate_gifs() {
     # Show sample files after scanning complete (truncated for readability)
     local samples=""
     for ((i=0; i<3 && i<${#gif_files_list[@]}; i++)); do
-        local fname="$(basename "${gif_files_list[$i]}")"
+        local fname="$(basename -- "${gif_files_list[$i]}")"
         # Truncate long filenames
         if [[ ${#fname} -gt 30 ]]; then
             fname="${fname:0:27}..."
@@ -5148,7 +5148,7 @@ detect_duplicate_gifs() {
     local idx_prescan
     for ((idx_prescan=0; idx_prescan<total_files; idx_prescan++)); do
         local prescan_file="${gif_files_list[$idx_prescan]}"
-        local prescan_basename=$(basename "$prescan_file")
+        local prescan_basename=$(basename -- "$prescan_file")
         
         local needs_analysis=true
         
@@ -5236,7 +5236,7 @@ detect_duplicate_gifs() {
                 
                 # Update progress to show cache hit
                 if [[ -n "$current_index" && -n "$total_files" ]]; then
-                    update_file_progress "$current_index" "$total_files" "$(basename "$gif_file") [cached]" "Analyzing GIFs" 30
+                    update_file_progress "$current_index" "$total_files" "$(basename -- "$gif_file") [cached]" "Analyzing GIFs" 30
                 fi
                 # Increment cache hit counter (use file to share between function calls)
                 echo "1" >> "$temp_dir/cache_hits.count" 2>/dev/null || true
@@ -5248,7 +5248,7 @@ detect_duplicate_gifs() {
         {
             # Display progress for current file
             if [[ -n "$current_index" && -n "$total_files" ]]; then
-                update_file_progress "$current_index" "$total_files" "$(basename "$gif_file")" "Analyzing GIFs" 30
+                update_file_progress "$current_index" "$total_files" "$(basename -- "$gif_file")" "Analyzing GIFs" 30
             fi
             
             # Stage 1: Fast MD5 checksum with intelligent caching
@@ -5265,7 +5265,7 @@ detect_duplicate_gifs() {
                     [[ -z "$checksum" ]] && checksum="ERROR"
                 else
                     checksum="TIMEOUT_MD5"
-                    echo -e "  ${YELLOW}⏰ MD5 timeout: $(basename "$gif_file")${NC}" >&2
+                    echo -e "  ${YELLOW}⏰ MD5 timeout: $(basename -- "$gif_file")${NC}" >&2
                 fi
             fi
             
@@ -5274,7 +5274,7 @@ detect_duplicate_gifs() {
                 local failure_reason
                 if [[ "$checksum" == "TIMEOUT_MD5" ]]; then
                     failure_reason="MD5 calculation timed out - likely severely corrupted file"
-                    echo -e "  ${RED}🚫 Corrupted file (MD5 timeout): $(basename "$gif_file")${NC}" >&2
+                    echo -e "  ${RED}🚫 Corrupted file (MD5 timeout): $(basename -- "$gif_file")${NC}" >&2
                 else
                     failure_reason="MD5 calculation failed - file may be corrupted"
                 fi
@@ -5295,7 +5295,7 @@ detect_duplicate_gifs() {
                     echo "$gif_file|AI_CORRUPTED_REVIEW|$size|unknown||0|0" >> "$result_file"
                     # Train AI model with this corruption pattern
                     train_ai_file_health "$gif_file" "corrupted" "md5_failed" "confirmed"
-                    echo -e "  ${YELLOW}🔍 AI flagged for review: $(basename "$gif_file") (potential corruption)${NC}" >&2
+                    echo -e "  ${YELLOW}🔍 AI flagged for review: $(basename -- "$gif_file") (potential corruption)${NC}" >&2
                     return 1
                 else
                     # AI thinks file might be OK despite MD5 failure - mark as suspicious
@@ -5450,7 +5450,7 @@ detect_duplicate_gifs() {
             file_detection_count=$((file_detection_count + 1))
             processed_files_tracker["$gif_file"]=$file_detection_count
             
-            echo -e "  ${RED}⚠️ Emergency break: Duplicate processing detected for $(basename "$gif_file") (seen $file_detection_count times)${NC}" >&2
+            echo -e "  ${RED}⚠️ Emergency break: Duplicate processing detected for $(basename -- "$gif_file") (seen $file_detection_count times)${NC}" >&2
             
             # If this SPECIFIC file has been seen too many times, skip it
             if [[ $file_detection_count -ge 3 ]]; then
@@ -5471,7 +5471,7 @@ detect_duplicate_gifs() {
             fi
             
             log_conversion "EMERGENCY_SKIP" "$gif_file" "" "Duplicate file in processing queue - skipping"
-            echo -e "  ${YELLOW}⏭️ Skipping duplicate queue entry: $(basename "$gif_file")${NC}" >&2
+            echo -e "  ${YELLOW}⏭️ Skipping duplicate queue entry: $(basename -- "$gif_file")${NC}" >&2
             ((loop_idx++))  # Increment before continue
             continue  # Skip this file and continue with next
         fi
@@ -5488,9 +5488,9 @@ detect_duplicate_gifs() {
         # Skip unreadable files immediately and ensure we continue to next file
         if [[ ! -r "$gif_file" ]]; then
             echo "$gif_file|UNREADABLE|0|unknown||0|0" >> "$results_file"
-            echo -e "  ${RED}⚠️ Skipped unreadable: $(basename "$gif_file") (${processed_files}/${total_files})${NC}" >&2
+            echo -e "  ${RED}⚠️ Skipped unreadable: $(basename -- "$gif_file") (${processed_files}/${total_files})${NC}" >&2
             log_conversion "AUTO_SKIP" "$gif_file" "" "File not readable - permission denied"
-            update_file_progress "$processed_files" "$total_files" "$(basename "$gif_file")" "Analyzing GIFs" 30
+            update_file_progress "$processed_files" "$total_files" "$(basename -- "$gif_file")" "Analyzing GIFs" 30
             ((loop_idx++))  # Increment before continue
             continue  # This should advance to next iteration
         fi
@@ -5498,7 +5498,7 @@ detect_duplicate_gifs() {
         # Automatically handle problematic files without user intervention
         
         # Advanced extension corruption detection and auto-fix
-        local basename_file="$(basename "$gif_file")"
+        local basename_file="$(basename -- "$gif_file")"
         local needs_fixing=false
         local corruption_type="unknown"
         local corrected_name=""
@@ -5564,7 +5564,7 @@ detect_duplicate_gifs() {
         if [[ "$needs_fixing" == "true" && -n "$corrected_name" ]]; then
             if [[ ! -f "$corrected_name" ]]; then
                 if mv "$gif_file" "$corrected_name" 2>/dev/null; then
-                    echo -e "  ${GREEN}✓ Auto-fixed ($corruption_type): $(basename "$gif_file") → $(basename "$corrected_name")${NC}" >&2
+                    echo -e "  ${GREEN}✓ Auto-fixed ($corruption_type): $(basename -- "$gif_file") → $(basename -- "$corrected_name")${NC}" >&2
                     # Log the automatic fix with detailed corruption type
                     log_conversion "AUTO_FIXED" "$gif_file" "$corrected_name" "Extension corruption ($corruption_type) → .gif"
                     
@@ -5588,14 +5588,14 @@ detect_duplicate_gifs() {
                     ((loop_idx++))
                     continue
                 else
-                    echo -e "  ${YELLOW}⚠️ Auto-skip: Cannot fix $(basename "$gif_file")${NC}" >&2
+                    echo -e "  ${YELLOW}⚠️ Auto-skip: Cannot fix $(basename -- "$gif_file")${NC}" >&2
                     log_conversion "AUTO_SKIP" "$gif_file" "" "Cannot fix double extension"
                     echo "$gif_file|AUTO_SKIP|$size|double_extension_unfixable||0|0" >> "$results_file"
                     ((loop_idx++))  # Increment before continue
                     continue  # Skip to next file in loop
                 fi
             else
-                echo -e "  ${BLUE}🔄 Auto-skip: $(basename "$gif_file") (corrected version exists)${NC}" >&2
+                echo -e "  ${BLUE}🔄 Auto-skip: $(basename -- "$gif_file") (corrected version exists)${NC}" >&2
                 log_conversion "AUTO_SKIP" "$gif_file" "" "Corrected version already exists"
                 echo "$gif_file|AUTO_SKIP|$size|duplicate_extension||0|0" >> "$results_file"
                 ((loop_idx++))  # Increment before continue
@@ -5605,7 +5605,7 @@ detect_duplicate_gifs() {
         
         # Delete 0-byte files immediately - they're always broken
         if [[ $size -eq 0 ]]; then
-            echo -e "  ${RED}🗑️ Auto-delete: $(basename "$gif_file") (0 bytes - empty file)${NC}" >&2
+            echo -e "  ${RED}🗑️ Auto-delete: $(basename -- "$gif_file") (0 bytes - empty file)${NC}" >&2
             rm -f "$gif_file" 2>/dev/null || true
             log_conversion "AUTO_DELETED" "$gif_file" "" "Empty file (0 bytes) - automatically removed"
             echo "$gif_file|AUTO_DELETED|0|empty_file||0|0" >> "$results_file"
@@ -5681,7 +5681,7 @@ detect_duplicate_gifs() {
             echo -e "    ${YELLOW}⚠️ Skipped $skipped_count problematic file(s)${NC}"
         fi
         
-        echo -e "    ${BLUE}📄 All actions logged in: ${BOLD}$(basename "$CONVERSION_LOG")${NC}"
+        echo -e "    ${BLUE}📄 All actions logged in: ${BOLD}$(basename -- "$CONVERSION_LOG")${NC}"
         echo -e "    ${GRAY}🔍 View details: tail -20 \"$CONVERSION_LOG\"${NC}"
     fi
     
@@ -5799,7 +5799,7 @@ detect_duplicate_gifs() {
     
     if [[ $error_files -gt 0 ]]; then
         echo -e "    ${RED}${BOLD}⚠️ Total issues: $error_files files${NC}"
-        echo -e "    ${BLUE}📄 Check error log: ${BOLD}$(basename "$ERROR_LOG")${NC}"
+        echo -e "    ${BLUE}📄 Check error log: ${BOLD}$(basename -- "$ERROR_LOG")${NC}"
         echo -e "    ${GRAY}🤖 AI is learning from these patterns to improve future detection${NC}"
     fi
     
@@ -5839,7 +5839,7 @@ detect_duplicate_gifs() {
                 printf "\r  ${MAGENTA}Compare [${NC}"
                 for ((k=0; k<filled; k++)); do printf "${BLUE}█${NC}"; done
                 for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
-                printf "${MAGENTA}] ${BOLD}%3d%%${NC} ${YELLOW}%s ↔ %s${NC}" "$progress" "$(basename "${file1:0:12}")..." "$(basename "${file2:0:12}")..."
+                printf "${MAGENTA}] ${BOLD}%3d%%${NC} ${YELLOW}%s ↔ %s${NC}" "$progress" "$(basename -- "${file1:0:12}")..." "$(basename -- "${file2:0:12}")..."
             fi
             
             local is_duplicate=false
@@ -5933,8 +5933,8 @@ detect_duplicate_gifs() {
                 local perms2=$(stat -c%a "$file2" 2>/dev/null || echo "0")
                 
                 # Get base filenames for similarity comparison
-                local basename1=$(basename "$file1" .gif)
-                local basename2=$(basename "$file2" .gif)
+                local basename1=$(basename -- "$file1" .gif)
+                local basename2=$(basename -- "$file2" .gif)
                 
                 # Check if corresponding MP4/video source files exist
                 local has_source1=false
@@ -5986,12 +5986,12 @@ detect_duplicate_gifs() {
                     # Only file1 has a matching source video - keep it
                     keep_file="$file1"
                     remove_file="$file2"
-                    decision_reason="keeping GIF matching source video: $(basename "$source_file1")"
+                    decision_reason="keeping GIF matching source video: $(basename -- "$source_file1")"
                 elif [[ "$has_source2" == true && "$has_source1" == false ]]; then
                     # Only file2 has a matching source video - keep it
                     keep_file="$file2"
                     remove_file="$file1"
-                    decision_reason="keeping GIF matching source video: $(basename "$source_file2")"
+                    decision_reason="keeping GIF matching source video: $(basename -- "$source_file2")"
                 elif [[ "$has_source1" == true && "$has_source2" == true ]]; then
                     # Both have matching source videos - this shouldn't happen normally
                     # Fall through to other rules but mark this special case
@@ -6206,8 +6206,8 @@ detect_duplicate_gifs() {
         fi
         
         # Extract basename (without extension) from both GIF files
-        local remove_basename="$(basename "${remove_file%.*}")"
-        local keep_basename="$(basename "${keep_file%.*}")"
+        local remove_basename="$(basename -- "${remove_file%.*}")"
+        local keep_basename="$(basename -- "${keep_file%.*}")"
         
         # Check if corresponding MP4/video source exists for the file we're about to delete
         local has_source_remove=false
@@ -6245,7 +6245,7 @@ detect_duplicate_gifs() {
         
         if [[ "$has_source_remove" == true && "$has_source_keep" == false ]]; then
             # Remove file has source, keep file doesn't - this is dangerous, skip
-            echo -e "    ${YELLOW}⚠️  SKIPPED: $remove_file has source ($(basename "$remove_source")) but $keep_file doesn't${NC}"
+            echo -e "    ${YELLOW}⚠️  SKIPPED: $remove_file has source ($(basename -- "$remove_source")) but $keep_file doesn't${NC}"
             ((skipped_count++))
             DUPLICATE_STATS_SKIPPED=$((DUPLICATE_STATS_SKIPPED + 1))
             already_deleted["$remove_file"]=1
@@ -6342,7 +6342,7 @@ detect_duplicate_gifs() {
             
             # If properties don't match, it might not be derived from this source
             if [[ "$property_mismatch" == true ]]; then
-                echo -e "    ${YELLOW}⚠️  SKIPPED: $remove_file properties don't match source $(basename "$remove_source")${NC}"
+                echo -e "    ${YELLOW}⚠️  SKIPPED: $remove_file properties don't match source $(basename -- "$remove_source")${NC}"
                 echo -e "    ${GRAY}   $property_warning${NC}"
                 ((skipped_count++))
                 DUPLICATE_STATS_SKIPPED=$((DUPLICATE_STATS_SKIPPED + 1))
@@ -6386,7 +6386,7 @@ detect_duplicate_gifs() {
                     local keep_time_diff=$((keep_source_mtime - keep_file_mtime))
                     if [[ $keep_time_diff -gt 60 ]]; then
                         keep_property_valid=false
-                        echo -e "    ${YELLOW}⚠️  WARNING: Keep file $keep_file is older than source $(basename "$keep_source") (by ${keep_time_diff}s)${NC}"
+                        echo -e "    ${YELLOW}⚠️  WARNING: Keep file $keep_file is older than source $(basename -- "$keep_source") (by ${keep_time_diff}s)${NC}"
                     fi
                 fi
             fi
@@ -6395,7 +6395,7 @@ detect_duplicate_gifs() {
             if [[ $keep_gif_size -gt 0 && $keep_source_size -gt 0 ]]; then
                 if [[ $keep_gif_size -gt $keep_source_size ]]; then
                     keep_property_valid=false
-                    echo -e "    ${YELLOW}⚠️  WARNING: Keep file $keep_file is larger than source $(basename "$keep_source")${NC}"
+                    echo -e "    ${YELLOW}⚠️  WARNING: Keep file $keep_file is larger than source $(basename -- "$keep_source")${NC}"
                     echo -e "    ${GRAY}   Size: GIF=$(numfmt --to=iec $keep_gif_size 2>/dev/null || echo $keep_gif_size) vs Source=$(numfmt --to=iec $keep_source_size 2>/dev/null || echo $keep_source_size)${NC}"
                 fi
             fi
@@ -6409,7 +6409,7 @@ detect_duplicate_gifs() {
                 
                 if [[ $keep_duration_ratio -gt 20 ]]; then
                     keep_property_valid=false
-                    echo -e "    ${YELLOW}⚠️  WARNING: Keep file $keep_file also has property mismatch with source $(basename "$keep_source")${NC}"
+                    echo -e "    ${YELLOW}⚠️  WARNING: Keep file $keep_file also has property mismatch with source $(basename -- "$keep_source")${NC}"
                     echo -e "    ${GRAY}   Duration: GIF=${keep_gif_duration}s vs Source=${keep_source_duration}s${NC}"
                 fi
             fi
@@ -6482,10 +6482,10 @@ detect_duplicate_gifs() {
             
             if [[ "$has_source_remove" == true ]]; then
                 echo -e "    ${GREEN}✓ Deleted: $remove_file (keeping $keep_file)${NC}"
-                echo -e "    ${CYAN}  → Both have sources: $(basename "$remove_source"), $(basename "$keep_source")${NC}"
+                echo -e "    ${CYAN}  → Both have sources: $(basename -- "$remove_source"), $(basename -- "$keep_source")${NC}"
             elif [[ "$has_source_keep" == true ]]; then
                 echo -e "    ${GREEN}✓ Deleted: $remove_file (keeping $keep_file)${NC}"
-                echo -e "    ${CYAN}  → Keep has source: $(basename "$keep_source")${NC}"
+                echo -e "    ${CYAN}  → Keep has source: $(basename -- "$keep_source")${NC}"
             else
                 echo -e "    ${GREEN}✓ Deleted: $remove_file (keeping $keep_file)${NC}"
                 echo -e "    ${CYAN}  → Orphaned duplicates${NC}"
@@ -6724,7 +6724,7 @@ analyze_video_gif_mapping() {
         ((total_videos++))
         
         # Truncate filename if too long
-        local display_name="$(basename "$video")"
+        local display_name="$(basename -- "$video")"
         if [[ ${#display_name} -gt 50 ]]; then
             display_name="${display_name:0:47}..."
         fi
@@ -6772,7 +6772,7 @@ analyze_video_gif_mapping() {
         ((analyzed++))
         
         # Truncate filename if too long
-        local display_name="$(basename "$video_file")"
+        local display_name="$(basename -- "$video_file")"
         if [[ ${#display_name} -gt 50 ]]; then
             display_name="${display_name:0:47}..."
         fi
@@ -6838,7 +6838,7 @@ analyze_video_gif_mapping() {
         echo -e "\n  ${YELLOW}🔍 Orphaned GIFs (no matching video):${NC}"
         for gif_file in "${!orphaned_gifs[@]}"; do
             local gif_size=$(stat -c%s "$gif_file" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "?")
-            echo -e "    ${YELLOW}🎨 $(basename "$gif_file") ($gif_size) → ${GRAY}[no video]${NC}"
+            echo -e "    ${YELLOW}🎨 $(basename -- "$gif_file") ($gif_size) → ${GRAY}[no video]${NC}"
         done
         
         if [[ $orphaned_count -gt 2 ]]; then
@@ -6886,9 +6886,9 @@ cleanup_orphaned_gifs() {
         done
         
         if [[ "$has_video" == false ]]; then
-            local backup_file="$orphaned_dir/$(basename "$gif_file").$(date +%s).orphaned"
+            local backup_file="$orphaned_dir/$(basename -- "$gif_file").$(date +%s).orphaned"
             if mv "$gif_file" "$backup_file" 2>/dev/null; then
-                echo -e "    ${GREEN}✓ Moved: $(basename "$gif_file") → orphaned_gifs/$(basename "$backup_file")${NC}"
+                echo -e "    ${GREEN}✓ Moved: $(basename -- "$gif_file") → orphaned_gifs/$(basename -- "$backup_file")${NC}"
                 ((moved_count++))
                 # Log the move
                 {
@@ -7076,7 +7076,7 @@ detect_corrupted_gifs() {
             for corrupted_file in "${corrupted_files[@]}"; do
                 local quarantine_file="$quarantine_dir/${corrupted_file}.$(date +%s).corrupt"
                 if mv "$corrupted_file" "$quarantine_file" 2>/dev/null; then
-                    echo -e "    ${GREEN}✓ Quarantined: $corrupted_file -> $(basename "$quarantine_file")${NC}"
+                    echo -e "    ${GREEN}✓ Quarantined: $corrupted_file -> $(basename -- "$quarantine_file")${NC}"
                     # Log the quarantine
                     {
                         echo "[$(date '+%Y-%m-%d %H:%M:%S')] CORRUPTED GIF QUARANTINED: $corrupted_file -> $quarantine_file"
@@ -7105,7 +7105,7 @@ ai_speed_optimizer() {
     local video_complexity="$2"
     local ai_results="$3"
     
-    echo -e "${BLUE}⚡ AI Speed Optimizer analyzing: $(basename "$video_file")${NC}"
+    echo -e "${BLUE}⚡ AI Speed Optimizer analyzing: $(basename -- "$video_file")${NC}"
     
     # Initialize speed optimization variables
     local speed_preset="medium"
@@ -7214,7 +7214,7 @@ get_optimal_gpu_encoder() {
 ai_performance_analysis() {
     local video_file="$1"
     
-    echo -e "${BLUE}📊 AI Performance Analysis for: $(basename "$video_file")${NC}"
+    echo -e "${BLUE}📊 AI Performance Analysis for: $(basename -- "$video_file")${NC}"
     
     # Get video properties for performance prediction
     local duration=$(ffprobe -v quiet -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$video_file" 2>/dev/null | cut -d. -f1)
@@ -7283,7 +7283,7 @@ detect_gpu_acceleration() {
     if [[ -d /sys/bus/pci/drivers/vfio-pci ]]; then
         for vfio_device in /sys/bus/pci/drivers/vfio-pci/*; do
             if [[ -L "$vfio_device" ]]; then
-                local pci_id=$(basename "$vfio_device")
+                local pci_id=$(basename -- "$vfio_device")
                 local device_info=$(lspci -s "$pci_id" 2>/dev/null | grep -i -E "(vga|3d|display)")
                 if [[ -n "$device_info" ]]; then
                     vfio_gpus+=("$pci_id: $device_info")
@@ -8119,7 +8119,7 @@ preload_files_to_cache() {
                     
                     if kill -0 $dd_pid 2>/dev/null; then
                         # Still running, let it continue in background
-                        echo -e "  ${GREEN}✓ Caching: $(basename "$file") (${file_size_mb}MB)${NC}"
+                        echo -e "  ${GREEN}✓ Caching: $(basename -- "$file") (${file_size_mb}MB)${NC}"
                     fi
                     
                     total_size=$((total_size + file_size_mb))
@@ -8404,7 +8404,7 @@ monitor_new_files() {
                     echo "[$(date '+%Y-%m-%d %H:%M:%S')] DYNAMIC SCAN: Found ${#new_files[@]} new file(s)"
                     for new_file in "${new_files[@]}"; do
                         local file_size=$(stat -c%s "$new_file" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "unknown")
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] NEW FILE DETECTED: $(basename "$new_file") ($file_size)"
+                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] NEW FILE DETECTED: $(basename -- "$new_file") ($file_size)"
                     done
                 } >> "$CONVERSION_LOG" 2>/dev/null || true
                 
@@ -8441,7 +8441,7 @@ check_for_new_files() {
             for new_file in "${new_files_array[@]}"; do
                 if [[ -f "$new_file" ]]; then
                     local file_size=$(stat -c%s "$new_file" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "unknown")
-                    echo -e "  ${CYAN}📄 $(basename "$new_file") (${file_size})${NC}"
+                    echo -e "  ${CYAN}📄 $(basename -- "$new_file") (${file_size})${NC}"
                 fi
             done
             
@@ -8733,33 +8733,33 @@ check_duplicate_output() {
     
     # If force conversion is enabled, ignore existing files
     if [[ "$FORCE_CONVERSION" == "true" ]]; then
-        [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${YELLOW}♾️ Force mode: Will overwrite existing $(basename "$output_file")${NC}"
+        [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${YELLOW}♾️ Force mode: Will overwrite existing $(basename -- "$output_file")${NC}"
         return 1
     fi
     
     # Check if output is newer than input (modification time)
     if [[ "$output_file" -nt "$input_file" ]]; then
-        [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${GREEN}✓ Already converted: $(basename "$output_file") (newer than source)${NC}"
+        [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${GREEN}✓ Already converted: $(basename -- "$output_file") (newer than source)${NC}"
         return 0
     fi
     
     # Check if output file is valid (basic size check)
     local output_size=$(stat -c%s "$output_file" 2>/dev/null || echo "0")
     if [[ $output_size -lt 100 ]]; then
-        [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${YELLOW}⚠️ Existing file too small, will recreate: $(basename "$output_file")${NC}"
+        [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${YELLOW}⚠️ Existing file too small, will recreate: $(basename -- "$output_file")${NC}"
         rm -f "$output_file" 2>/dev/null
         return 1
     fi
     
     # Quick validation of existing GIF
     if ! file "$output_file" 2>/dev/null | grep -q "GIF"; then
-        [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${YELLOW}⚠️ Existing file not a valid GIF, will recreate: $(basename "$output_file")${NC}"
+        [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${YELLOW}⚠️ Existing file not a valid GIF, will recreate: $(basename -- "$output_file")${NC}"
         rm -f "$output_file" 2>/dev/null
         return 1
     fi
     
     # File exists, is newer, and appears valid
-    [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${GREEN}⏭️ Skipping: $(basename "$output_file") already exists and is valid${NC}"
+    [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${GREEN}⏭️ Skipping: $(basename -- "$output_file") already exists and is valid${NC}"
     return 0
 }
 
@@ -8770,7 +8770,7 @@ validate_output_file() {
     local temp_error="/tmp/gif_validation_$$_$(date +%s).log"
     trace_function "validate_output_file"
     
-    echo -e "  ${BLUE}🔍 Validating output: $(basename "$output_file")${NC}"
+    echo -e "  ${BLUE}🔍 Validating output: $(basename -- "$output_file")${NC}"
     
     # Test 1: Check if file was created
     if [[ ! -f "$output_file" ]]; then
@@ -9381,7 +9381,7 @@ quick_convert_mode() {
         
         # Show AI analysis preview for first file
         if [[ ${#video_files[@]} -gt 0 ]]; then
-            echo -e "${YELLOW}🔍 AI Preview Analysis (first file: $(basename "${video_files[0]}"))...${NC}"
+            echo -e "${YELLOW}🔍 AI Preview Analysis (first file: $(basename -- "${video_files[0]}"))...${NC}"
             ai_preview_analysis "${video_files[0]}"
         fi
         
@@ -11678,7 +11678,7 @@ start_conversion() {
                 fi
                 
                 # Truncate filename if too long (max 40 chars)
-                local display_file="$(basename "$file")"
+                local display_file="$(basename -- "$file")"
                 if [[ ${#display_file} -gt 40 ]]; then
                     display_file="${display_file:0:37}..."
                 fi
@@ -11688,7 +11688,7 @@ start_conversion() {
             fi
             
             ((total_files++)) || true
-            local base_name=$(basename "$file")
+            local base_name=$(basename -- "$file")
             
             # Check if file was already processed in previous session
             if [[ -n "${processed_files[$base_name]:-}" ]]; then
@@ -11822,7 +11822,7 @@ start_conversion() {
             active_jobs+=("$job_pid")
             ((job_count++))
             
-            echo -e "${CYAN}Started job $current/$files_to_convert: $(basename "$file") (PID: $job_pid)${NC}"
+            echo -e "${CYAN}Started job $current/$files_to_convert: $(basename -- "$file") (PID: $job_pid)${NC}"
         done
         
         # Wait for all remaining jobs to complete
@@ -12487,7 +12487,7 @@ show_progress() {
 
     if [[ -n "$filename" ]]; then
         echo ""
-        local truncated_name=$(basename "$filename")
+        local truncated_name=$(basename -- "$filename")
         if [[ ${#truncated_name} -gt 50 ]]; then
             truncated_name="${truncated_name:0:47}..."
         fi
@@ -12599,14 +12599,14 @@ convert_video() {
     
     # Skip if file exists and is newer (unless force mode)
     if [[ -f "$output_file" && "$output_file" -nt "$file" && "$FORCE_CONVERSION" != true ]]; then
-        echo -e "\n${YELLOW}⏭️  Skipping: $(basename "$file") (already converted)${NC}"
+        echo -e "\n${YELLOW}⏭️  Skipping: $(basename -- "$file") (already converted)${NC}"
         log_conversion "SKIPPED" "$file" "$output_file" "(already exists)"
         ((skipped_files++))
         return 0
     fi
     
     echo ""
-    echo -e "${GREEN}✨ Converting: ${BOLD}$(basename "$file")${NC}"
+    echo -e "${GREEN}✨ Converting: ${BOLD}$(basename -- "$file")${NC}"
     
     # Auto-detect settings if enabled
     if [[ "$AUTO_DETECT" == true ]]; then
@@ -12887,7 +12887,7 @@ show_progress() {
     # Show current file being processed
     if [[ -n "$filename" ]]; then
         echo ""
-        printf "${BLUE}🎬 Processing: ${NC}%s" "$(basename "$filename")"
+        printf "${BLUE}🎬 Processing: ${NC}%s" "$(basename -- "$filename")"
     fi
 }
 
@@ -13059,7 +13059,7 @@ convert_video() {
         return 1
     fi
     
-    echo -e "${CYAN}⚙️ Starting robust conversion for: $(basename "$file")${NC}"
+    echo -e "${CYAN}⚙️ Starting robust conversion for: $(basename -- "$file")${NC}"
     
     # Wrap the entire conversion in a try-catch like structure
     {
@@ -13076,7 +13076,7 @@ _convert_video_internal() {
     
     local file="$1"
     local final_output_file="${file%.*}.${OUTPUT_FORMAT}"
-    local base_name=$(basename "${file%.*}")
+    local base_name=$(basename -- "${file%.*}")
     
     # Use RAM-optimized temp directory for all intermediate files
     local temp_palette_file=$(get_temp_file_path "${base_name}_palette" "png")
@@ -13129,7 +13129,7 @@ _convert_video_internal() {
                 # If GIF is suspiciously small or was just created, delete it
                 if [[ $output_size -lt 1000 ]] || [[ "$final_output_file" -nt "$file" ]]; then
                     rm -f "$final_output_file" 2>/dev/null
-                    echo -e "  ${YELLOW}🧹 Cleaned up incomplete: $(basename "$final_output_file")${NC}"
+                    echo -e "  ${YELLOW}🧹 Cleaned up incomplete: $(basename -- "$final_output_file")${NC}"
                 fi
             fi
             
@@ -13672,7 +13672,7 @@ _convert_video_internal() {
         # Step 5: Move completed GIF from temp to final location
         echo -e "  ${BLUE}📦 Moving completed GIF to final location...${NC}"
         if mv "$temp_output_file" "$final_output_file" 2>/dev/null; then
-        echo -e "  ${GREEN}✓ GIF saved: $(basename "$final_output_file")${NC}"
+        echo -e "  ${GREEN}✓ GIF saved: $(basename -- "$final_output_file")${NC}"
         
         # 🧠 AI Training: Learn from successful conversion
         if [[ "$AI_ENABLED" == true ]]; then
@@ -13905,7 +13905,7 @@ _convert_video_internal() {
             fi
         fi
         
-        printf "\r  ${GREEN}✓ Completed: ${BOLD}$(basename "$final_output_file")${NC} ${MAGENTA}($(numfmt --to=iec $converted_size) - ${ratio}%% of original)${NC}\n"
+        printf "\r  ${GREEN}✓ Completed: ${BOLD}$(basename -- "$final_output_file")${NC} ${MAGENTA}($(numfmt --to=iec $converted_size) - ${ratio}%% of original)${NC}\n"
         
         # Log successful conversion
         log_conversion "SUCCESS" "$file" "$final_output_file" "($(numfmt --to=iec $converted_size) - ${ratio}% of original)"
@@ -13936,7 +13936,7 @@ _convert_video_internal() {
         echo -e "  ${BLUE}🧹 Cleaned up $immediate_cleanup_count completed processes${NC}"
     fi
     
-    echo -e "${CYAN}✓ Finished processing: $(basename "$1")${NC}"
+    echo -e "${CYAN}✓ Finished processing: $(basename -- "$1")${NC}"
 }
 
 # 📈 Show final statistics
@@ -14488,7 +14488,7 @@ main() {
                     local backup="${validation_cache}.backup.$(date +%s)"
                     mv "$validation_cache" "$backup"
                     echo -e "${GREEN}✓ Validation cache cleared${NC}"
-                    echo -e "${BLUE}ℹ️ Backup saved: $(basename "$backup")${NC}"
+                    echo -e "${BLUE}ℹ️ Backup saved: $(basename -- "$backup")${NC}"
                 else
                     echo -e "${YELLOW}⚠️ No validation cache to clear${NC}"
                 fi
