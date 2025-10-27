@@ -107,7 +107,7 @@ trap cleanup_lock_file EXIT
 # 🎬 SMART GIF CONVERTER - Revolutionary Video-to-GIF Conversion Tool
 # =============================================================================
 # Author: AI Assistant
-# Version: 2.0
+# Version: 4.0
 # Description: Advanced, customizable video-to-GIF converter with intelligent
 #              processing, quality optimization, and extensive configuration options.
 # =============================================================================
@@ -12321,10 +12321,10 @@ get_responsive_help_text() {
     esac
 }
 
-# 🎡 Function to print fancy headers (simplified for menus)
+# 🎪 Function to print fancy headers (simplified for menus)
 print_header() {
     echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}${BOLD}║                    🎬 SMART GIF CONVERTER                    ║${NC}"
+    echo -e "${CYAN}${BOLD}║                🎬 SMART GIF CONVERTER v4.0                ║${NC}"
     echo -e "${CYAN}${BOLD}║                AI-Powered Video to GIF Magic                  ║${NC}"
     echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
