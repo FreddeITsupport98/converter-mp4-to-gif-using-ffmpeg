@@ -170,13 +170,18 @@ MAX_GIF_SIZE_MB=25
 AUTO_REDUCE_QUALITY=true
 SMART_SIZE_DOWN=true
 GPU_ACCELERATION="auto"
-FFMPEG_THREADS="$(nproc 2>/dev/null || echo '4')"
+FFMPEG_THREADS="auto"
 BACKUP_ORIGINAL=true
 LOG_LEVEL="info"
 PROGRESS_BAR=true
 INTERACTIVE_MODE=true
 SKIP_VALIDATION=false
 ONLY_FILE=""
+
+# 📁 Output Directory Configuration
+OUTPUT_DIRECTORY="./converted_gifs"  # Default: ./converted_gifs subdirectory
+OUTPUT_DIR_MODE="default"  # default, current, pictures, custom
+
 # 🤖 Enhanced AI Configuration
 AI_ENABLED=false
 CROP_FILTER=""
@@ -5059,7 +5064,16 @@ detect_duplicate_gifs() {
     echo -e "  ${CYAN}🔍 Scanning GIF files...${NC}"
     
     shopt -s nullglob
+    
+    # Build list of all GIF files from current dir and OUTPUT_DIRECTORY
     local all_gifs=(*.gif)
+    
+    # Also scan OUTPUT_DIRECTORY if it exists and is different from current dir
+    if [[ -d "$OUTPUT_DIRECTORY" && "$(cd "$OUTPUT_DIRECTORY" 2>/dev/null && pwd)" != "$(pwd)" ]]; then
+        echo -e "  ${GRAY}📂 Also scanning: $OUTPUT_DIRECTORY${NC}"
+        all_gifs+=("$OUTPUT_DIRECTORY"/*.gif)
+    fi
+    
     local total_to_scan=${#all_gifs[@]}
     local scan_count=0
     
@@ -6198,6 +6212,8 @@ detect_duplicate_gifs() {
         local remove_file="${pair%%|*}"
         local temp_pair="${pair#*|}"
         local keep_file="${temp_pair%%|*}"
+        temp_pair="${temp_pair#*|}"
+        local similarity_reason="${temp_pair%%|*}"
         
         # Skip if already deleted
         if [[ -n "${already_deleted[$remove_file]:-}" ]]; then
@@ -6264,6 +6280,7 @@ detect_duplicate_gifs() {
         fi
         
         # Additional property validation: Compare GIF properties with source video properties
+        # SKIP property validation for exact binary matches (100% identical files)
         local property_mismatch=false
         local property_warning=""
         
@@ -6277,7 +6294,11 @@ detect_duplicate_gifs() {
         local remove_file_perms=$(stat -c%a "$remove_file" 2>/dev/null || echo "0")
         local keep_file_perms=$(stat -c%a "$keep_file" 2>/dev/null || echo "0")
         
-        if [[ "$has_source_remove" == true ]]; then
+        # For exact binary matches, skip property validation entirely (they're 100% identical)
+        if [[ "$similarity_reason" == "exact_binary" ]]; then
+            # Files are binary identical - safe to delete regardless of source video properties
+            property_mismatch=false
+        elif [[ "$has_source_remove" == true ]]; then
             # Get properties of remove_file and its source
             local remove_gif_frames="${gif_frame_counts[$remove_file]:-0}"
             local remove_gif_duration="${gif_durations[$remove_file]:-0}"
@@ -6757,13 +6778,24 @@ analyze_video_gif_mapping() {
     printf "${CYAN}] ${BOLD}100%%${NC} ${BLUE}Scanned %d videos${NC}\n" "$total_videos"
     printf "\033[K\n"  # Clear the file name line
     
-    # Scan all GIF files
+    # Scan all GIF files in OUTPUT_DIRECTORY
     echo -e "  ${CYAN}🔍 Scanning GIF files...${NC}"
-    for gif in *.gif; do
-        [[ -f "$gif" ]] || continue
-        local basename="${gif%.*}"
-        gif_files["$basename"]="$gif"
-        ((total_gifs++))
+    shopt -s nullglob
+    
+    # Scan in OUTPUT_DIRECTORY if it exists and is different from current dir
+    local gif_search_paths=(.)
+    if [[ -d "$OUTPUT_DIRECTORY" && "$(cd "$OUTPUT_DIRECTORY" 2>/dev/null && pwd)" != "$(pwd)" ]]; then
+        gif_search_paths+=("$OUTPUT_DIRECTORY")
+        echo -e "  ${GRAY}📂 Also scanning: $OUTPUT_DIRECTORY${NC}"
+    fi
+    
+    for search_path in "${gif_search_paths[@]}"; do
+        for gif in "$search_path"/*.gif; do
+            [[ -f "$gif" ]] || continue
+            local basename="$(basename -- "${gif%.*}")"
+            gif_files["$basename"]="$gif"
+            ((total_gifs++))
+        done
     done
     shopt -u nullglob
     
@@ -7313,16 +7345,8 @@ ai_performance_analysis() {
 detect_gpu_acceleration() {
     echo -e "${BLUE}🔍 Detecting GPU acceleration capabilities...${NC}"
     
-    # Available GPU encoders in priority order
-    local gpu_encoders=("h264_nvenc" "h264_vaapi" "h264_videotoolbox" "h264_qsv")
+    # GPU encoders by vendor (will be filtered based on detected GPU)
     local available_encoders=()
-    
-    # Check what encoders are available
-    for encoder in "${gpu_encoders[@]}"; do
-        if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q "$encoder"; then
-            available_encoders+=("$encoder")
-        fi
-    done
     
     # Detect GPU hardware with better AMD/NVIDIA detection
     local gpu_info=""
@@ -7375,6 +7399,13 @@ detect_gpu_acceleration() {
             local nvidia_gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader,nounits 2>/dev/null | head -1)
             gpu_info="NVIDIA GPU detected: ${nvidia_gpu:-Unknown NVIDIA GPU} (${#available_nvidia_gpus[@]} available)"
             GPU_TYPE="nvidia"
+            # For NVIDIA, prioritize NVENC encoder
+            if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q "h264_nvenc"; then
+                available_encoders+=("h264_nvenc")
+            fi
+            if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q "hevc_nvenc"; then
+                available_encoders+=("hevc_nvenc")
+            fi
         elif [[ ${#available_nvidia_gpus[@]} -gt 0 ]]; then
             # NVIDIA GPUs exist but nvidia-smi can't see them (driver issues or VFIO)
             local nvidia_gpu=$(lspci -s "${available_nvidia_gpus[0]}" 2>/dev/null | sed 's/.*: //')
@@ -7408,6 +7439,13 @@ detect_gpu_acceleration() {
         if [[ ${#available_amd_gpus[@]} -gt 0 ]]; then
             local amd_gpu=$(lspci -s "${available_amd_gpus[0]}" 2>/dev/null | sed 's/.*: //')
             gpu_info="AMD GPU detected: ${amd_gpu:-Unknown AMD GPU} (${#available_amd_gpus[@]} available)"
+            # For AMD, prioritize VAAPI encoder
+            if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q "h264_vaapi"; then
+                available_encoders+=("h264_vaapi")
+            fi
+            if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q "hevc_vaapi"; then
+                available_encoders+=("hevc_vaapi")
+            fi
             GPU_TYPE="amd"
             
             # Additional AMD detection methods
@@ -7424,6 +7462,12 @@ detect_gpu_acceleration() {
         local intel_gpu=$(lspci 2>/dev/null | grep -i -E "vga.*intel|3d.*intel|display.*intel" | head -1 | sed 's/.*: //')
         gpu_info="Intel GPU detected: ${intel_gpu:-Unknown Intel GPU}"
         GPU_TYPE="intel"
+        # For Intel, check for QSV or VAAPI
+        if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q "h264_qsv"; then
+            available_encoders+=("h264_qsv")
+        elif ffmpeg -hide_banner -encoders 2>/dev/null | grep -q "h264_vaapi"; then
+            available_encoders+=("h264_vaapi")
+        fi
     else
         if [[ ${#vfio_gpus[@]} -gt 0 ]]; then
             gpu_info="Only VFIO-bound GPUs detected (all in passthrough mode)"
@@ -8006,7 +8050,8 @@ setup_ram_disk() {
                 TEMP_WORK_DIR="$RAM_DISK_PATH/work"
                 mkdir -p "$TEMP_WORK_DIR" 2>/dev/null
             else
-                echo -e "    ${YELLOW}⚠️  Cannot mount RAM disk (permissions?) - using regular storage${NC}"
+                echo -e "    ${YELLOW}⚠️  Cannot mount RAM disk - requires sudo privileges${NC}"
+                echo -e "    ${CYAN}💡 Tip: Run 'sudo mount -t tmpfs' or disable RAM_OPTIMIZATION in settings${NC}"
                 RAM_DISK_ENABLED=false
             fi
         else
@@ -8661,8 +8706,31 @@ check_package_update_available() {
     return 0
 }
 
-# 🔍 Enhanced system requirements check
+# 🔍 Enhanced system requirements check with intelligent caching
 check_dependencies() {
+    local cache_file="$LOG_DIR/.dependency_cache"
+    local cache_validity_hours=24  # Cache valid for 24 hours
+    local force_check=false
+    
+    # Check if cache exists and is recent
+    if [[ -f "$cache_file" ]]; then
+        local cache_age=$(($(date +%s) - $(stat -c %Y "$cache_file" 2>/dev/null || echo 0)))
+        local cache_max_age=$((cache_validity_hours * 3600))
+        
+        if [[ $cache_age -lt $cache_max_age ]]; then
+            # Cache is still valid - load cached results
+            source "$cache_file" 2>/dev/null && {
+                echo -e "${GREEN}✓ Dependencies verified (cached)${NC}"
+                return 0
+            }
+        else
+            force_check=true
+        fi
+    else
+        force_check=true
+    fi
+    
+    # Perform full check if needed
     echo -e "${CYAN}🔍 Checking system dependencies...${NC}"
     
     local required_tools=("ffmpeg")
@@ -8781,6 +8849,16 @@ check_dependencies() {
     fi
     
     echo -e "\n${GREEN}✅ Dependency check completed${NC}"
+    
+    # Save successful check to cache if all required tools are present
+    if [[ ${#missing_required[@]} -eq 0 ]]; then
+        cat > "$cache_file" << 'EOF'
+# Dependency check cache
+# Generated: $(date)
+# All required dependencies verified
+EOF
+        echo -e "${GRAY}  ℹ️  Cached for faster startup next time${NC}"
+    fi
 }
 
 # 📝 Comprehensive environment validation
@@ -8948,7 +9026,8 @@ detect_video_corruption() {
 # 🔄 Check if output file already exists and is valid
 check_duplicate_output() {
     local input_file="$1"
-    local output_file="${input_file%.*}.${OUTPUT_FORMAT}"
+    local base_name="$(basename -- "${input_file%.*}")"
+    local output_file="$OUTPUT_DIRECTORY/$base_name.${OUTPUT_FORMAT}"
     
     # If file doesn't exist, not a duplicate
     if [[ ! -f "$output_file" ]]; then
@@ -9181,6 +9260,500 @@ kill_ffmpeg_processes() {
     read -rsn1
 }
 
+# 📋 Detect available file picker (comprehensive desktop environment support)
+detect_file_picker() {
+    # Check for various file picker dialogs in order of preference
+    # GTK-based dialogs
+    if command -v zenity >/dev/null 2>&1; then
+        echo "zenity"  # GNOME, XFCE, Cinnamon, Budgie
+    elif command -v yad >/dev/null 2>&1; then
+        echo "yad"  # Enhanced zenity fork
+    elif command -v matedialog >/dev/null 2>&1; then
+        echo "matedialog"  # MATE Desktop
+    # Qt-based dialogs
+    elif command -v kdialog >/dev/null 2>&1; then
+        echo "kdialog"  # KDE Plasma
+    elif command -v qarma >/dev/null 2>&1; then
+        echo "qarma"  # Qt zenity clone
+    # Other dialogs
+    elif command -v dialog >/dev/null 2>&1; then
+        echo "dialog"  # Text-based fallback
+    elif command -v whiptail >/dev/null 2>&1; then
+        echo "whiptail"  # Text-based alternative
+    # Try Python-based tkinter as last GUI resort
+    elif command -v python3 >/dev/null 2>&1 && python3 -c "import tkinter" 2>/dev/null; then
+        echo "python-tk"
+    else
+        echo "none"
+    fi
+}
+
+# 📂 Browse for directory using file picker
+browse_for_directory() {
+    local picker=$(detect_file_picker)
+    local selected_dir=""
+    
+    case "$picker" in
+        "zenity")
+            selected_dir=$(zenity --file-selection --directory --title="Select Output Directory" 2>/dev/null || echo "")
+            ;;
+        "kdialog")
+            selected_dir=$(kdialog --getexistingdirectory "$HOME" --title "Select Output Directory" 2>/dev/null || echo "")
+            ;;
+        "yad")
+            # YAD (Yet Another Dialog) - Zenity fork with more features
+            selected_dir=$(yad --file --directory --title="Select Output Directory" 2>/dev/null || echo "")
+            ;;
+        "qarma")
+            # Qarma - Qt-based Zenity clone
+            selected_dir=$(qarma --file-selection --directory --title="Select Output Directory" 2>/dev/null || echo "")
+            ;;
+        "matedialog")
+            # MATE Desktop dialog
+            selected_dir=$(matedialog --file-selection --directory --title="Select Output Directory" 2>/dev/null || echo "")
+            ;;
+        "dialog")
+            # Text-based dialog fallback
+            selected_dir=$(dialog --stdout --title "Select Output Directory" --dselect "$HOME/" 14 48 2>/dev/null || echo "")
+            ;;
+        "whiptail")
+            # Whiptail text-based fallback
+            selected_dir=$(whiptail --title "Select Output Directory" --inputbox "Enter directory path:" 10 60 "$HOME/" 3>&1 1>&2 2>&3 || echo "")
+            ;;
+        "python-tk")
+            # Python tkinter GUI fallback
+            selected_dir=$(python3 -c "
+import tkinter as tk
+from tkinter import filedialog
+root = tk.Tk()
+root.withdraw()
+selected = filedialog.askdirectory(initialdir='$HOME', title='Select Output Directory')
+if selected:
+    print(selected)
+" 2>/dev/null || echo "")
+            ;;
+        "none")
+            echo "none"
+            return 1
+            ;;
+    esac
+    
+    if [[ -n "$selected_dir" && -d "$selected_dir" ]]; then
+        echo "$selected_dir"
+        return 0
+    fi
+    
+    return 1
+}
+
+# 📂 Select video folder (change working directory)
+select_video_folder() {
+    local selected=0
+    local picker=$(detect_file_picker)
+    local options=()
+    local descriptions=()
+    
+    # Build options array based on available picker
+    options+=("Enter path manually")
+    descriptions+=("Type the full path to your video folder")
+    
+    if [[ "$picker" != "none" ]]; then
+        options+=("Browse with file picker")
+        descriptions+=("Use $picker to select folder visually")
+    fi
+    
+    options+=("Back to main menu")
+    descriptions+=("Return without changing folder")
+    
+    while true; do
+        clear
+        print_header
+        
+        echo -e "${CYAN}${BOLD}📂 SELECT VIDEO FOLDER${NC}\n"
+        
+        # Show current directory
+        local current_dir_display="$(pwd | sed "s|$HOME|~|g")"
+        local current_dir_path="$(pwd)"
+        local clickable_current=$(make_clickable_path "$current_dir_path" "$current_dir_display")
+        
+        echo -e "${BLUE}📂 Current Video Folder:${NC}"
+        echo -e "  $clickable_current"
+        
+        # Count videos in current folder
+        local video_count=$(find . -maxdepth 1 \( -name "*.mp4" -o -name "*.avi" -o -name "*.mov" -o -name "*.mkv" -o -name "*.webm" \) 2>/dev/null | wc -l)
+        echo -e "  ${YELLOW}📹 Videos found: ${BOLD}$video_count${NC}\n"
+        
+        # Display options with highlight
+        for i in "${!options[@]}"; do
+            if [[ $i -eq $selected ]]; then
+                echo -e "  ${GREEN}${BOLD}➤ ${options[$i]}${NC}"
+                echo -e "    ${CYAN}💡 ${descriptions[$i]}${NC}"
+            else
+                echo -e "  ${GRAY}  ${options[$i]}${NC}"
+            fi
+        done
+        
+        echo ""
+        echo -e "${CYAN}┌─────────────────────────────────────────────────────┐${NC}"
+        echo -e "${CYAN}│${NC} ${YELLOW}🎹 Controls:${NC}                                      ${CYAN}│${NC}"
+        echo -e "${CYAN}│${NC}   ${GREEN}W${NC} or ${GREEN}↑${NC}  - Move up                              ${CYAN}│${NC}"
+        echo -e "${CYAN}│${NC}   ${GREEN}S${NC} or ${GREEN}↓${NC}  - Move down                            ${CYAN}│${NC}"
+        echo -e "${CYAN}│${NC}   ${GREEN}Enter${NC}  - Confirm selection                      ${CYAN}│${NC}"
+        echo -e "${CYAN}└─────────────────────────────────────────────────────┘${NC}"
+        echo ""
+        
+        # Read key
+        read -rsn1 key 2>/dev/null || read -r key
+        
+        case "$key" in
+            $'\x1b')  # Arrow keys
+                read -rsn2 -t 0.1 key
+                case "$key" in
+                    '[A') # Up
+                        selected=$((selected - 1))
+                        [[ $selected -lt 0 ]] && selected=$((${#options[@]}-1))
+                        ;;
+                    '[B') # Down
+                        selected=$((selected + 1))
+                        [[ $selected -ge ${#options[@]} ]] && selected=0
+                        ;;
+                esac
+                ;;
+            'w'|'W') # Up
+                selected=$((selected - 1))
+                [[ $selected -lt 0 ]] && selected=$((${#options[@]}-1))
+                sleep 0.1
+                ;;
+            's'|'S') # Down
+                selected=$((selected + 1))
+                [[ $selected -ge ${#options[@]} ]] && selected=0
+                sleep 0.1
+                ;;
+            ''|$'\n'|$'\r'|' ') # Enter/Space
+                break
+                ;;
+        esac
+    done
+    
+    # Handle the selected option
+    # Options array: 0=manual, 1=browse (if available), last=back
+    local last_option=$((${#options[@]} - 1))
+    
+    if [[ $selected -eq $last_option ]]; then
+        # Back to main menu
+        return 0
+    elif [[ $selected -eq 0 ]]; then
+        # Manual path entry
+        echo -e "\n${CYAN}Enter folder path where videos are located:${NC}"
+        echo -e "${GRAY}Common: $HOME/Videos, $HOME/Downloads, $HOME/Pictures${NC}"
+        echo -ne "${YELLOW}Path: ${NC}"
+        read -r manual_path
+        
+        if [[ -n "$manual_path" ]]; then
+            manual_path="${manual_path/#\~/$HOME}"
+            
+            if [[ -d "$manual_path" ]]; then
+                if cd "$manual_path" 2>/dev/null; then
+                    local new_video_count=$(find . -maxdepth 1 \( -name "*.mp4" -o -name "*.avi" -o -name "*.mov" -o -name "*.mkv" -o -name "*.webm" \) 2>/dev/null | wc -l)
+                    echo -e "\n${GREEN}✓ Changed to: $manual_path${NC}"
+                    echo -e "  ${YELLOW}📹 Videos found: ${BOLD}$new_video_count${NC}"
+                    [[ $new_video_count -eq 0 ]] && echo -e "  ${YELLOW}⚠️  No video files found in this folder${NC}"
+                    sleep 2
+                    return 0
+                else
+                    echo -e "\n${RED}❌ Cannot access directory: $manual_path${NC}"
+                    sleep 2
+                fi
+            else
+                echo -e "\n${RED}❌ Directory does not exist: $manual_path${NC}"
+                sleep 2
+            fi
+        else
+            echo -e "\n${YELLOW}No path entered${NC}"
+            sleep 1
+        fi
+    elif [[ $selected -eq 1 && "$picker" != "none" ]]; then
+        # Browse with file picker
+        echo -e "\n${GREEN}Opening file picker to select video folder...${NC}"
+        sleep 0.5
+        
+        local selected_dir=$(browse_for_directory)
+        
+        if [[ $? -eq 0 && -n "$selected_dir" && -d "$selected_dir" ]]; then
+            if cd "$selected_dir" 2>/dev/null; then
+                local new_video_count=$(find . -maxdepth 1 \( -name "*.mp4" -o -name "*.avi" -o -name "*.mov" -o -name "*.mkv" -o -name "*.webm" \) 2>/dev/null | wc -l)
+                echo -e "\n${GREEN}✓ Changed to: $selected_dir${NC}"
+                echo -e "  ${YELLOW}📹 Videos found: ${BOLD}$new_video_count${NC}"
+                [[ $new_video_count -eq 0 ]] && echo -e "  ${YELLOW}⚠️  No video files found in this folder${NC}"
+                sleep 2
+                return 0
+            else
+                echo -e "\n${RED}❌ Cannot access directory: $selected_dir${NC}"
+                sleep 2
+            fi
+        else
+            echo -e "\n${YELLOW}ℹ️  No directory selected${NC}"
+            sleep 1
+        fi
+    fi
+}
+
+# 📁 Configure output directory
+configure_output_directory() {
+    local selected=0
+    
+    # Calculate actual paths for display
+    local current_dir="$(pwd)"
+    local converted_gifs_path="$current_dir/converted_gifs"
+    local pictures_path="$HOME/Pictures/GIFs"
+    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    
+    local options=(
+        "./converted_gifs - Keep videos & GIFs organized"
+        "Pictures folder - Save to system Pictures directory"
+        "Script directory - Where convert.sh is located"
+        "Custom path - Choose your own location"
+        "Back to main menu"
+    )
+    local descriptions=(
+        "Path: $converted_gifs_path"
+        "Path: $pictures_path"
+        "Path: $script_dir"
+        "Browse with file picker or type any path you want"
+        "Return to main menu without changes"
+    )
+    
+    while true; do
+        clear
+        print_header
+        
+        echo -e "${CYAN}${BOLD}📁 OUTPUT DIRECTORY CONFIGURATION${NC}\n"
+        
+        # Show current output directory
+        local output_display="$(echo "$OUTPUT_DIRECTORY" | sed "s|$HOME|~|g")"
+        local output_abs="$(cd "$OUTPUT_DIRECTORY" 2>/dev/null && pwd || echo "$OUTPUT_DIRECTORY")"
+        local clickable_output=$(make_clickable_path "$output_abs" "$output_display")
+        
+        echo -e "${BLUE}💾 Current Output Directory:${NC}"
+        echo -e "  $clickable_output"
+        echo -e "  ${GRAY}Mode: $OUTPUT_DIR_MODE${NC}\n"
+        
+        # Check if directory exists and is writable
+        if [[ -d "$OUTPUT_DIRECTORY" ]]; then
+            if [[ -w "$OUTPUT_DIRECTORY" ]]; then
+                echo -e "  ${GREEN}✓ Directory exists and is writable${NC}"
+            else
+                echo -e "  ${YELLOW}⚠️  Warning: Directory is not writable${NC}"
+            fi
+        else
+            echo -e "  ${YELLOW}⚠️  Directory does not exist (will be created)${NC}"
+        fi
+        
+        echo -e "${CYAN}${BOLD}📁 OPTIONS:${NC}\n"
+        
+        # Display options with highlight (no descriptions here)
+        for i in "${!options[@]}"; do
+            if [[ $i -eq $selected ]]; then
+                echo -e "  ${GREEN}${BOLD}➤ ${options[$i]}${NC}"
+            else
+                echo -e "  ${GRAY}  ${options[$i]}${NC}"
+            fi
+        done
+        
+        echo ""
+        echo -e "${CYAN}┌────────────────────────────────────────────────────────────────────────────────┐${NC}"
+        echo -e "${CYAN}│${NC} ${YELLOW}💡 Full Path:${NC}                                               ${CYAN}│${NC}"
+        
+        # Make path clickable based on selected option
+        local clickable_desc=""
+        case $selected in
+            0) clickable_desc=$(make_clickable_path "$converted_gifs_path" "$converted_gifs_path") ;;
+            1) clickable_desc=$(make_clickable_path "$pictures_path" "$pictures_path") ;;
+            2) clickable_desc=$(make_clickable_path "$script_dir" "$script_dir") ;;
+            *) clickable_desc="${descriptions[$selected]}" ;;
+        esac
+        
+        echo -e "${CYAN}│${NC}   $clickable_desc$(printf '%*s' $((77 - ${#descriptions[$selected]})) '')${CYAN}│${NC}"
+        echo -e "${CYAN}└────────────────────────────────────────────────────────────────────────────────┘${NC}"
+        echo ""
+        echo -e "${CYAN}┌─────────────────────────────────────────────────────┐${NC}"
+        echo -e "${CYAN}│${NC} ${YELLOW}🎹 Controls:${NC}                                      ${CYAN}│${NC}"
+        echo -e "${CYAN}│${NC}   ${GREEN}W${NC} or ${GREEN}↑${NC}  - Move up                              ${CYAN}│${NC}"
+        echo -e "${CYAN}│${NC}   ${GREEN}S${NC} or ${GREEN}↓${NC}  - Move down                            ${CYAN}│${NC}"
+        echo -e "${CYAN}│${NC}   ${GREEN}Enter${NC}  - Confirm selection                      ${CYAN}│${NC}"
+        echo -e "${CYAN}└─────────────────────────────────────────────────────┘${NC}"
+        echo ""
+        
+        # Read key
+        read -rsn1 key 2>/dev/null || read -r key
+        
+        case "$key" in
+            $'\x1b')  # Arrow keys
+                read -rsn2 -t 0.1 key
+                case "$key" in
+                    '[A') # Up
+                        selected=$((selected - 1))
+                        [[ $selected -lt 0 ]] && selected=$((${#options[@]}-1))
+                        ;;
+                    '[B') # Down
+                        selected=$((selected + 1))
+                        [[ $selected -ge ${#options[@]} ]] && selected=0
+                        ;;
+                esac
+                ;;
+            'w'|'W') # Up
+                selected=$((selected - 1))
+                [[ $selected -lt 0 ]] && selected=$((${#options[@]}-1))
+                sleep 0.1
+                ;;
+            's'|'S') # Down
+                selected=$((selected + 1))
+                [[ $selected -ge ${#options[@]} ]] && selected=0
+                sleep 0.1
+                ;;
+            ''|$'\n'|$'\r'|' ') # Enter/Space
+                break
+                ;;
+        esac
+    done
+    
+    local choice=$((selected + 1))
+    
+    case "$choice" in
+        "1")
+            # Set to ./converted_gifs (relative to current working directory)
+            OUTPUT_DIRECTORY="./converted_gifs"
+            OUTPUT_DIR_MODE="default"
+            
+            # Create directory if it doesn't exist
+            mkdir -p "$OUTPUT_DIRECTORY" 2>/dev/null || {
+                echo -e "\n${RED}❌ Cannot create directory: $OUTPUT_DIRECTORY${NC}"
+                sleep 2
+                return 1
+            }
+            
+            # Get absolute path for display
+            local abs_path="$(cd "$OUTPUT_DIRECTORY" && pwd)"
+            
+            clear
+            print_header
+            echo -e "\n${GREEN}✓ Output directory set to: $abs_path${NC}"
+            echo -e "  ${CYAN}💡 Organized subfolder - recommended${NC}"
+            echo -e "  ${GREEN}✓ Directory created and ready${NC}"
+            save_settings --silent
+            sleep 2
+            ;;
+        "2")
+            OUTPUT_DIRECTORY="$HOME/Pictures/GIFs"
+            OUTPUT_DIR_MODE="pictures"
+            
+            # Create directory
+            mkdir -p "$OUTPUT_DIRECTORY" 2>/dev/null || {
+                echo -e "\n${RED}❌ Cannot create Pictures/GIFs directory${NC}"
+                sleep 2
+                return 1
+            }
+            
+            clear
+            print_header
+            echo -e "\n${GREEN}✓ Output directory set to: $OUTPUT_DIRECTORY${NC}"
+            echo -e "  ${GREEN}✓ Directory created and ready${NC}"
+            save_settings --silent
+            sleep 2
+            ;;
+        "3")
+            local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+            OUTPUT_DIRECTORY="$script_dir"
+            OUTPUT_DIR_MODE="script"
+            
+            # Verify directory is writable
+            if [[ ! -w "$OUTPUT_DIRECTORY" ]]; then
+                echo -e "\n${RED}❌ Script directory is not writable${NC}"
+                sleep 2
+                return 1
+            fi
+            
+            clear
+            print_header
+            echo -e "\n${GREEN}✓ Output directory set to: $script_dir${NC}"
+            echo -e "  ${CYAN}💡 Same folder as convert.sh script${NC}"
+            echo -e "  ${GREEN}✓ Directory ready${NC}"
+            save_settings --silent
+            sleep 2
+            ;;
+        "4")
+            # Custom path - try file picker first
+            local picker=$(detect_file_picker)
+            local custom_path=""
+            
+            if [[ "$picker" != "none" ]]; then
+                echo -e "\n${CYAN}Opening file picker...${NC}"
+                sleep 0.5
+                custom_path=$(browse_for_directory)
+                
+                if [[ -z "$custom_path" ]]; then
+                    echo -e "${YELLOW}No directory selected. Enter path manually:${NC}"
+                    echo -ne "${YELLOW}Path: ${NC}"
+                    read -r custom_path
+                    custom_path="${custom_path/#\~/$HOME}"
+                fi
+            else
+                echo -e "\n${CYAN}Enter custom output directory path:${NC}"
+                echo -e "${GRAY}Common: ./converted_gifs, $HOME/Pictures/GIFs${NC}"
+                echo -ne "${YELLOW}Path: ${NC}"
+                read -r custom_path
+            fi
+            
+            # Expand ~ to $HOME
+            custom_path="${custom_path/#\~/$HOME}"
+            
+            # Validate path is not empty
+            if [[ -z "$custom_path" ]]; then
+                echo -e "${RED}❌ No path entered${NC}"
+                sleep 1
+                return 1
+            fi
+            
+            # Create directory if it doesn't exist
+            if [[ ! -d "$custom_path" ]]; then
+                echo -e "\n${YELLOW}Directory does not exist. Create it? [Y/n]: ${NC}"
+                read -r confirm
+                if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
+                    mkdir -p "$custom_path" 2>/dev/null || {
+                        echo -e "${RED}❌ Cannot create directory: $custom_path${NC}"
+                        sleep 2
+                        return 1
+                    }
+                    echo -e "${GREEN}✓ Directory created successfully${NC}"
+                else
+                    echo -e "${YELLOW}Cancelled - directory not created${NC}"
+                    sleep 1
+                    return 1
+                fi
+            fi
+            
+            # Verify it's writable
+            if [[ ! -w "$custom_path" ]]; then
+                echo -e "${RED}❌ Directory is not writable: $custom_path${NC}"
+                sleep 2
+                return 1
+            fi
+            
+            OUTPUT_DIRECTORY="$custom_path"
+            OUTPUT_DIR_MODE="custom"
+            clear
+            print_header
+            echo -e "\n${GREEN}✓ Output directory set to: $custom_path${NC}"
+            echo -e "  ${GREEN}✓ Directory ready for conversions${NC}"
+            save_settings --silent
+            sleep 2
+            ;;
+        "5"|"0"|"")
+            return 0
+            ;;
+    esac
+}
+
 # 🎨 Interactive Main Menu System
 show_main_menu() {
     # Ensure we always start at the first option
@@ -9189,13 +9762,15 @@ show_main_menu() {
         "🚀 AI-Powered Quick Mode (Speed Optimized)"
         "🎛️  Smart AI Configuration (Balanced Control)"
         "⚙️  Configure Settings & Convert (Advanced)"
+        "💾 Configure Output Directory"
         "📊 View Conversion Statistics"
         "🤖 AI System Status & Diagnostics"
         "📁 Manage Log Files"
         "🔧 System Information"
         "🔫 Kill FFmpeg Processes"
         "❓ Help & Documentation"
-        "🚪 Exit"
+        "🔄 Reset All Settings"
+        "🚺 Exit"
     )
     
     while true; do
@@ -9245,7 +9820,14 @@ show_main_menu() {
         
         # Current settings with status
         local ai_status=$([[ "$AI_ENABLED" == true ]] && echo "ON" || echo "OFF")
-        echo -e "${MAGENTA}⚙️  Current Settings: ${QUALITY} quality, ${ASPECT_RATIO} aspect ratio, AI:${ai_status}${NC}\n"
+        
+        # Make output directory clickable with full path
+        local output_abs_path="$(cd "$OUTPUT_DIRECTORY" 2>/dev/null && pwd || realpath -m "$OUTPUT_DIRECTORY" 2>/dev/null || echo "$OUTPUT_DIRECTORY")"
+        local output_display="$(echo "$output_abs_path" | sed "s|$HOME|~|g")"
+        local clickable_output=$(make_clickable_path "$output_abs_path" "$output_display")
+        
+        echo -e "${MAGENTA}⚙️  Current Settings: ${QUALITY} quality, ${ASPECT_RATIO} aspect ratio, AI:${ai_status}${NC}"
+        echo -e "${BLUE}💾 Output Directory: $clickable_output${NC}\n"
         
         echo -e "${CYAN}${BOLD}🎯 MAIN MENU${NC}"
         echo -e "${YELLOW}🎹 Navigation: ${GREEN}w${NC}=Up ${GREEN}s${NC}=Down ${GREEN}Enter${NC}=Select ${GREEN}q${NC}=Quit ${GREEN}h${NC}=Help${NC}\n"
@@ -9286,13 +9868,15 @@ show_main_menu() {
             0) help_text=$(get_responsive_help_text "AI Quick Mode - just pick quality!" "Just select quality level - AI handles everything else automatically!" $layout_mode) ;;
             1) help_text=$(get_responsive_help_text "Smart AI Config - balanced control" "Choose key AI features and settings without overwhelming complexity" $layout_mode) ;;
             2) help_text=$(get_responsive_help_text "Configure 15+ settings" "Fine-tune all 15+ settings for perfect results and control" $layout_mode) ;;
-            3) help_text=$(get_responsive_help_text "View conversion stats" "View your conversion history and success rates with details" $layout_mode) ;;
-            4) help_text=$(get_responsive_help_text "AI system diagnostics" "Check AI cache, training data, health status, and performance" $layout_mode) ;;
-            5) help_text=$(get_responsive_help_text "Manage log files" "Manage error logs and conversion history files safely" $layout_mode) ;;
-            6) help_text=$(get_responsive_help_text "System info" "Check CPU, GPU, and system capabilities for optimization" $layout_mode) ;;
-            7) help_text=$(get_responsive_help_text "Kill processes" "Stop any stuck or runaway FFmpeg processes safely" $layout_mode) ;;
-            8) help_text=$(get_responsive_help_text "Help & docs" "Complete usage guide with examples and feature docs" $layout_mode) ;;
-            9) help_text=$(get_responsive_help_text "Exit" "Save your current settings and exit gracefully" $layout_mode) ;;
+            3) help_text=$(get_responsive_help_text "Choose output directory" "Set where GIFs are saved: current dir, Pictures, or custom path" $layout_mode) ;;
+            4) help_text=$(get_responsive_help_text "View conversion stats" "View your conversion history and success rates with details" $layout_mode) ;;
+            5) help_text=$(get_responsive_help_text "AI system diagnostics" "Check AI cache, training data, health status, and performance" $layout_mode) ;;
+            6) help_text=$(get_responsive_help_text "Manage log files" "Manage error logs and conversion history files safely" $layout_mode) ;;
+            7) help_text=$(get_responsive_help_text "System info" "Check CPU, GPU, and system capabilities for optimization" $layout_mode) ;;
+            8) help_text=$(get_responsive_help_text "Kill processes" "Stop any stuck or runaway FFmpeg processes safely" $layout_mode) ;;
+            9) help_text=$(get_responsive_help_text "Help & docs" "Complete usage guide with examples and feature docs" $layout_mode) ;;
+            10) help_text=$(get_responsive_help_text "Reset settings" "Reset all settings to factory defaults (files are safe)" $layout_mode) ;;
+            11) help_text=$(get_responsive_help_text "Exit" "Save your current settings and exit gracefully" $layout_mode) ;;
         esac
         
         # Calculate actual content width by measuring the longest menu option
@@ -9498,29 +10082,35 @@ execute_menu_option() {
             sleep 1
             advanced_convert_mode
             ;;
-        3) # Statistics
+        3) # Configure Output Directory
+            configure_output_directory
+            ;;
+        4) # Statistics
             show_conversion_stats
             ;;
-        4) # AI Status & Diagnostics
+        5) # AI Status & Diagnostics
             clear
             print_header
             show_ai_status
             echo -e "\n${YELLOW}Press any key to return to main menu...${NC}"
             read -rsn1
             ;;
-        5) # Manage Logs
+        6) # Manage Logs
             manage_log_files
             ;;
-        6) # System Info
+        7) # System Info
             show_system_info
             ;;
-        7) # Kill FFmpeg
+        8) # Kill FFmpeg
             kill_ffmpeg_processes
             ;;
-        8) # Help
+        9) # Help
             show_interactive_help
             ;;
-        9) # Exit
+        10) # Reset All Settings
+            reset_all_settings
+            ;;
+        11) # Exit
             echo -e "\n${YELLOW}👋 Goodbye!${NC}"
             exit 0
             ;;
@@ -11547,6 +12137,130 @@ show_conversion_stats() {
     read -rsn1
 }
 
+# 🔄 Reset all settings to factory defaults
+reset_all_settings() {
+    clear
+    print_header
+    echo -e "${RED}${BOLD}⚠️  WARNING: RESET ALL SETTINGS TO FACTORY DEFAULTS${NC}\n"
+    
+    echo -e "${YELLOW}This will reset ALL settings to their default values:${NC}"
+    echo -e "  ${CYAN}• Quality preset: high${NC}"
+    echo -e "  ${CYAN}• Resolution: 1280:720${NC}"
+    echo -e "  ${CYAN}• Frame rate: 12fps${NC}"
+    echo -e "  ${CYAN}• Aspect ratio: 16:9${NC}"
+    echo -e "  ${CYAN}• AI features: disabled${NC}"
+    echo -e "  ${CYAN}• Output directory: ./converted_gifs${NC}"
+    echo -e "  ${CYAN}• FFmpeg threads: auto${NC}"
+    echo -e "  ${CYAN}• All other settings to defaults${NC}\n"
+    
+    echo -e "${GREEN}${BOLD}✓ YOUR FILES ARE SAFE:${NC}"
+    echo -e "  ${GREEN}✓ Video files will NOT be affected${NC}"
+    echo -e "  ${GREEN}✓ Existing GIF files will NOT be deleted${NC}"
+    echo -e "  ${GREEN}✓ Logs and history will be preserved${NC}"
+    echo -e "  ${GREEN}✓ AI cache and training data will be kept${NC}\n"
+    
+    echo -e "${MAGENTA}${BOLD}Are you ABSOLUTELY SURE you want to reset all settings? [y/N]: ${NC}"
+    read -r confirm_reset
+    
+    if [[ ! "$confirm_reset" =~ ^[Yy]$ ]]; then
+        echo -e "\n${YELLOW}ℹ️  Reset cancelled. Settings unchanged.${NC}"
+        sleep 2
+        return 0
+    fi
+    
+    echo -e "\n${RED}${BOLD}FINAL CONFIRMATION: Type 'RESET' to proceed: ${NC}"
+    read -r final_confirm
+    
+    if [[ "$final_confirm" != "RESET" ]]; then
+        echo -e "\n${YELLOW}ℹ️  Reset cancelled. Settings unchanged.${NC}"
+        sleep 2
+        return 0
+    fi
+    
+    echo -e "\n${CYAN}🔄 Resetting all settings to factory defaults...${NC}\n"
+    sleep 1
+    
+    # Reset all settings to defaults
+    RESOLUTION="1280:720"
+    FRAMERATE="12"
+    QUALITY="high"
+    ASPECT_RATIO="16:9"
+    SCALING_ALGO="lanczos"
+    DITHER_MODE="bayer"
+    MAX_COLORS="128"
+    PALETTE_MODE="custom"
+    FORCE_CONVERSION=false
+    PARALLEL_JOBS="$(nproc 2>/dev/null || echo '4')"
+    OUTPUT_FORMAT="gif"
+    COMPRESSION_LEVEL="medium"
+    AUTO_OPTIMIZE=true
+    OPTIMIZE_AGGRESSIVE=true
+    OPTIMIZE_TARGET_RATIO=20
+    MAX_GIF_SIZE_MB=25
+    AUTO_REDUCE_QUALITY=true
+    SMART_SIZE_DOWN=true
+    GPU_ACCELERATION="auto"
+    FFMPEG_THREADS="auto"
+    BACKUP_ORIGINAL=true
+    LOG_LEVEL="info"
+    PROGRESS_BAR=true
+    INTERACTIVE_MODE=true
+    SKIP_VALIDATION=false
+    ONLY_FILE=""
+    OUTPUT_DIRECTORY="./converted_gifs"
+    OUTPUT_DIR_MODE="default"
+    
+    # Reset AI settings
+    AI_ENABLED=false
+    CROP_FILTER=""
+    AI_MODE="smart"
+    AI_CONFIDENCE_THRESHOLD=70
+    AI_CONTENT_CACHE=""
+    AI_AUTO_QUALITY=false
+    AI_SCENE_ANALYSIS=true
+    AI_VISUAL_SIMILARITY=true
+    AI_SMART_CROP=true
+    AI_DYNAMIC_FRAMERATE=true
+    AI_QUALITY_SCALING=true
+    AI_CONTENT_FINGERPRINT=true
+    AI_THREADS_OPTIMAL="auto"
+    AI_MEMORY_OPT="auto"
+    CONTENT_TYPE_PREFERENCE="mixed"
+    AI_DISCOVERY_ENABLED=true
+    AI_DISCOVERY_AUTO_SELECT="ask"
+    AI_DISCOVERY_REMEMBER_CHOICE=true
+    CPU_BENCHMARK=false
+    
+    # Reset AI cache settings (keep enabled to preserve cache)
+    AI_CACHE_ENABLED=true
+    AI_CACHE_MAX_AGE_DAYS=30
+    
+    # Reset AI training settings (keep enabled to preserve training data)
+    AI_TRAINING_ENABLED=true
+    AI_LEARNING_RATE=0.1
+    AI_CONFIDENCE_MIN=0.3
+    AI_TRAINING_MIN_SAMPLES=5
+    
+    echo -e "  ${GREEN}✓ Quality settings reset${NC}"
+    echo -e "  ${GREEN}✓ AI settings reset${NC}"
+    echo -e "  ${GREEN}✓ Output directory reset${NC}"
+    echo -e "  ${GREEN}✓ Threading settings reset${NC}"
+    echo -e "  ${GREEN}✓ Optimization settings reset${NC}\n"
+    
+    # Save the reset settings
+    save_settings --silent
+    
+    echo -e "${GREEN}${BOLD}✓ ALL SETTINGS RESET TO FACTORY DEFAULTS!${NC}\n"
+    echo -e "${CYAN}💡 Tips:${NC}"
+    echo -e "  ${YELLOW}• Your video and GIF files are untouched${NC}"
+    echo -e "  ${YELLOW}• Logs and history are preserved${NC}"
+    echo -e "  ${YELLOW}• AI cache and training data are kept${NC}"
+    echo -e "  ${YELLOW}• You can now reconfigure settings as needed${NC}\n"
+    
+    echo -e "${YELLOW}Press any key to return to main menu...${NC}"
+    read -rsn1
+}
+
 # 📁 Manage log files
 manage_log_files() {
     clear
@@ -11752,7 +12466,13 @@ show_system_info() {
     
     echo -e "  ${GREEN}⚙️ Recommended Settings:${NC}"
     echo -e "    ${BLUE}FFmpeg threads: ${BOLD}$optimal_threads${NC} | ${BLUE}Parallel jobs: ${BOLD}$optimal_jobs${NC}"
-    echo -e "    ${BLUE}Total thread utilization: ${BOLD}$((optimal_jobs * optimal_threads))/${logical_cores}${NC} logical cores"
+    
+    # Calculate max potential thread usage (parallel jobs * threads per job)
+    local max_thread_usage=$((optimal_jobs * optimal_threads))
+    # Calculate percentage of logical core utilization
+    local thread_percent=$((max_thread_usage * 100 / logical_cores))
+    
+    echo -e "    ${BLUE}Max thread usage: ${BOLD}$max_thread_usage${NC} threads (${thread_percent}% of $logical_cores cores)"
     
     echo -e "\n${YELLOW}Press any key to return to main menu...${NC}"
     read -rsn1
@@ -12522,6 +13242,8 @@ SMART_SIZE_DOWN="$SMART_SIZE_DOWN"
 GPU_ACCELERATION="$GPU_ACCELERATION"
 FFMPEG_THREADS="$FFMPEG_THREADS"
 PARALLEL_JOBS="$PARALLEL_JOBS"
+OUTPUT_DIRECTORY="$OUTPUT_DIRECTORY"
+OUTPUT_DIR_MODE="$OUTPUT_DIR_MODE"
 EOF
     
     if [[ "$1" != "--silent" ]]; then
@@ -12585,6 +13307,9 @@ load_settings() {
                 AI_LEARNING_RATE) AI_LEARNING_RATE="$value" ;;
                 AI_CONFIDENCE_MIN) AI_CONFIDENCE_MIN="$value" ;;
                 AI_TRAINING_MIN_SAMPLES) AI_TRAINING_MIN_SAMPLES="$value" ;;
+                OUTPUT_DIRECTORY) OUTPUT_DIRECTORY="$value" ;;
+                OUTPUT_DIR_MODE) OUTPUT_DIR_MODE="$value" ;;
+                FFMPEG_THREADS) FFMPEG_THREADS="$value" ;;
             esac
         done < "$settings_file"
         
@@ -12804,10 +13529,28 @@ convert_video() {
     set +e
     
     local file="$1"
-    local output_file="${file%.*}.${OUTPUT_FORMAT}"
+    local base_name="$(basename -- "${file%.*}")"
+    
+    # Ensure output directory exists
+    if [[ ! -d "$OUTPUT_DIRECTORY" ]]; then
+        mkdir -p "$OUTPUT_DIRECTORY" 2>/dev/null || {
+            log_error "Cannot create output directory" "$OUTPUT_DIRECTORY" "Permission denied or invalid path" "${BASH_LINENO[0]}" "convert_video"
+            echo -e "\n${RED}❌ Error: Cannot create output directory: $OUTPUT_DIRECTORY${NC}"
+            return 1
+        }
+    fi
+    
+    # Build output file path in OUTPUT_DIRECTORY
+    # Get absolute path for clarity
+    local abs_output_dir="$(cd "$OUTPUT_DIRECTORY" 2>/dev/null && pwd || realpath -m "$OUTPUT_DIRECTORY" 2>/dev/null || echo "$OUTPUT_DIRECTORY")"
+    local output_file="$OUTPUT_DIRECTORY/$base_name.${OUTPUT_FORMAT}"
     local palette_file="${file%.*}_palette.png"
     local retry_count=0
     local conversion_success=false
+    
+    # LOG: Show where file will be saved
+    echo -e "  ${BLUE}💾 Output destination: ${CYAN}$abs_output_dir/${NC}"
+    echo -e "  ${GRAY}📂 Full path: $abs_output_dir/$base_name.${OUTPUT_FORMAT}${NC}"
     
     # Validate input file
     if [[ ! -f "$file" ]]; then
@@ -13310,8 +14053,20 @@ convert_video() {
 _convert_video_internal() {
     
     local file="$1"
-    local final_output_file="${file%.*}.${OUTPUT_FORMAT}"
     local base_name=$(basename -- "${file%.*}")
+    
+    # Ensure output directory exists
+    if [[ ! -d "$OUTPUT_DIRECTORY" ]]; then
+        mkdir -p "$OUTPUT_DIRECTORY" 2>/dev/null || {
+            log_error "Cannot create output directory" "$OUTPUT_DIRECTORY" "Permission denied or invalid path" "${BASH_LINENO[0]}" "_convert_video_internal"
+            echo -e "\n${RED}❌ Error: Cannot create output directory: $OUTPUT_DIRECTORY${NC}"
+            ((failed_files++))
+            return 1
+        }
+    fi
+    
+    # Build output path using OUTPUT_DIRECTORY
+    local final_output_file="$OUTPUT_DIRECTORY/$base_name.${OUTPUT_FORMAT}"
     
     # Use RAM-optimized temp directory for all intermediate files
     local temp_palette_file=$(get_temp_file_path "${base_name}_palette" "png")
@@ -13907,7 +14662,10 @@ _convert_video_internal() {
         # Step 5: Move completed GIF from temp to final location
         echo -e "  ${BLUE}📦 Moving completed GIF to final location...${NC}"
         if mv "$temp_output_file" "$final_output_file" 2>/dev/null; then
-        echo -e "  ${GREEN}✓ GIF saved: $(basename -- "$final_output_file")${NC}"
+            # Get absolute path for logging
+            local abs_final_path="$(cd "$(dirname "$final_output_file")" 2>/dev/null && pwd)/$(basename "$final_output_file")"
+            echo -e "  ${GREEN}✓ GIF saved: $(basename -- "$final_output_file")${NC}"
+            echo -e "  ${GRAY}💾 Saved to: $abs_final_path${NC}"
         
         # 🧠 AI Training: Learn from successful conversion
         if [[ "$AI_ENABLED" == true ]]; then
@@ -14263,6 +15021,187 @@ main() {
     # detect_corrupted_gifs  # This causes hangs in interactive mode
     
     load_config || true  # Don't fail if no config exists
+    
+    # First-run check: prompt for output directory ONLY if settings file doesn't exist
+    if [[ ! -f "$SETTINGS_FILE" ]]; then
+        # True first run - no settings file exists
+        clear
+        print_header
+        echo -e "${CYAN}${BOLD}🎉 WELCOME TO SMART GIF CONVERTER!${NC}\n"
+        echo -e "${BLUE}Before we begin, let's set up where your GIF files will be saved.${NC}\n"
+        
+        # Only ask in interactive mode
+        if [[ $# -eq 0 ]]; then
+            local selected=0
+            local options=(
+                "./converted_gifs - Keep videos & GIFs organized (recommended)"
+                "Pictures folder - Save to system Pictures directory"
+                "Script directory - Save where convert.sh is located"
+                "Custom path - Choose your own location"
+            )
+            local descriptions=(
+                "Creates a 'converted_gifs' subfolder next to your videos"
+                "Saves to $HOME/Pictures/GIFs - easy to find in file manager"
+                "Saves to the same folder where this script file lives"
+                "Browse with file picker or type any path you want"
+            )
+            
+            while true; do
+                clear
+                print_header
+                
+                echo -e "${CYAN}${BOLD}🎉 WELCOME TO SMART GIF CONVERTER!${NC}\n"
+                echo -e "${BLUE}Before we begin, let's set up where your GIF files will be saved.${NC}\n"
+                
+                echo -e "${YELLOW}💾 Where would you like to save converted GIF files?${NC}"
+                echo -e "${GRAY}(You can change this later from the main menu)${NC}"
+                echo -e "${YELLOW}🎹 Navigation: ${GREEN}w${NC}=Up ${GREEN}s${NC}=Down ${GREEN}Enter${NC}=Select${NC}\n"
+                
+                # Display options with highlight
+                for i in "${!options[@]}"; do
+                    if [[ $i -eq $selected ]]; then
+                        echo -e "  ${GREEN}${BOLD}➤ ${options[$i]}${NC}"
+                        echo -e "    ${CYAN}💡 ${descriptions[$i]}${NC}"
+                    else
+                        echo -e "  ${GRAY}  ${options[$i]}${NC}"
+                    fi
+                done
+                
+                echo ""
+                
+                # Read key
+                read -rsn1 key 2>/dev/null || read -r key
+                
+                case "$key" in
+                    $'\x1b')  # Arrow keys
+                        read -rsn2 -t 0.1 key
+                        case "$key" in
+                            '[A') # Up
+                                selected=$((selected - 1))
+                                [[ $selected -lt 0 ]] && selected=$((${#options[@]}-1))
+                                ;;
+                            '[B') # Down
+                                selected=$((selected + 1))
+                                [[ $selected -ge ${#options[@]} ]] && selected=0
+                                ;;
+                        esac
+                        ;;
+                    'w'|'W') # Up
+                        selected=$((selected - 1))
+                        [[ $selected -lt 0 ]] && selected=$((${#options[@]}-1))
+                        sleep 0.1
+                        ;;
+                    's'|'S') # Down
+                        selected=$((selected + 1))
+                        [[ $selected -ge ${#options[@]} ]] && selected=0
+                        sleep 0.1
+                        ;;
+                    ''|$'\n'|$'\r'|' ') # Enter/Space
+                        break
+                        ;;
+                esac
+            done
+            
+            local output_choice=$((selected + 1))
+            
+            case "$output_choice" in
+                "1")
+                    OUTPUT_DIRECTORY="./converted_gifs"
+                    OUTPUT_DIR_MODE="default"
+                    echo -e "\n${GREEN}✓ GIFs will be saved to: $OUTPUT_DIRECTORY${NC}"
+                    echo -e "  ${CYAN}💡 Directory will be created automatically during conversion${NC}"
+                    ;;
+                "2")
+                    OUTPUT_DIRECTORY="$HOME/Pictures/GIFs"
+                    OUTPUT_DIR_MODE="pictures"
+                    mkdir -p "$OUTPUT_DIRECTORY" 2>/dev/null || {
+                        echo -e "\n${RED}❌ Cannot create Pictures/GIFs directory, using default${NC}"
+                        OUTPUT_DIRECTORY="./converted_gifs"
+                        OUTPUT_DIR_MODE="default"
+                    }
+                    echo -e "\n${GREEN}✓ GIFs will be saved to: $OUTPUT_DIRECTORY${NC}"
+                    ;;
+                "4")
+                    # Script directory (where the script is located)
+                    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                    OUTPUT_DIRECTORY="$script_dir"
+                    OUTPUT_DIR_MODE="script"
+                    echo -e "\n${GREEN}✓ GIFs will be saved to: $OUTPUT_DIRECTORY${NC}"
+                    echo -e "  ${CYAN}💡 Same folder as convert.sh script${NC}"
+                    ;;
+                "5")
+                    # Try to use file picker first
+                    local picker=$(detect_file_picker)
+                    local custom_path=""
+                    
+                    if [[ "$picker" != "none" ]]; then
+                        echo -e "\n${CYAN}Opening file picker to select directory...${NC}"
+                        sleep 0.5
+                        custom_path=$(browse_for_directory)
+                        
+                        if [[ -z "$custom_path" ]]; then
+                            echo -e "${YELLOW}No directory selected. Enter path manually or press Enter to use default:${NC}"
+                            echo -ne "${YELLOW}Path: ${NC}"
+                            read -r custom_path
+                            custom_path="${custom_path/#\~/$HOME}"
+                        fi
+                    else
+                        echo -e "\n${CYAN}Enter the directory path where GIFs should be saved:${NC}"
+                        echo -e "${GRAY}(No file picker found - install zenity, kdialog, yad, or python3-tk for GUI)${NC}"
+                        echo -e "${GRAY}Common paths: $HOME/Pictures, $HOME/Downloads, $HOME/Videos${NC}"
+                        echo -ne "${YELLOW}Path (or press Enter for default ./converted_gifs): ${NC}"
+                        read -r custom_path
+                        custom_path="${custom_path/#\~/$HOME}"
+                        
+                        # If empty, use default
+                        if [[ -z "$custom_path" ]]; then
+                            custom_path="./converted_gifs"
+                        fi
+                    fi
+                    
+                    if [[ -n "$custom_path" ]]; then
+                        if [[ ! -d "$custom_path" ]]; then
+                            echo -e "\n${YELLOW}Directory doesn't exist. Create it? [Y/n]: ${NC}"
+                            read -r create_confirm
+                            if [[ ! "$create_confirm" =~ ^[Nn]$ ]]; then
+                                mkdir -p "$custom_path" 2>/dev/null && {
+                                    OUTPUT_DIRECTORY="$custom_path"
+                                    OUTPUT_DIR_MODE="custom"
+                                    echo -e "${GREEN}✓ Created and will use: $OUTPUT_DIRECTORY${NC}"
+                                } || {
+                                    echo -e "${RED}❌ Cannot create directory, using default${NC}"
+                                    OUTPUT_DIRECTORY="./converted_gifs"
+                                    OUTPUT_DIR_MODE="default"
+                                }
+                            else
+                                OUTPUT_DIRECTORY="./converted_gifs"
+                                OUTPUT_DIR_MODE="default"
+                                echo -e "${YELLOW}Using default directory${NC}"
+                            fi
+                        else
+                            OUTPUT_DIRECTORY="$custom_path"
+                            OUTPUT_DIR_MODE="custom"
+                            echo -e "${GREEN}✓ GIFs will be saved to: $OUTPUT_DIRECTORY${NC}"
+                        fi
+                    else
+                        OUTPUT_DIRECTORY="./converted_gifs"
+                        OUTPUT_DIR_MODE="default"
+                        echo -e "${YELLOW}Using default directory${NC}"
+                    fi
+                    ;;
+                *)
+                    OUTPUT_DIRECTORY="./converted_gifs"
+                    OUTPUT_DIR_MODE="default"
+                    echo -e "\n${GREEN}✓ GIFs will be saved to: $OUTPUT_DIRECTORY (default)${NC}"
+                    ;;
+            esac
+            
+            # Save the choice
+            save_settings --silent
+            echo -e "${BLUE}💾 Your choice has been saved and can be changed anytime from the main menu.${NC}"
+            sleep 2
+        fi
+    fi
     
     # If no arguments provided, enable interactive mode
     if [[ $# -eq 0 ]]; then
