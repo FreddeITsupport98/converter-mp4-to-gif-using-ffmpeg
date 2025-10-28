@@ -5065,13 +5065,17 @@ detect_duplicate_gifs() {
     
     shopt -s nullglob
     
-    # Build list of all GIF files from current dir and OUTPUT_DIRECTORY
-    local all_gifs=(*.gif)
+    # Build list of GIF files - ONLY scan OUTPUT_DIRECTORY if it's different from current dir
+    local all_gifs=()
     
-    # Also scan OUTPUT_DIRECTORY if it exists and is different from current dir
     if [[ -d "$OUTPUT_DIRECTORY" && "$(cd "$OUTPUT_DIRECTORY" 2>/dev/null && pwd)" != "$(pwd)" ]]; then
-        echo -e "  ${GRAY}📂 Also scanning: $OUTPUT_DIRECTORY${NC}"
-        all_gifs+=("$OUTPUT_DIRECTORY"/*.gif)
+        # OUTPUT_DIRECTORY is configured and different - scan ONLY there
+        echo -e "  ${BLUE}📂 Scanning output directory: $OUTPUT_DIRECTORY${NC}"
+        all_gifs=("$OUTPUT_DIRECTORY"/*.gif)
+    else
+        # No separate output directory - scan current dir
+        echo -e "  ${GRAY}📂 Scanning current directory${NC}"
+        all_gifs=(*.gif)
     fi
     
     local total_to_scan=${#all_gifs[@]}
@@ -5942,6 +5946,48 @@ detect_duplicate_gifs() {
                     ((DUPLICATE_STATS_NEAR_IDENTICAL++))
                 fi
                 # NOTE: Without visual similarity, even if size/frames match, NOT flagged as duplicate
+            # Level 5: Filename-based similarity for identical properties
+            # Catches cases where GIFs have same dimensions/frames but different color tables
+            elif [[ "${gif_frame_counts[$file1]}" == "${gif_frame_counts[$file2]}" ]] && \
+                 [[ "${gif_durations[$file1]}" == "${gif_durations[$file2]}" ]] && \
+                 [[ "${gif_frame_counts[$file1]}" != "0" ]] && \
+                 [[ "${gif_durations[$file1]}" != "0" ]]; then
+                
+                # Check if filenames suggest they're from the same source
+                local basename1=$(basename -- "$file1" .gif)
+                local basename2=$(basename -- "$file2" .gif)
+                
+                # Calculate filename similarity
+                local name_similarity=0
+                local size1="${gif_sizes[$file1]}"
+                local size2="${gif_sizes[$file2]}"
+                local size_diff=$(( (size1 > size2 ? size1 - size2 : size2 - size1) ))
+                local size_ratio=$(( size_diff * 100 / (size1 > size2 ? size1 : size2) ))
+                
+                # Check various filename similarity patterns
+                if [[ "${basename1:0:10}" == "${basename2:0:10}" ]] && [[ ${#basename1} -gt 10 ]] && [[ ${#basename2} -gt 10 ]]; then
+                    # First 10 characters match - likely same source with different timestamp
+                    name_similarity=70
+                elif [[ "${basename1:0:5}" == "${basename2:0:5}" ]] && [[ ${#basename1} -gt 5 ]] && [[ ${#basename2} -gt 5 ]]; then
+                    # First 5 characters match
+                    name_similarity=50
+                fi
+                
+                # If filenames are similar AND properties match AND size difference is reasonable
+                if [[ $name_similarity -ge 50 ]] && [[ $size_ratio -lt 15 ]]; then
+                    # Additional check: verify resolution matches (from content fingerprint)
+                    local fp1="${gif_fingerprints[$file1]}"
+                    local fp2="${gif_fingerprints[$file2]}"
+                    local res1=$(echo "$fp1" | cut -d':' -f2)
+                    local res2=$(echo "$fp2" | cut -d':' -f2)
+                    
+                    if [[ "$res1" == "$res2" ]] && [[ -n "$res1" ]] && [[ "$res1" != "0" ]]; then
+                        # Same resolution, same frames, same duration, similar filenames
+                        is_duplicate=true
+                        similarity_reason="filename_property_match"
+                        ((DUPLICATE_STATS_NEAR_IDENTICAL++))
+                    fi
+                fi
             fi
             
             # Handle detected duplicates
@@ -6026,6 +6072,34 @@ detect_duplicate_gifs() {
                 
                 # Only apply remaining rules if keep_file is not yet set
                 if [[ -z "$keep_file" ]]; then
+                
+                # Rule 0: Prefer files in OUTPUT_DIRECTORY (keep organized files)
+                local file1_in_output=false
+                local file2_in_output=false
+                
+                # Check if files are in OUTPUT_DIRECTORY
+                if [[ -d "$OUTPUT_DIRECTORY" ]]; then
+                    local output_dir_abs="$(cd "$OUTPUT_DIRECTORY" 2>/dev/null && pwd)"
+                    local file1_dir="$(cd "$(dirname "$file1")" 2>/dev/null && pwd)"
+                    local file2_dir="$(cd "$(dirname "$file2")" 2>/dev/null && pwd)"
+                    
+                    [[ "$file1_dir" == "$output_dir_abs" ]] && file1_in_output=true
+                    [[ "$file2_dir" == "$output_dir_abs" ]] && file2_in_output=true
+                    
+                    # If one is in OUTPUT_DIRECTORY and the other isn't, prefer the one in OUTPUT_DIRECTORY
+                    if [[ "$file1_in_output" == true && "$file2_in_output" == false ]]; then
+                        keep_file="$file1"
+                        remove_file="$file2"
+                        decision_reason="keeping file in output directory (organized)"
+                    elif [[ "$file2_in_output" == true && "$file1_in_output" == false ]]; then
+                        keep_file="$file2"
+                        remove_file="$file1"
+                        decision_reason="keeping file in output directory (organized)"
+                    fi
+                fi
+                
+                # Only continue to other rules if not yet decided
+                if [[ -z "$keep_file" ]]; then
                 # Rule 1: Prefer the file created first (older file)
                 if [[ $ctime1 -lt $ctime2 && $((ctime2 - ctime1)) -gt 60 ]]; then
                     # file1 is at least 1 minute older
@@ -6101,7 +6175,8 @@ detect_duplicate_gifs() {
                     remove_file="$file1"
                     decision_reason="${decision_reason:+$decision_reason, }alphabetical order"
                 fi
-                fi  # End of: if [[ -z "$keep_file" ]]
+                fi  # End of: if [[ -z "$keep_file" ]] (inner check at line 6060)
+                fi  # End of: if [[ -z "$keep_file" ]] (outer check at line 6032)
                 
                 # Safety check: make sure we have both files set
                 if [[ -z "$keep_file" || -z "$remove_file" ]]; then
@@ -6176,6 +6251,9 @@ detect_duplicate_gifs() {
                 ;;
             "near_identical")
                 reason_display="${YELLOW}⚠️  Near-identical (manual review suggested)${NC}"
+                ;;
+            "filename_property_match")
+                reason_display="${CYAN}📝 Same properties + similar filename (likely duplicate)${NC}"
                 ;;
             *)
                 reason_display="${GRAY}🔍 Detected as duplicate${NC}"
@@ -6778,25 +6856,30 @@ analyze_video_gif_mapping() {
     printf "${CYAN}] ${BOLD}100%%${NC} ${BLUE}Scanned %d videos${NC}\n" "$total_videos"
     printf "\033[K\n"  # Clear the file name line
     
-    # Scan all GIF files in OUTPUT_DIRECTORY
+    # Scan GIF files - ONLY in OUTPUT_DIRECTORY if configured
     echo -e "  ${CYAN}🔍 Scanning GIF files...${NC}"
     shopt -s nullglob
     
-    # Scan in OUTPUT_DIRECTORY if it exists and is different from current dir
-    local gif_search_paths=(.)
+    # Determine where to scan for GIFs
     if [[ -d "$OUTPUT_DIRECTORY" && "$(cd "$OUTPUT_DIRECTORY" 2>/dev/null && pwd)" != "$(pwd)" ]]; then
-        gif_search_paths+=("$OUTPUT_DIRECTORY")
-        echo -e "  ${GRAY}📂 Also scanning: $OUTPUT_DIRECTORY${NC}"
-    fi
-    
-    for search_path in "${gif_search_paths[@]}"; do
-        for gif in "$search_path"/*.gif; do
+        # OUTPUT_DIRECTORY is configured and different - scan ONLY there
+        echo -e "  ${BLUE}📂 Scanning output directory: $OUTPUT_DIRECTORY${NC}"
+        for gif in "$OUTPUT_DIRECTORY"/*.gif; do
             [[ -f "$gif" ]] || continue
             local basename="$(basename -- "${gif%.*}")"
             gif_files["$basename"]="$gif"
             ((total_gifs++))
         done
-    done
+    else
+        # No separate output directory - scan current dir
+        echo -e "  ${GRAY}📂 Scanning current directory${NC}"
+        for gif in *.gif; do
+            [[ -f "$gif" ]] || continue
+            local basename="${gif%.*}"
+            gif_files["$basename"]="$gif"
+            ((total_gifs++))
+        done
+    fi
     shopt -u nullglob
     
     if [[ $total_videos -eq 0 ]]; then
@@ -7037,9 +7120,19 @@ detect_corrupted_gifs() {
     local total_gifs=0
     local corrupted_files=()
     
-    # First pass: count total GIF files
+    # First pass: count total GIF files - scan only OUTPUT_DIRECTORY if configured
     shopt -s nullglob
-    local all_gifs=(*.gif)
+    local all_gifs=()
+    
+    if [[ -d "$OUTPUT_DIRECTORY" && "$(cd "$OUTPUT_DIRECTORY" 2>/dev/null && pwd)" != "$(pwd)" ]]; then
+        # OUTPUT_DIRECTORY is configured and different - scan ONLY there
+        echo -e "  ${BLUE}📂 Scanning output directory: $OUTPUT_DIRECTORY${NC}"
+        all_gifs=("$OUTPUT_DIRECTORY"/*.gif)
+    else
+        # No separate output directory - scan current dir
+        all_gifs=(*.gif)
+    fi
+    
     local total_to_check=${#all_gifs[@]}
     shopt -u nullglob
     
@@ -7053,7 +7146,7 @@ detect_corrupted_gifs() {
     # Second pass: check each file with progress bar
     local checked=0
     shopt -s nullglob
-    for gif_file in *.gif; do
+    for gif_file in "${all_gifs[@]}"; do
         # Check for interrupt
         if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
             printf "\r\033[K"
@@ -14067,6 +14160,18 @@ _convert_video_internal() {
     
     # Build output path using OUTPUT_DIRECTORY
     local final_output_file="$OUTPUT_DIRECTORY/$base_name.${OUTPUT_FORMAT}"
+    
+    # Skip if output file already exists (unless FORCE_CONVERSION is enabled)
+    if [[ -f "$final_output_file" && "$FORCE_CONVERSION" != "true" ]]; then
+        # Check if output is newer than input
+        if [[ "$final_output_file" -nt "$file" ]]; then
+            echo -e "\n${YELLOW}⏭️  Skipping: $(basename -- "$file") (already converted)${NC}"
+            echo -e "  ${GRAY}💾 Output exists: $final_output_file${NC}"
+            log_conversion "SKIPPED" "$file" "$final_output_file" "(already exists)"
+            ((skipped_files++))
+            return 0
+        fi
+    fi
     
     # Use RAM-optimized temp directory for all intermediate files
     local temp_palette_file=$(get_temp_file_path "${base_name}_palette" "png")
