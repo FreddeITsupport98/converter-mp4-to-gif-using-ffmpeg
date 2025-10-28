@@ -1995,6 +1995,227 @@ init_log_directory() {
     fi
 }
 
+# 🔒 Check and fix file/directory permissions
+check_and_fix_permissions() {
+    local silent_mode=false
+    [[ "$1" == "--silent" ]] && silent_mode=true
+    
+    local issues_found=0
+    local fix_commands=()
+    local files_to_check=()
+    local dirs_to_check=()
+    
+    # Directories that should be writable
+    dirs_to_check+=(
+        "$LOG_DIR"
+        "$TEMP_WORK_DIR"
+        "$AI_CACHE_DIR"
+        "$AI_TRAINING_DIR"
+        "$CHECKSUM_CACHE_DIR"
+    )
+    
+    # Files that should be readable and writable
+    files_to_check+=(
+        "$SETTINGS_FILE"
+        "$ERROR_LOG"
+        "$CONVERSION_LOG"
+    )
+    
+    # Optional files (don't fail if they don't exist)
+    local optional_files=(
+        "$AI_CACHE_INDEX"
+        "$AI_MODEL_FILE"
+        "$AI_TRAINING_LOG"
+        "$CHECKSUM_CACHE_DB"
+        "$PROGRESS_FILE"
+    )
+    
+    if [[ "$silent_mode" != true ]]; then
+        echo -e "${CYAN}🔍 Checking file and directory permissions...${NC}"
+    fi
+    
+    # Check directories
+    for dir in "${dirs_to_check[@]}"; do
+        [[ -z "$dir" || "$dir" == "." || "$dir" == "/tmp"* ]] && continue
+        
+        if [[ -d "$dir" ]]; then
+            # Check if directory is readable
+            if [[ ! -r "$dir" ]]; then
+                ((issues_found++))
+                echo -e "${RED}❌ Directory not readable: $dir${NC}" >&2
+                fix_commands+=("chmod u+r \"$dir\"")
+            fi
+            
+            # Check if directory is writable
+            if [[ ! -w "$dir" ]]; then
+                ((issues_found++))
+                echo -e "${RED}❌ Directory not writable: $dir${NC}" >&2
+                fix_commands+=("chmod u+w \"$dir\"")
+            fi
+            
+            # Check if directory is executable (needed to access contents)
+            if [[ ! -x "$dir" ]]; then
+                ((issues_found++))
+                echo -e "${RED}❌ Directory not accessible: $dir${NC}" >&2
+                fix_commands+=("chmod u+x \"$dir\"")
+            fi
+            
+            # Check ownership
+            local dir_owner=$(stat -c '%U' "$dir" 2>/dev/null)
+            if [[ -n "$dir_owner" && "$dir_owner" != "$USER" ]]; then
+                ((issues_found++))
+                echo -e "${YELLOW}⚠️  Directory owned by different user: $dir (owner: $dir_owner)${NC}" >&2
+                fix_commands+=("sudo chown $USER:\$(id -gn) \"$dir\"")
+            fi
+        fi
+    done
+    
+    # Check required files
+    for file in "${files_to_check[@]}"; do
+        [[ -z "$file" ]] && continue
+        
+        if [[ -f "$file" ]]; then
+            # Check if file is readable
+            if [[ ! -r "$file" ]]; then
+                ((issues_found++))
+                echo -e "${RED}❌ File not readable: $file${NC}" >&2
+                fix_commands+=("chmod u+r \"$file\"")
+            fi
+            
+            # Check if file is writable
+            if [[ ! -w "$file" ]]; then
+                ((issues_found++))
+                echo -e "${RED}❌ File not writable: $file${NC}" >&2
+                fix_commands+=("chmod u+w \"$file\"")
+            fi
+            
+            # Check ownership
+            local file_owner=$(stat -c '%U' "$file" 2>/dev/null)
+            if [[ -n "$file_owner" && "$file_owner" != "$USER" ]]; then
+                ((issues_found++))
+                echo -e "${YELLOW}⚠️  File owned by different user: $file (owner: $file_owner)${NC}" >&2
+                fix_commands+=("sudo chown $USER:\$(id -gn) \"$file\"")
+            fi
+        fi
+    done
+    
+    # Check optional files (only if they exist)
+    for file in "${optional_files[@]}"; do
+        [[ -z "$file" || ! -f "$file" ]] && continue
+        
+        if [[ ! -r "$file" || ! -w "$file" ]]; then
+            ((issues_found++))
+            echo -e "${YELLOW}⚠️  Optional file has permission issues: $(basename "$file")${NC}" >&2
+            fix_commands+=("chmod u+rw \"$file\"")
+        fi
+        
+        local file_owner=$(stat -c '%U' "$file" 2>/dev/null)
+        if [[ -n "$file_owner" && "$file_owner" != "$USER" ]]; then
+            ((issues_found++))
+            echo -e "${YELLOW}⚠️  Optional file owned by: $file_owner - $(basename "$file")${NC}" >&2
+            fix_commands+=("sudo chown $USER:\$(id -gn) \"$file\"")
+        fi
+    done
+    
+    # If issues found, prompt user to fix them
+    if [[ $issues_found -gt 0 ]]; then
+        echo -e "\n${RED}${BOLD}⚠️  PERMISSION ISSUES DETECTED${NC}"
+        echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${YELLOW}Found $issues_found permission issue(s) that may prevent the script from working.${NC}\n"
+        
+        echo -e "${CYAN}${BOLD}How would you like to fix these issues?${NC}"
+        echo -e "  ${GREEN}[1]${NC} Let the script automatically fix them (recommended)"
+        echo -e "  ${GREEN}[2]${NC} Show me the commands to run manually"
+        echo -e "  ${GREEN}[3]${NC} Continue anyway (may cause errors)"
+        echo -e "  ${GREEN}[4]${NC} Exit and fix manually later\n"
+        
+        echo -ne "${MAGENTA}Enter your choice [1-4]: ${NC}"
+        read -r fix_choice
+        
+        case "$fix_choice" in
+            1)
+                echo -e "\n${CYAN}🔧 Attempting to fix permissions automatically...${NC}\n"
+                
+                local fixed=0
+                local failed=0
+                
+                # Deduplicate and execute fix commands
+                local executed_commands=()
+                for cmd in "${fix_commands[@]}"; do
+                    # Skip if already executed
+                    local already_done=false
+                    for executed in "${executed_commands[@]}"; do
+                        [[ "$cmd" == "$executed" ]] && already_done=true && break
+                    done
+                    [[ "$already_done" == true ]] && continue
+                    
+                    echo -e "${BLUE}▶ Running: ${GRAY}$cmd${NC}"
+                    
+                    if eval "$cmd" 2>/dev/null; then
+                        echo -e "  ${GREEN}✓ Success${NC}"
+                        ((fixed++))
+                    else
+                        echo -e "  ${RED}✗ Failed${NC}"
+                        ((failed++))
+                    fi
+                    
+                    executed_commands+=("$cmd")
+                done
+                
+                echo ""
+                if [[ $failed -eq 0 ]]; then
+                    echo -e "${GREEN}${BOLD}✓ All permission issues fixed successfully!${NC}"
+                    echo -e "${CYAN}The script should now work properly.${NC}\n"
+                else
+                    echo -e "${YELLOW}${BOLD}⚠️  Fixed $fixed issue(s), but $failed failed${NC}"
+                    echo -e "${YELLOW}You may need to run some commands manually with sudo.${NC}"
+                    echo -e "${CYAN}Press Enter to continue or Ctrl+C to exit...${NC}"
+                    read -r
+                fi
+                ;;
+            2)
+                echo -e "\n${CYAN}${BOLD}📝 Manual Fix Commands:${NC}"
+                echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                echo -e "${YELLOW}Copy and run these commands in your terminal:\n${NC}"
+                
+                # Deduplicate commands for display
+                local unique_commands=()
+                for cmd in "${fix_commands[@]}"; do
+                    local is_duplicate=false
+                    for unique in "${unique_commands[@]}"; do
+                        [[ "$cmd" == "$unique" ]] && is_duplicate=true && break
+                    done
+                    [[ "$is_duplicate" == false ]] && unique_commands+=("$cmd")
+                done
+                
+                for cmd in "${unique_commands[@]}"; do
+                    echo -e "  ${GREEN}$cmd${NC}"
+                done
+                
+                echo -e "\n${CYAN}After running these commands, restart the script.${NC}"
+                echo -e "${YELLOW}Press Enter to continue anyway, or Ctrl+C to exit...${NC}"
+                read -r
+                ;;
+            3)
+                echo -e "\n${YELLOW}Continuing with permission issues...${NC}"
+                echo -e "${YELLOW}The script may encounter errors.${NC}\n"
+                sleep 1
+                ;;
+            4|*)
+                echo -e "\n${CYAN}Exiting. Please fix the permission issues and try again.${NC}"
+                echo -e "${YELLOW}You can run: ./convert.sh --debug-settings for detailed diagnostics${NC}\n"
+                exit 1
+                ;;
+        esac
+    else
+        if [[ "$silent_mode" != true ]]; then
+            echo -e "${GREEN}✓ All permissions are correct${NC}"
+        fi
+    fi
+    
+    return 0
+}
+
 # 🚨 Robust error logging system
 log_error() {
     # Don't show errors if user interrupted the script
@@ -5946,8 +6167,9 @@ detect_duplicate_gifs() {
                     ((DUPLICATE_STATS_NEAR_IDENTICAL++))
                 fi
                 # NOTE: Without visual similarity, even if size/frames match, NOT flagged as duplicate
-            # Level 5: Filename-based similarity for identical properties
-            # Catches cases where GIFs have same dimensions/frames but different color tables
+            # Level 5: Advanced Filename-based similarity with property matching
+            # Catches cases where GIFs have same dimensions/frames but different color tables,
+            # compression settings, or were converted at different times from the same source
             elif [[ "${gif_frame_counts[$file1]}" == "${gif_frame_counts[$file2]}" ]] && \
                  [[ "${gif_durations[$file1]}" == "${gif_durations[$file2]}" ]] && \
                  [[ "${gif_frame_counts[$file1]}" != "0" ]] && \
@@ -5957,35 +6179,160 @@ detect_duplicate_gifs() {
                 local basename1=$(basename -- "$file1" .gif)
                 local basename2=$(basename -- "$file2" .gif)
                 
-                # Calculate filename similarity
-                local name_similarity=0
+                # Calculate size difference for validation
                 local size1="${gif_sizes[$file1]}"
                 local size2="${gif_sizes[$file2]}"
                 local size_diff=$(( (size1 > size2 ? size1 - size2 : size2 - size1) ))
                 local size_ratio=$(( size_diff * 100 / (size1 > size2 ? size1 : size2) ))
                 
-                # Check various filename similarity patterns
-                if [[ "${basename1:0:10}" == "${basename2:0:10}" ]] && [[ ${#basename1} -gt 10 ]] && [[ ${#basename2} -gt 10 ]]; then
-                    # First 10 characters match - likely same source with different timestamp
-                    name_similarity=70
+                # Multi-strategy filename similarity analysis
+                local name_similarity=0
+                local similarity_method=""
+                
+                # Strategy 1: Prefix matching (common for timestamp-based naming)
+                if [[ "${basename1:0:15}" == "${basename2:0:15}" ]] && [[ ${#basename1} -gt 15 ]] && [[ ${#basename2} -gt 15 ]]; then
+                    name_similarity=90
+                    similarity_method="15-char prefix match"
+                elif [[ "${basename1:0:10}" == "${basename2:0:10}" ]] && [[ ${#basename1} -gt 10 ]] && [[ ${#basename2} -gt 10 ]]; then
+                    name_similarity=75
+                    similarity_method="10-char prefix match"
+                elif [[ "${basename1:0:7}" == "${basename2:0:7}" ]] && [[ ${#basename1} -gt 7 ]] && [[ ${#basename2} -gt 7 ]]; then
+                    name_similarity=60
+                    similarity_method="7-char prefix match"
                 elif [[ "${basename1:0:5}" == "${basename2:0:5}" ]] && [[ ${#basename1} -gt 5 ]] && [[ ${#basename2} -gt 5 ]]; then
-                    # First 5 characters match
                     name_similarity=50
+                    similarity_method="5-char prefix match"
                 fi
                 
-                # If filenames are similar AND properties match AND size difference is reasonable
-                if [[ $name_similarity -ge 50 ]] && [[ $size_ratio -lt 15 ]]; then
-                    # Additional check: verify resolution matches (from content fingerprint)
+                # Strategy 2: Core name extraction (remove timestamps/numbers at end)
+                # Extract core name by removing trailing numbers/dashes/timestamps
+                local core1=$(echo "$basename1" | sed -E 's/-?[0-9]{10,}$//; s/-?[0-9]+$//; s/_[0-9]+$//')
+                local core2=$(echo "$basename2" | sed -E 's/-?[0-9]{10,}$//; s/-?[0-9]+$//; s/_[0-9]+$//')
+                
+                if [[ -n "$core1" && -n "$core2" && "$core1" == "$core2" ]] && [[ ${#core1} -ge 3 ]]; then
+                    # Core names match after removing timestamps - high confidence
+                    if [[ $name_similarity -lt 85 ]]; then
+                        name_similarity=85
+                        similarity_method="core name match (after timestamp removal)"
+                    fi
+                fi
+                
+                # Strategy 3: Longest common substring (for complex naming patterns)
+                local min_len=$(( ${#basename1} < ${#basename2} ? ${#basename1} : ${#basename2} ))
+                if [[ $min_len -ge 8 ]]; then
+                    # Find longest common prefix
+                    local lcs_len=0
+                    for ((k=1; k<=min_len; k++)); do
+                        if [[ "${basename1:0:k}" == "${basename2:0:k}" ]]; then
+                            lcs_len=$k
+                        else
+                            break
+                        fi
+                    done
+                    
+                    if [[ $lcs_len -ge 8 ]]; then
+                        local lcs_ratio=$(( lcs_len * 100 / min_len ))
+                        if [[ $lcs_ratio -ge 70 ]] && [[ $name_similarity -lt 80 ]]; then
+                            name_similarity=80
+                            similarity_method="longest common substring ($lcs_len chars, ${lcs_ratio}%)"
+                        elif [[ $lcs_ratio -ge 50 ]] && [[ $name_similarity -lt 60 ]]; then
+                            name_similarity=60
+                            similarity_method="partial common substring ($lcs_len chars, ${lcs_ratio}%)"
+                        fi
+                    fi
+                fi
+                
+                # Strategy 4: Word-based similarity (handle descriptive names with spaces/dashes)
+                # Convert to lowercase, split on delimiters, compare word sets
+                local words1=($(echo "${basename1,,}" | tr '_-' ' ' | xargs -n1 | sort -u))
+                local words2=($(echo "${basename2,,}" | tr '_-' ' ' | xargs -n1 | sort -u))
+                local common_words=0
+                local total_words=$(( ${#words1[@]} + ${#words2[@]} ))
+                
+                if [[ $total_words -gt 0 ]]; then
+                    for w1 in "${words1[@]}"; do
+                        # Skip very short words (1-2 chars) and pure numbers
+                        [[ ${#w1} -le 2 ]] && continue
+                        [[ "$w1" =~ ^[0-9]+$ ]] && continue
+                        
+                        for w2 in "${words2[@]}"; do
+                            if [[ "$w1" == "$w2" ]]; then
+                                ((common_words++))
+                                break
+                            fi
+                        done
+                    done
+                    
+                    if [[ $common_words -ge 2 ]]; then
+                        local word_ratio=$(( common_words * 200 / total_words ))  # *200 to account for both arrays
+                        if [[ $word_ratio -ge 60 ]] && [[ $name_similarity -lt 70 ]]; then
+                            name_similarity=70
+                            similarity_method="word-based match ($common_words common words)"
+                        elif [[ $word_ratio -ge 40 ]] && [[ $name_similarity -lt 55 ]]; then
+                            name_similarity=55
+                            similarity_method="partial word match ($common_words common words)"
+                        fi
+                    fi
+                fi
+                
+                # Strategy 5: Levenshtein-inspired similarity (character-level distance)
+                # Simplified version: count matching characters at same positions
+                if [[ $min_len -ge 5 ]] && [[ $name_similarity -lt 50 ]]; then
+                    local matching_chars=0
+                    for ((k=0; k<min_len; k++)); do
+                        if [[ "${basename1:k:1}" == "${basename2:k:1}" ]]; then
+                            ((matching_chars++))
+                        fi
+                    done
+                    local char_ratio=$(( matching_chars * 100 / min_len ))
+                    if [[ $char_ratio -ge 60 ]]; then
+                        name_similarity=55
+                        similarity_method="character similarity (${char_ratio}% matching positions)"
+                    fi
+                fi
+                
+                # Decision logic: Combine filename similarity with property matching
+                local is_level5_duplicate=false
+                local confidence_score=0
+                
+                # High confidence: Strong filename match + tight size tolerance
+                if [[ $name_similarity -ge 75 ]] && [[ $size_ratio -lt 15 ]]; then
+                    is_level5_duplicate=true
+                    confidence_score=95
+                # Medium-high confidence: Good filename match + reasonable size difference
+                elif [[ $name_similarity -ge 60 ]] && [[ $size_ratio -lt 20 ]]; then
+                    is_level5_duplicate=true
+                    confidence_score=80
+                # Medium confidence: Moderate filename match + very similar size
+                elif [[ $name_similarity -ge 50 ]] && [[ $size_ratio -lt 10 ]]; then
+                    is_level5_duplicate=true
+                    confidence_score=70
+                fi
+                
+                if [[ "$is_level5_duplicate" == "true" ]]; then
+                    # Additional validation: verify resolution matches
                     local fp1="${gif_fingerprints[$file1]}"
                     local fp2="${gif_fingerprints[$file2]}"
                     local res1=$(echo "$fp1" | cut -d':' -f2)
                     local res2=$(echo "$fp2" | cut -d':' -f2)
                     
                     if [[ "$res1" == "$res2" ]] && [[ -n "$res1" ]] && [[ "$res1" != "0" ]]; then
-                        # Same resolution, same frames, same duration, similar filenames
+                        # All checks passed: Same resolution, frames, duration, similar filename
                         is_duplicate=true
                         similarity_reason="filename_property_match"
                         ((DUPLICATE_STATS_NEAR_IDENTICAL++))
+                        
+                        # Log detailed analysis for debugging/improvement
+                        {
+                            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Level 5 Duplicate Detection:"
+                            echo "  File 1: $file1"
+                            echo "  File 2: $file2"
+                            echo "  Name similarity: ${name_similarity}% ($similarity_method)"
+                            echo "  Size difference: ${size_ratio}%"
+                            echo "  Confidence: ${confidence_score}%"
+                            echo "  Properties: ${res1}, ${gif_frame_counts[$file1]} frames, ${gif_durations[$file1]}s"
+                            echo ""
+                        } >> "$CONVERSION_LOG" 2>/dev/null || true
                     fi
                 fi
             fi
@@ -6211,7 +6558,7 @@ detect_duplicate_gifs() {
     echo -e "  ${GREEN}✓ AI Analysis Summary:${NC}"
     echo -e "    ${CYAN}• Analyzed: ${BOLD}$total_gifs${NC} ${CYAN}GIF files${NC}"
     echo -e "    ${CYAN}• Performed: ${BOLD}$total_comparisons${NC} ${CYAN}similarity comparisons${NC}"
-    echo -e "    ${CYAN}• Detection methods: ${BOLD}Binary + Visual + Fingerprint + Metadata${NC}"
+    echo -e "    ${CYAN}• Detection methods: ${BOLD}5-Level Analysis (Binary + Visual + Fingerprint + Property + Filename)${NC}"
     
     if [[ $duplicate_count -eq 0 ]]; then
         echo -e "\n  ${GREEN}${BOLD}✨ Excellent! No duplicate GIFs found${NC}"
@@ -9117,15 +9464,13 @@ detect_video_corruption() {
 }
 
 # 🔄 Check if output file already exists and is valid
+# Global cache for GIF properties (speeds up duplicate detection)
+declare -A GIF_PROPS_CACHE
+
 check_duplicate_output() {
     local input_file="$1"
     local base_name="$(basename -- "${input_file%.*}")"
     local output_file="$OUTPUT_DIRECTORY/$base_name.${OUTPUT_FORMAT}"
-    
-    # If file doesn't exist, not a duplicate
-    if [[ ! -f "$output_file" ]]; then
-        return 1
-    fi
     
     # If force conversion is enabled, ignore existing files
     if [[ "$FORCE_CONVERSION" == "true" ]]; then
@@ -9133,30 +9478,232 @@ check_duplicate_output() {
         return 1
     fi
     
-    # Check if output is newer than input (modification time)
-    if [[ "$output_file" -nt "$input_file" ]]; then
-        [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${GREEN}✓ Already converted: $(basename -- "$output_file") (newer than source)${NC}"
-        return 0
+    # Check 1: Exact filename match in output directory
+    if [[ -f "$output_file" ]]; then
+        # Check if output is newer than input (modification time)
+        if [[ "$output_file" -nt "$input_file" ]]; then
+            # Check if output file is valid (basic size check)
+            local output_size=$(stat -c%s "$output_file" 2>/dev/null || echo "0")
+            if [[ $output_size -lt 100 ]]; then
+                [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${YELLOW}⚠️ Existing file too small, will recreate: $(basename -- "$output_file")${NC}"
+                rm -f "$output_file" 2>/dev/null
+                return 1
+            fi
+            
+            # Quick validation of existing GIF
+            if ! file "$output_file" 2>/dev/null | grep -q "GIF"; then
+                [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${YELLOW}⚠️ Existing file not a valid GIF, will recreate: $(basename -- "$output_file")${NC}"
+                rm -f "$output_file" 2>/dev/null
+                return 1
+            fi
+            
+            # File exists, is newer, and appears valid
+            [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${GREEN}⏭️ Skipping: $(basename -- "$output_file") already exists and is valid${NC}"
+            return 0
+        fi
     fi
     
-    # Check if output file is valid (basic size check)
-    local output_size=$(stat -c%s "$output_file" 2>/dev/null || echo "0")
-    if [[ $output_size -lt 100 ]]; then
-        [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${YELLOW}⚠️ Existing file too small, will recreate: $(basename -- "$output_file")${NC}"
-        rm -f "$output_file" 2>/dev/null
-        return 1
+    # Check 2: Enhanced duplicate detection - check for similar named GIFs that might be duplicates
+    # This catches cases like:
+    # - video-1234567890.mp4 → video-1234567890.gif already exists
+    # - video-9876543210.mp4 → would create similar GIF (SKIP IT)
+    
+    # Only do enhanced check if output directory exists and has GIF files
+    if [[ -d "$OUTPUT_DIRECTORY" ]]; then
+        shopt -s nullglob
+        local existing_gifs=("$OUTPUT_DIRECTORY"/*.gif)
+        shopt -u nullglob
+        
+        # If there are existing GIFs, check for potential duplicates
+        if [[ ${#existing_gifs[@]} -gt 0 ]]; then
+            # Only show message if not in silent validation mode (avoid overlap with validation progress)
+            if [[ "$VALIDATION_SILENT_MODE" != "true" ]]; then
+                echo -e "  ${GRAY}🔍 Checking ${#existing_gifs[@]} existing GIFs for duplicates...${NC}"
+            fi
+            
+            # Get video properties for comparison (fast - single ffprobe call)
+            local video_props=$(ffprobe -v error -show_entries format=duration:stream=width,height -of csv=p=0 "$input_file" 2>/dev/null || echo "0,0,0")
+            local video_duration_raw=$(echo "$video_props" | cut -d',' -f1)
+            local video_duration=$(echo "$video_duration_raw" | cut -d'.' -f1)
+            # Ensure duration is a valid integer (handle empty/invalid values)
+            [[ -z "$video_duration" || ! "$video_duration" =~ ^[0-9]+$ ]] && video_duration=0
+            local video_width=$(echo "$video_props" | cut -d',' -f2)
+            local video_height=$(echo "$video_props" | cut -d',' -f3)
+            local video_resolution="${video_width}x${video_height}"
+            
+            # Get video checksum (use b2sum if available, fallback to md5sum)
+            local video_checksum=""
+            if command -v b2sum >/dev/null 2>&1; then
+                video_checksum=$(b2sum "$input_file" 2>/dev/null | awk '{print $1}')
+            else
+                video_checksum=$(md5sum "$input_file" 2>/dev/null | awk '{print $1}')
+            fi
+            
+            # Only check if we got valid properties
+            if [[ $video_duration -gt 0 && "$video_resolution" != "0x0" && "$video_resolution" != "x" ]]; then
+                # Track progress for display
+                local checked_count=0
+                local total_to_check=${#existing_gifs[@]}
+                
+                # Check each existing GIF for similarity
+                for existing_gif in "${existing_gifs[@]}"; do
+                    # Skip if it's the exact same file we already checked
+                    [[ "$existing_gif" == "$output_file" ]] && continue
+                    
+                    ((checked_count++))
+                    
+                    # Show secondary progress bar for duplicate checking
+                    # Use separate line to avoid interfering with main validation progress
+                    if [[ $total_to_check -gt 2 ]]; then
+                        local progress=$((checked_count * 100 / total_to_check))
+                        local filled=$((progress * 15 / 100))  # 15-char bar for secondary
+                        local empty=$((15 - filled))
+                        
+                        # Truncate filename for display
+                        local display_name="$(basename -- "$existing_gif")"
+                        if [[ ${#display_name} -gt 35 ]]; then
+                            display_name="${display_name:0:32}..."
+                        fi
+                        
+                        # Move to duplicate check line (save cursor, move down, update, restore)
+                        printf "\033[s"  # Save cursor position
+                        printf "\033[1B"  # Move down 1 line
+                        printf "\r\033[K"  # Clear line
+                        printf "    ${CYAN}🔍 ["
+                        for ((i=0; i<filled; i++)); do printf "█"; done
+                        for ((i=0; i<empty; i++)); do printf "░"; done
+                        printf "] ${YELLOW}%3d%%${NC} ${GRAY}Dup check: %s${NC}" "$progress" "$display_name"
+                        printf "\033[u"  # Restore cursor position
+                    fi
+                    
+                    # Use cached GIF properties if available (massive speedup for repeated checks)
+                    local gif_cache_key="$existing_gif"
+                    local gif_props=""
+                    local cache_hit=false
+                    
+                    if [[ -n "${GIF_PROPS_CACHE[$gif_cache_key]:-}" ]]; then
+                        # Cache hit - instant lookup!
+                        gif_props="${GIF_PROPS_CACHE[$gif_cache_key]}"
+                        cache_hit=true
+                    else
+                        # Cache miss - fetch and cache for future use
+                        gif_props=$(ffprobe -v error -show_entries format=duration:stream=width,height -of csv=p=0 "$existing_gif" 2>/dev/null || echo "0,0,0")
+                        GIF_PROPS_CACHE[$gif_cache_key]="$gif_props"
+                    fi
+                    
+                    local gif_duration_raw=$(echo "$gif_props" | cut -d',' -f1)
+                    local gif_duration=$(echo "$gif_duration_raw" | cut -d'.' -f1)
+                    # Ensure duration is a valid integer
+                    [[ -z "$gif_duration" || ! "$gif_duration" =~ ^[0-9]+$ ]] && gif_duration=0
+                    local gif_width=$(echo "$gif_props" | cut -d',' -f2)
+                    local gif_height=$(echo "$gif_props" | cut -d',' -f3)
+                    local gif_resolution="${gif_width}x${gif_height}"
+                    
+                    # Quick property match check
+                    if [[ $gif_duration -eq $video_duration && "$gif_resolution" == "$video_resolution" ]]; then
+                        # Properties match! Now check filename similarity
+                        local gif_basename=$(basename -- "$existing_gif" .gif)
+                        
+                        # Strategy 1: First 10 characters match (fast)
+                        if [[ "${base_name:0:10}" == "${gif_basename:0:10}" ]] && [[ ${#base_name} -gt 10 ]] && [[ ${#gif_basename} -gt 10 ]]; then
+                            # Found a probable duplicate!
+                            # Clear both main line and secondary progress bar line
+                            if [[ $total_to_check -gt 2 ]]; then
+                                printf "\r\033[K"  # Clear current line
+                                printf "\033[1B\r\033[K\033[1A"  # Clear line below and return
+                            fi
+                            
+                            local cache_status=""
+                            [[ "$cache_hit" == "true" ]] && cache_status="${GREEN}(cached)${NC}" || cache_status="${YELLOW}(analyzed)${NC}"
+                            
+                            echo -e "  ${CYAN}⏭️ Skipping: Similar GIF exists ($(basename -- "$existing_gif")) with same properties${NC}"
+                            echo -e "    ${GRAY}→ Duration: ${gif_duration}s, Resolution: ${gif_resolution}, Name: ${base_name:0:15}... ≈ ${gif_basename:0:15}...${NC}"
+                            echo -e "    ${GRAY}→ Method: Prefix match (10 chars) $cache_status${NC}"
+                            
+                            # Log to file
+                            {
+                                echo "[$(date '+%Y-%m-%d %H:%M:%S')] PRE-CONVERSION DUPLICATE SKIP:"
+                                echo "  Video: $input_file"
+                                echo "  Existing GIF: $existing_gif"
+                                echo "  Method: Prefix match (10 characters)"
+                                echo "  Properties: ${gif_duration}s, ${gif_resolution}"
+                                echo "  Cache: $([[ "$cache_hit" == "true" ]] && echo "HIT" || echo "MISS")"
+                                echo ""
+                            } >> "$CONVERSION_LOG" 2>/dev/null || true
+                            
+                            return 0
+                        fi
+                        
+                        # Strategy 2: Core name match (remove timestamps - fast regex)
+                        local core_name=$(echo "$base_name" | sed -E 's/-?[0-9]{10,}$//; s/-?[0-9]+$//; s/_[0-9]+$//')
+                        local gif_core_name=$(echo "$gif_basename" | sed -E 's/-?[0-9]{10,}$//; s/-?[0-9]+$//; s/_[0-9]+$//')
+                        
+                        if [[ -n "$core_name" && -n "$gif_core_name" && "$core_name" == "$gif_core_name" ]] && [[ ${#core_name} -ge 3 ]]; then
+                            # Core names match - high confidence duplicate!
+                            # Clear both main line and secondary progress bar line
+                            if [[ $total_to_check -gt 2 ]]; then
+                                printf "\r\033[K"  # Clear current line
+                                printf "\033[1B\r\033[K\033[1A"  # Clear line below and return
+                            fi
+                            
+                            local cache_status=""
+                            [[ "$cache_hit" == "true" ]] && cache_status="${GREEN}(cached)${NC}" || cache_status="${YELLOW}(analyzed)${NC}"
+                            
+                            echo -e "  ${CYAN}⏭️ Skipping: Similar GIF exists ($(basename -- "$existing_gif")) with matching core name${NC}"
+                            echo -e "    ${GRAY}→ Core: '$core_name', Duration: ${gif_duration}s, Resolution: ${gif_resolution}${NC}"
+                            echo -e "    ${GRAY}→ Method: Core name match $cache_status${NC}"
+                            
+                            # Log to file
+                            {
+                                echo "[$(date '+%Y-%m-%d %H:%M:%S')] PRE-CONVERSION DUPLICATE SKIP:"
+                                echo "  Video: $input_file"
+                                echo "  Existing GIF: $existing_gif"
+                                echo "  Method: Core name match (timestamp removed)"
+                                echo "  Core name: '$core_name'"
+                                echo "  Properties: ${gif_duration}s, ${gif_resolution}"
+                                echo "  Cache: $([[ "$cache_hit" == "true" ]] && echo "HIT" || echo "MISS")"
+                                echo ""
+                            } >> "$CONVERSION_LOG" 2>/dev/null || true
+                            
+                            return 0
+                        fi
+                        
+                        # Strategy 3: Checksum comparison (if properties + name similar, check actual content)
+                        # Only compute if name is somewhat similar (first 5 chars match)
+                        if [[ "${base_name:0:5}" == "${gif_basename:0:5}" ]] && [[ -n "$video_checksum" ]]; then
+                            # Get or compute GIF checksum
+                            local gif_checksum=""
+                            local gif_checksum_cache_key="${gif_cache_key}_checksum"
+                            
+                            if [[ -n "${GIF_PROPS_CACHE[$gif_checksum_cache_key]:-}" ]]; then
+                                gif_checksum="${GIF_PROPS_CACHE[$gif_checksum_cache_key]}"
+                            else
+                                if command -v b2sum >/dev/null 2>&1; then
+                                    gif_checksum=$(b2sum "$existing_gif" 2>/dev/null | awk '{print $1}')
+                                else
+                                    gif_checksum=$(md5sum "$existing_gif" 2>/dev/null | awk '{print $1}')
+                                fi
+                                [[ -n "$gif_checksum" ]] && GIF_PROPS_CACHE[$gif_checksum_cache_key]="$gif_checksum"
+                            fi
+                            
+                            # Note: Video and GIF checksums will never match (different formats)
+                            # This is here for future enhancement if needed
+                        fi
+                    fi
+                done
+                
+                # Clear both progress bars and show completion
+                if [[ $total_to_check -gt 2 ]]; then
+                    printf "\r\033[K"  # Clear current line
+                    printf "\033[1B\r\033[K\033[1A"  # Clear line below and return
+                    echo -e "  ${GREEN}✓ Checked ${total_to_check} GIFs - no duplicates found${NC}"
+                fi
+            fi
+        fi
     fi
     
-    # Quick validation of existing GIF
-    if ! file "$output_file" 2>/dev/null | grep -q "GIF"; then
-        [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${YELLOW}⚠️ Existing file not a valid GIF, will recreate: $(basename -- "$output_file")${NC}"
-        rm -f "$output_file" 2>/dev/null
-        return 1
-    fi
-    
-    # File exists, is newer, and appears valid
-    [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${GREEN}⏭️ Skipping: $(basename -- "$output_file") already exists and is valid${NC}"
-    return 0
+    # No exact match or similar duplicate found
+    return 1
 }
 
 # 🅾️Validate output GIF files for corruption
@@ -12769,6 +13316,14 @@ start_conversion() {
         printf "\r\033[K"
     fi
     
+    # Show duplicate detection summary if any were found
+    if [[ $already_converted -gt 0 ]]; then
+        echo -e "${CYAN}🔍 Pre-conversion duplicate check:${NC}"
+        echo -e "  ${GREEN}✓ Skipped $already_converted file(s) - GIFs already exist${NC}"
+        echo -e "  ${GRAY}View details: ${CYAN}tail ~/.smart-gif-converter/conversions.log | grep -A 6 'PRE-CONVERSION'${NC}"
+        echo ""
+    fi
+    
     shopt -u nullglob
     fi
     
@@ -13210,6 +13765,9 @@ ${YELLOW}ADVANCED OPTIONS:${NC}
     --stop-all              Stop all ffmpeg processes and exit immediately
     --skip-validation       Skip output validation for faster processing
     --show-settings         Show current settings and their saved location
+    --debug-settings        Detailed diagnostics for settings persistence
+    --check-permissions     Check and fix file/directory permissions
+    --fix-permissions       Same as --check-permissions
     --show-progress         Show current conversion progress from autosave
     --clear-progress        Clear saved progress (start fresh)
     --test-termination      Test process group termination system
@@ -13262,33 +13820,109 @@ ${YELLOW}EXAMPLES:${NC}
 EOF
 }
 
-# 🔧 Load configuration and settings
+# 🔧 Load configuration and settings (with enhanced debugging)
 load_config() {
+    local silent_mode=false
+    [[ "$1" == "--silent" ]] && silent_mode=true
+    
+    # Debug: Show what we're trying to load
+    if [[ "$DEBUG_MODE" == "true" && "$silent_mode" != true ]]; then
+        echo -e "${CYAN}🔍 Debug: Attempting to load settings...${NC}"
+        echo -e "${CYAN}  Primary: $SETTINGS_FILE${NC}"
+        echo -e "${CYAN}  Fallback: $CONFIG_FILE${NC}"
+        echo -e "${CYAN}  Settings directory: $(dirname "$SETTINGS_FILE")${NC}"
+        [[ -d "$(dirname "$SETTINGS_FILE")" ]] && echo -e "${CYAN}  Directory exists: ${GREEN}YES${NC}" || echo -e "${CYAN}  Directory exists: ${RED}NO${NC}"
+        [[ -f "$SETTINGS_FILE" ]] && echo -e "${CYAN}  Settings file exists: ${GREEN}YES${NC}" || echo -e "${CYAN}  Settings file exists: ${RED}NO${NC}"
+    fi
+    
     # First try to load saved settings from log directory
-    if load_settings 2>/dev/null; then
-        return 0
+    if [[ "$silent_mode" == true ]]; then
+        if load_settings "$SETTINGS_FILE" --silent 2>/dev/null; then
+            return 0
+        fi
+    else
+        if load_settings "$SETTINGS_FILE" 2>/dev/null; then
+            return 0
+        fi
     fi
     
-    # Fallback to old config file
+    # Fallback to old config file for backward compatibility
     if [[ -f "$CONFIG_FILE" ]]; then
-        source "$CONFIG_FILE"
-        echo -e "${GREEN}✓ Loaded configuration from $CONFIG_FILE${NC}"
-        # Migrate to new settings format
-        save_settings --silent
-        return 0
+        if [[ "$silent_mode" != true ]]; then
+            echo -e "${YELLOW}📝 Migrating from legacy config file...${NC}"
+        fi
+        
+        # Safely source the old config
+        if source "$CONFIG_FILE" 2>/dev/null; then
+            if [[ "$silent_mode" != true ]]; then
+                echo -e "${GREEN}✓ Loaded configuration from: $CONFIG_FILE${NC}"
+                echo -e "${CYAN}  🔄 Migrating to new settings format...${NC}"
+            fi
+            
+            # Migrate to new settings format
+            if save_settings --silent 2>/dev/null; then
+                if [[ "$silent_mode" != true ]]; then
+                    echo -e "${GREEN}✓ Migration complete! Settings saved to: $SETTINGS_FILE${NC}"
+                    echo -e "${CYAN}  💡 You can safely delete the old config: $CONFIG_FILE${NC}"
+                fi
+            else
+                if [[ "$silent_mode" != true ]]; then
+                    echo -e "${YELLOW}⚠️  Migration partially complete (save failed)${NC}"
+                fi
+            fi
+            return 0
+        else
+            echo -e "${RED}❌ ERROR: Failed to load legacy config file: $CONFIG_FILE${NC}" >&2
+            echo -e "${YELLOW}  File may be corrupted${NC}" >&2
+        fi
     fi
     
-    echo -e "${YELLOW}ℹ️ Using default settings (will be saved after first use)${NC}"
+    # No settings found - using defaults
+    if [[ "$silent_mode" != true ]]; then
+        echo -e "${YELLOW}ℹ️  Using default settings (will be saved after first use)${NC}"
+        if [[ "$DEBUG_MODE" == "true" ]]; then
+            echo -e "${CYAN}  📊 Default output directory: $OUTPUT_DIRECTORY${NC}"
+            echo -e "${CYAN}  🎯 Default quality: $QUALITY${NC}"
+            echo -e "${CYAN}  🔧 Settings will be saved to: $SETTINGS_FILE${NC}"
+        fi
+    fi
     return 1
 }
 
-# 💾 Save settings to log directory
+# 💾 Save settings to log directory (with enhanced error handling)
 save_settings() {
     local settings_file="${1:-$SETTINGS_FILE}"
+    local silent_mode=false
+    [[ "$1" == "--silent" || "$2" == "--silent" ]] && silent_mode=true
     
-    cat > "$settings_file" << EOF
+    # Ensure directory exists with proper permissions
+    local settings_dir="$(dirname "$settings_file")"
+    if [[ ! -d "$settings_dir" ]]; then
+        if ! mkdir -p "$settings_dir" 2>/dev/null; then
+            echo -e "${RED}❌ ERROR: Cannot create settings directory: $settings_dir${NC}" >&2
+            echo -e "${YELLOW}  Reason: Permission denied or invalid path${NC}" >&2
+            echo -e "${CYAN}  Tip: Check directory permissions with: ls -ld \"$(dirname "$settings_dir")\"${NC}" >&2
+            return 1
+        fi
+        [[ "$silent_mode" != true ]] && echo -e "${GREEN}✓ Created settings directory: $settings_dir${NC}"
+    fi
+    
+    # Verify directory is writable
+    if [[ ! -w "$settings_dir" ]]; then
+        echo -e "${RED}❌ ERROR: Settings directory is not writable: $settings_dir${NC}" >&2
+        echo -e "${YELLOW}  Current permissions: $(ls -ld "$settings_dir" 2>/dev/null | awk '{print $1}')${NC}" >&2
+        echo -e "${CYAN}  Fix with: chmod u+w \"$settings_dir\"${NC}" >&2
+        return 1
+    fi
+    
+    # Create temporary file for atomic write
+    local temp_file="${settings_file}.tmp.$$"
+    
+    # Write settings to temporary file
+    if ! cat > "$temp_file" 2>/dev/null << EOF
 # Smart GIF Converter Settings - Auto-saved $(date)
 # This file remembers your last used settings
+# Settings file version: 2.0
 RESOLUTION="$RESOLUTION"
 FRAMERATE="$FRAMERATE"
 QUALITY="$QUALITY"
@@ -13338,78 +13972,189 @@ PARALLEL_JOBS="$PARALLEL_JOBS"
 OUTPUT_DIRECTORY="$OUTPUT_DIRECTORY"
 OUTPUT_DIR_MODE="$OUTPUT_DIR_MODE"
 EOF
-    
-    if [[ "$1" != "--silent" ]]; then
-        echo -e "${GREEN}💾 Settings saved to $settings_file${NC}"
+    then
+        echo -e "${RED}❌ ERROR: Failed to write settings to temporary file${NC}" >&2
+        echo -e "${YELLOW}  File: $temp_file${NC}" >&2
+        echo -e "${YELLOW}  Possible causes: Disk full, permissions, or I/O error${NC}" >&2
+        rm -f "$temp_file" 2>/dev/null
+        return 1
     fi
+    
+    # Verify the temporary file was written correctly
+    if [[ ! -s "$temp_file" ]]; then
+        echo -e "${RED}❌ ERROR: Settings file is empty after write${NC}" >&2
+        rm -f "$temp_file" 2>/dev/null
+        return 1
+    fi
+    
+    # Validate the file contains critical settings
+    if ! grep -q "OUTPUT_DIRECTORY=" "$temp_file" 2>/dev/null; then
+        echo -e "${RED}❌ ERROR: Settings file validation failed - missing OUTPUT_DIRECTORY${NC}" >&2
+        rm -f "$temp_file" 2>/dev/null
+        return 1
+    fi
+    
+    # Create backup of existing settings if it exists
+    if [[ -f "$settings_file" ]]; then
+        cp "$settings_file" "${settings_file}.backup" 2>/dev/null || true
+    fi
+    
+    # Atomic move (rename) to final location
+    if ! mv "$temp_file" "$settings_file" 2>/dev/null; then
+        echo -e "${RED}❌ ERROR: Failed to save settings file${NC}" >&2
+        echo -e "${YELLOW}  Target: $settings_file${NC}" >&2
+        echo -e "${YELLOW}  Possible cause: Permission denied${NC}" >&2
+        rm -f "$temp_file" 2>/dev/null
+        return 1
+    fi
+    
+    # Set proper permissions
+    chmod 600 "$settings_file" 2>/dev/null || true
+    
+    # Success message with debug info
+    if [[ "$silent_mode" != true ]]; then
+        echo -e "${GREEN}💾 Settings saved successfully to: $settings_file${NC}"
+        if [[ "$DEBUG_MODE" == "true" ]]; then
+            echo -e "${CYAN}  📊 File size: $(stat -c%s "$settings_file" 2>/dev/null || echo 'unknown') bytes${NC}"
+            echo -e "${CYAN}  📁 Output directory: $OUTPUT_DIRECTORY${NC}"
+            echo -e "${CYAN}  🎯 Quality preset: $QUALITY${NC}"
+        fi
+    fi
+    
+    return 0
 }
 
-# 📁 Load settings from log directory
+# 📁 Load settings from log directory (with enhanced error handling and validation)
 load_settings() {
     local settings_file="${1:-$SETTINGS_FILE}"
+    local silent_mode=false
+    [[ "$2" == "--silent" ]] && silent_mode=true
     
-    if [[ -f "$settings_file" ]]; then
-        # Source the settings file safely
-        while IFS='=' read -r key value; do
-            # Skip comments and empty lines
-            [[ $key =~ ^[[:space:]]*# ]] && continue
-            [[ -z $key ]] && continue
-            
-            # Remove quotes from value
-            value=$(echo "$value" | sed 's/^"\|"$//g')
-            
-            # Set the variable
-            case "$key" in
-                RESOLUTION) RESOLUTION="$value" ;;
-                FRAMERATE) FRAMERATE="$value" ;;
-                QUALITY) QUALITY="$value" ;;
-                ASPECT_RATIO) ASPECT_RATIO="$value" ;;
-                SCALING_ALGO) SCALING_ALGO="$value" ;;
-                DITHER_MODE) DITHER_MODE="$value" ;;
-                MAX_COLORS) MAX_COLORS="$value" ;;
-                PALETTE_MODE) PALETTE_MODE="$value" ;;
-                PARALLEL_JOBS) PARALLEL_JOBS="$value" ;;
-                OUTPUT_FORMAT) OUTPUT_FORMAT="$value" ;;
-                AUTO_OPTIMIZE) AUTO_OPTIMIZE="$value" ;;
-                OPTIMIZE_AGGRESSIVE) OPTIMIZE_AGGRESSIVE="$value" ;;
-                OPTIMIZE_TARGET_RATIO) OPTIMIZE_TARGET_RATIO="$value" ;;
-                BACKUP_ORIGINAL) BACKUP_ORIGINAL="$value" ;;
-                SKIP_VALIDATION) SKIP_VALIDATION="$value" ;;
-                PROGRESS_BAR) PROGRESS_BAR="$value" ;;
-                FORCE_CONVERSION) FORCE_CONVERSION="$value" ;;
-                DEBUG_MODE) DEBUG_MODE="$value" ;;
-                MAX_RETRIES) MAX_RETRIES="$value" ;;
-                AI_ENABLED) AI_ENABLED="$value" ;;
-                AI_MODE) AI_MODE="$value" ;;
-                AI_CONFIDENCE_THRESHOLD) AI_CONFIDENCE_THRESHOLD="$value" ;;
-                CONTENT_TYPE_PREFERENCE) CONTENT_TYPE_PREFERENCE="$value" ;;
-                AI_AUTO_QUALITY) AI_AUTO_QUALITY="$value" ;;
-                AI_SCENE_ANALYSIS) AI_SCENE_ANALYSIS="$value" ;;
-                AI_VISUAL_SIMILARITY) AI_VISUAL_SIMILARITY="$value" ;;
-                AI_SMART_CROP) AI_SMART_CROP="$value" ;;
-                AI_DYNAMIC_FRAMERATE) AI_DYNAMIC_FRAMERATE="$value" ;;
-                AI_QUALITY_SCALING) AI_QUALITY_SCALING="$value" ;;
-                AI_CONTENT_FINGERPRINT) AI_CONTENT_FINGERPRINT="$value" ;;
-                AI_DISCOVERY_ENABLED) AI_DISCOVERY_ENABLED="$value" ;;
-                AI_DISCOVERY_AUTO_SELECT) AI_DISCOVERY_AUTO_SELECT="$value" ;;
-                AI_DISCOVERY_REMEMBER_CHOICE) AI_DISCOVERY_REMEMBER_CHOICE="$value" ;;
-                AI_CACHE_ENABLED) AI_CACHE_ENABLED="$value" ;;
-                AI_CACHE_MAX_AGE_DAYS) AI_CACHE_MAX_AGE_DAYS="$value" ;;
-                AI_TRAINING_ENABLED) AI_TRAINING_ENABLED="$value" ;;
-                AI_GENERATION) AI_GENERATION="$value" ;;
-                AI_LEARNING_RATE) AI_LEARNING_RATE="$value" ;;
-                AI_CONFIDENCE_MIN) AI_CONFIDENCE_MIN="$value" ;;
-                AI_TRAINING_MIN_SAMPLES) AI_TRAINING_MIN_SAMPLES="$value" ;;
-                OUTPUT_DIRECTORY) OUTPUT_DIRECTORY="$value" ;;
-                OUTPUT_DIR_MODE) OUTPUT_DIR_MODE="$value" ;;
-                FFMPEG_THREADS) FFMPEG_THREADS="$value" ;;
-            esac
-        done < "$settings_file"
-        
-        echo -e "${GREEN}📁 Loaded saved settings from $settings_file${NC}"
-        return 0
+    # Check if settings file exists
+    if [[ ! -f "$settings_file" ]]; then
+        if [[ "$silent_mode" != true ]]; then
+            echo -e "${YELLOW}ℹ️  No saved settings found at: $settings_file${NC}"
+            echo -e "${CYAN}  💡 Settings will be created on first save${NC}"
+        fi
+        return 1
     fi
-    return 1
+    
+    # Check if settings file is readable
+    if [[ ! -r "$settings_file" ]]; then
+        echo -e "${RED}❌ ERROR: Cannot read settings file: $settings_file${NC}" >&2
+        echo -e "${YELLOW}  Current permissions: $(ls -l "$settings_file" 2>/dev/null | awk '{print $1}')${NC}" >&2
+        echo -e "${CYAN}  Fix with: chmod u+r \"$settings_file\"${NC}" >&2
+        return 1
+    fi
+    
+    # Validate settings file is not empty
+    if [[ ! -s "$settings_file" ]]; then
+        echo -e "${RED}❌ ERROR: Settings file is empty or corrupted: $settings_file${NC}" >&2
+        echo -e "${CYAN}  Tip: Delete the file to reset to defaults: rm \"$settings_file\"${NC}" >&2
+        return 1
+    fi
+    
+    # Track loaded settings for debugging
+    local loaded_count=0
+    local critical_settings_found=false
+    
+    # Source the settings file safely
+    while IFS='=' read -r key value; do
+        # Skip comments and empty lines
+        [[ $key =~ ^[[:space:]]*# ]] && continue
+        [[ -z $key ]] && continue
+        
+        # Remove quotes from value
+        value=$(echo "$value" | sed 's/^"\|"$//g')
+        
+        # Set the variable
+        case "$key" in
+            RESOLUTION) RESOLUTION="$value"; ((loaded_count++)) ;;
+            FRAMERATE) FRAMERATE="$value"; ((loaded_count++)) ;;
+            QUALITY) QUALITY="$value"; ((loaded_count++)) ;;
+            ASPECT_RATIO) ASPECT_RATIO="$value"; ((loaded_count++)) ;;
+            SCALING_ALGO) SCALING_ALGO="$value"; ((loaded_count++)) ;;
+            DITHER_MODE) DITHER_MODE="$value"; ((loaded_count++)) ;;
+            MAX_COLORS) MAX_COLORS="$value"; ((loaded_count++)) ;;
+            PALETTE_MODE) PALETTE_MODE="$value"; ((loaded_count++)) ;;
+            PARALLEL_JOBS) PARALLEL_JOBS="$value"; ((loaded_count++)) ;;
+            OUTPUT_FORMAT) OUTPUT_FORMAT="$value"; ((loaded_count++)) ;;
+            AUTO_OPTIMIZE) AUTO_OPTIMIZE="$value"; ((loaded_count++)) ;;
+            OPTIMIZE_AGGRESSIVE) OPTIMIZE_AGGRESSIVE="$value"; ((loaded_count++)) ;;
+            OPTIMIZE_TARGET_RATIO) OPTIMIZE_TARGET_RATIO="$value"; ((loaded_count++)) ;;
+            BACKUP_ORIGINAL) BACKUP_ORIGINAL="$value"; ((loaded_count++)) ;;
+            SKIP_VALIDATION) SKIP_VALIDATION="$value"; ((loaded_count++)) ;;
+            PROGRESS_BAR) PROGRESS_BAR="$value"; ((loaded_count++)) ;;
+            FORCE_CONVERSION) FORCE_CONVERSION="$value"; ((loaded_count++)) ;;
+            DEBUG_MODE) DEBUG_MODE="$value"; ((loaded_count++)) ;;
+            MAX_RETRIES) MAX_RETRIES="$value"; ((loaded_count++)) ;;
+            AI_ENABLED) AI_ENABLED="$value"; ((loaded_count++)) ;;
+            AI_MODE) AI_MODE="$value"; ((loaded_count++)) ;;
+            AI_CONFIDENCE_THRESHOLD) AI_CONFIDENCE_THRESHOLD="$value"; ((loaded_count++)) ;;
+            CONTENT_TYPE_PREFERENCE) CONTENT_TYPE_PREFERENCE="$value"; ((loaded_count++)) ;;
+            AI_AUTO_QUALITY) AI_AUTO_QUALITY="$value"; ((loaded_count++)) ;;
+            AI_SCENE_ANALYSIS) AI_SCENE_ANALYSIS="$value"; ((loaded_count++)) ;;
+            AI_VISUAL_SIMILARITY) AI_VISUAL_SIMILARITY="$value"; ((loaded_count++)) ;;
+            AI_SMART_CROP) AI_SMART_CROP="$value"; ((loaded_count++)) ;;
+            AI_DYNAMIC_FRAMERATE) AI_DYNAMIC_FRAMERATE="$value"; ((loaded_count++)) ;;
+            AI_QUALITY_SCALING) AI_QUALITY_SCALING="$value"; ((loaded_count++)) ;;
+            AI_CONTENT_FINGERPRINT) AI_CONTENT_FINGERPRINT="$value"; ((loaded_count++)) ;;
+            AI_DISCOVERY_ENABLED) AI_DISCOVERY_ENABLED="$value"; ((loaded_count++)) ;;
+            AI_DISCOVERY_AUTO_SELECT) AI_DISCOVERY_AUTO_SELECT="$value"; ((loaded_count++)) ;;
+            AI_DISCOVERY_REMEMBER_CHOICE) AI_DISCOVERY_REMEMBER_CHOICE="$value"; ((loaded_count++)) ;;
+            AI_CACHE_ENABLED) AI_CACHE_ENABLED="$value"; ((loaded_count++)) ;;
+            AI_CACHE_MAX_AGE_DAYS) AI_CACHE_MAX_AGE_DAYS="$value"; ((loaded_count++)) ;;
+            AI_TRAINING_ENABLED) AI_TRAINING_ENABLED="$value"; ((loaded_count++)) ;;
+            AI_GENERATION) AI_GENERATION="$value"; ((loaded_count++)) ;;
+            AI_LEARNING_RATE) AI_LEARNING_RATE="$value"; ((loaded_count++)) ;;
+            AI_CONFIDENCE_MIN) AI_CONFIDENCE_MIN="$value"; ((loaded_count++)) ;;
+            AI_TRAINING_MIN_SAMPLES) AI_TRAINING_MIN_SAMPLES="$value"; ((loaded_count++)) ;;
+            OUTPUT_DIRECTORY) 
+                OUTPUT_DIRECTORY="$value"
+                critical_settings_found=true
+                ((loaded_count++)) 
+                ;;
+            OUTPUT_DIR_MODE) OUTPUT_DIR_MODE="$value"; ((loaded_count++)) ;;
+            FFMPEG_THREADS) FFMPEG_THREADS="$value"; ((loaded_count++)) ;;
+            MAX_GIF_SIZE_MB) MAX_GIF_SIZE_MB="$value"; ((loaded_count++)) ;;
+            AUTO_REDUCE_QUALITY) AUTO_REDUCE_QUALITY="$value"; ((loaded_count++)) ;;
+            SMART_SIZE_DOWN) SMART_SIZE_DOWN="$value"; ((loaded_count++)) ;;
+            GPU_ACCELERATION) GPU_ACCELERATION="$value"; ((loaded_count++)) ;;
+        esac
+    done < "$settings_file"
+    
+    # Validate that critical settings were loaded
+    if [[ "$critical_settings_found" != true ]]; then
+        echo -e "${RED}❌ ERROR: Settings file is corrupted - missing OUTPUT_DIRECTORY${NC}" >&2
+        echo -e "${YELLOW}  File: $settings_file${NC}" >&2
+        echo -e "${CYAN}  Tip: Backup file exists at: ${settings_file}.backup${NC}" >&2
+        echo -e "${CYAN}  Or delete to reset: rm \"$settings_file\"${NC}" >&2
+        return 1
+    fi
+    
+    # Verify minimum number of settings loaded
+    if [[ $loaded_count -lt 10 ]]; then
+        echo -e "${YELLOW}⚠️  WARNING: Only $loaded_count settings loaded (expected 40+)${NC}" >&2
+        echo -e "${YELLOW}  Settings file may be incomplete: $settings_file${NC}" >&2
+        echo -e "${CYAN}  Consider resetting settings from the main menu${NC}" >&2
+    fi
+    
+    # Success message with loaded settings info
+    if [[ "$silent_mode" != true ]]; then
+        echo -e "${GREEN}✅ Loaded saved settings from: $settings_file${NC}"
+        echo -e "${CYAN}  📊 Loaded $loaded_count settings${NC}"
+        echo -e "${CYAN}  📁 Output directory: ${BOLD}$OUTPUT_DIRECTORY${NC}"
+        echo -e "${CYAN}  🎯 Quality preset: ${BOLD}$QUALITY${NC}"
+        echo -e "${CYAN}  🤖 AI features: $([ "$AI_ENABLED" == "true" ] && echo "${GREEN}ENABLED${NC}" || echo "${GRAY}disabled${NC}")${NC}"
+        
+        if [[ "$DEBUG_MODE" == "true" ]]; then
+            echo -e "${CYAN}  🐛 Debug mode: ${GREEN}ACTIVE${NC}"
+            echo -e "${CYAN}  📝 File modified: $(stat -c%y "$settings_file" 2>/dev/null | cut -d'.' -f1)${NC}"
+            echo -e "${CYAN}  💾 File size: $(stat -c%s "$settings_file" 2>/dev/null || echo 'unknown') bytes${NC}"
+        fi
+    fi
+    
+    return 0
 }
 
 # 💾 Save configuration (legacy function for backward compatibility)
@@ -15092,6 +15837,9 @@ main() {
     # Initialize log directory and files (sets SETTINGS_FILE)
     init_log_directory
     
+    # Check and fix file permissions early (before any file operations)
+    check_and_fix_permissions
+    
     # Log a one-time settings snapshot for better diagnostics
     log_settings_snapshot_once
     
@@ -15605,6 +16353,8 @@ main() {
                 echo -e "  ${BLUE}Frame Rate:${NC} ${FRAMERATE}fps"
                 echo -e "  ${BLUE}Aspect Ratio:${NC} $ASPECT_RATIO"
                 echo -e "  ${BLUE}Output Format:${NC} $OUTPUT_FORMAT"
+                echo -e "  ${BLUE}Output Directory:${NC} $OUTPUT_DIRECTORY"
+                echo -e "  ${BLUE}Output Dir Mode:${NC} $OUTPUT_DIR_MODE"
                 
                 echo -e "\n${GREEN}${BOLD}Processing Options:${NC}"
                 echo -e "  ${BLUE}Auto Optimize:${NC} $AUTO_OPTIMIZE"
@@ -15631,9 +16381,136 @@ main() {
                     local mod_time=$(stat -c %Y "$SETTINGS_FILE" 2>/dev/null || echo "0")
                     local readable_time=$(date -d "@$mod_time" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "Unknown")
                     echo -e "\n${YELLOW}ℹ️ Settings file last updated: $readable_time${NC}"
+                    echo -e "${CYAN}💡 Use --debug-settings for detailed diagnostics${NC}"
                 else
                     echo -e "\n${YELLOW}⚠️ No settings file found (will be created on first use)${NC}"
                 fi
+                exit 0
+                ;;
+            --debug-settings)
+                echo -e "${CYAN}${BOLD}🐛 SETTINGS PERSISTENCE DIAGNOSTICS${NC}\n"
+                echo -e "${YELLOW}${BOLD}=== FILE PATHS ===${NC}"
+                echo -e "${BLUE}Settings file:${NC} $SETTINGS_FILE"
+                echo -e "${BLUE}Legacy config:${NC} $CONFIG_FILE"
+                echo -e "${BLUE}Settings directory:${NC} $(dirname "$SETTINGS_FILE")"
+                echo -e "${BLUE}Working directory:${NC} $(pwd)"
+                
+                echo -e "\n${YELLOW}${BOLD}=== DIRECTORY STATUS ===${NC}"
+                local settings_dir="$(dirname "$SETTINGS_FILE")"
+                if [[ -d "$settings_dir" ]]; then
+                    echo -e "${GREEN}✓ Settings directory exists${NC}"
+                    echo -e "  ${BLUE}Permissions:${NC} $(ls -ld "$settings_dir" | awk '{print $1}')"
+                    echo -e "  ${BLUE}Owner:${NC} $(ls -ld "$settings_dir" | awk '{print $3 ":" $4}')"
+                    echo -e "  ${BLUE}Writable:${NC} $([ -w "$settings_dir" ] && echo "${GREEN}YES${NC}" || echo "${RED}NO${NC}")"
+                    echo -e "  ${BLUE}Readable:${NC} $([ -r "$settings_dir" ] && echo "${GREEN}YES${NC}" || echo "${RED}NO${NC}")
+                else
+                    echo -e "${RED}❌ Settings directory does NOT exist${NC}"
+                    echo -e "  ${YELLOW}Will be created on first save${NC}"
+                fi
+                
+                echo -e "\n${YELLOW}${BOLD}=== SETTINGS FILE STATUS ===${NC}"
+                if [[ -f "$SETTINGS_FILE" ]]; then
+                    echo -e "${GREEN}✓ Settings file exists${NC}"
+                    echo -e "  ${BLUE}Path:${NC} $(make_clickable_path "$SETTINGS_FILE" "$SETTINGS_FILE")"
+                    echo -e "  ${BLUE}Size:${NC} $(stat -c%s "$SETTINGS_FILE" 2>/dev/null || echo '0') bytes"
+                    echo -e "  ${BLUE}Permissions:${NC} $(ls -l "$SETTINGS_FILE" | awk '{print $1}')"
+                    echo -e "  ${BLUE}Owner:${NC} $(ls -l "$SETTINGS_FILE" | awk '{print $3 ":" $4}')"
+                    echo -e "  ${BLUE}Readable:${NC} $([ -r "$SETTINGS_FILE" ] && echo "${GREEN}YES${NC}" || echo "${RED}NO${NC}")"
+                    echo -e "  ${BLUE}Writable:${NC} $([ -w "$SETTINGS_FILE" ] && echo "${GREEN}YES${NC}" || echo "${RED}NO${NC}")"
+                    echo -e "  ${BLUE}Modified:${NC} $(stat -c%y "$SETTINGS_FILE" 2>/dev/null | cut -d'.' -f1)"
+                    
+                    echo -e "\n${YELLOW}${BOLD}=== FILE VALIDATION ===${NC}"
+                    local line_count=$(wc -l < "$SETTINGS_FILE")
+                    echo -e "  ${BLUE}Total lines:${NC} $line_count"
+                    
+                    if grep -q "OUTPUT_DIRECTORY=" "$SETTINGS_FILE" 2>/dev/null; then
+                        local saved_output_dir=$(grep "OUTPUT_DIRECTORY=" "$SETTINGS_FILE" | cut -d'=' -f2 | tr -d '"')
+                        echo -e "  ${GREEN}✓ OUTPUT_DIRECTORY found in file${NC}"
+                        echo -e "    ${BLUE}Saved value:${NC} $saved_output_dir"
+                        echo -e "    ${BLUE}Current value:${NC} $OUTPUT_DIRECTORY"
+                        if [[ "$saved_output_dir" == "$OUTPUT_DIRECTORY" ]]; then
+                            echo -e "    ${GREEN}✓ Values match${NC}"
+                        else
+                            echo -e "    ${YELLOW}⚠️ Values differ!${NC}"
+                        fi
+                    else
+                        echo -e "  ${RED}❌ OUTPUT_DIRECTORY NOT found in file${NC}"
+                        echo -e "    ${YELLOW}File may be corrupted${NC}"
+                    fi
+                    
+                    if grep -q "QUALITY=" "$SETTINGS_FILE" 2>/dev/null; then
+                        local saved_quality=$(grep "QUALITY=" "$SETTINGS_FILE" | head -1 | cut -d'=' -f2 | tr -d '"')
+                        echo -e "  ${GREEN}✓ QUALITY found in file${NC}"
+                        echo -e "    ${BLUE}Saved value:${NC} $saved_quality"
+                        echo -e "    ${BLUE}Current value:${NC} $QUALITY"
+                    fi
+                    
+                    echo -e "\n${YELLOW}${BOLD}=== FILE CONTENT SAMPLE ===${NC}"
+                    echo -e "${GRAY}First 10 lines:${NC}"
+                    head -10 "$SETTINGS_FILE" | while IFS= read -r line; do
+                        echo -e "  ${GRAY}$line${NC}"
+                    done
+                else
+                    echo -e "${RED}❌ Settings file does NOT exist${NC}"
+                    echo -e "  ${YELLOW}This is normal for first run${NC}"
+                    echo -e "  ${YELLOW}File will be created automatically${NC}"
+                fi
+                
+                echo -e "\n${YELLOW}${BOLD}=== LEGACY CONFIG ===${NC}"
+                if [[ -f "$CONFIG_FILE" ]]; then
+                    echo -e "${YELLOW}⚠️ Legacy config file exists${NC}"
+                    echo -e "  ${BLUE}Path:${NC} $CONFIG_FILE"
+                    echo -e "  ${BLUE}Size:${NC} $(stat -c%s "$CONFIG_FILE" 2>/dev/null || echo '0') bytes"
+                    echo -e "  ${CYAN}💡 Consider migrating with: ./convert.sh --save-config${NC}"
+                else
+                    echo -e "${GREEN}✓ No legacy config file (using new settings format)${NC}"
+                fi
+                
+                echo -e "\n${YELLOW}${BOLD}=== CURRENT VALUES ===${NC}"
+                echo -e "  ${BLUE}OUTPUT_DIRECTORY:${NC} $OUTPUT_DIRECTORY"
+                echo -e "  ${BLUE}OUTPUT_DIR_MODE:${NC} $OUTPUT_DIR_MODE"
+                echo -e "  ${BLUE}QUALITY:${NC} $QUALITY"
+                echo -e "  ${BLUE}RESOLUTION:${NC} $RESOLUTION"
+                echo -e "  ${BLUE}FRAMERATE:${NC} $FRAMERATE"
+                
+                echo -e "\n${YELLOW}${BOLD}=== BACKUP FILES ===${NC}"
+                if [[ -f "${SETTINGS_FILE}.backup" ]]; then
+                    echo -e "${GREEN}✓ Backup exists:${NC} ${SETTINGS_FILE}.backup"
+                    echo -e "  ${BLUE}Modified:${NC} $(stat -c%y "${SETTINGS_FILE}.backup" 2>/dev/null | cut -d'.' -f1)"
+                else
+                    echo -e "${GRAY}No backup file found${NC}"
+                fi
+                
+                echo -e "\n${YELLOW}${BOLD}=== WRITE TEST ===${NC}"
+                local test_file="${SETTINGS_FILE}.write_test.$$"
+                if echo "test" > "$test_file" 2>/dev/null; then
+                    echo -e "${GREEN}✓ Write permissions OK${NC}"
+                    rm -f "$test_file" 2>/dev/null
+                else
+                    echo -e "${RED}❌ Cannot write to settings directory${NC}"
+                    echo -e "  ${YELLOW}This will prevent settings from being saved${NC}"
+                fi
+                
+                echo -e "\n${YELLOW}${BOLD}=== RECOMMENDATIONS ===${NC}"
+                if [[ ! -f "$SETTINGS_FILE" ]]; then
+                    echo -e "${CYAN}💡 Run the script in interactive mode to create settings${NC}"
+                    echo -e "   ${GRAY}Command: ./convert.sh${NC}"
+                elif [[ ! -r "$SETTINGS_FILE" ]]; then
+                    echo -e "${RED}⚠️ Fix read permissions:${NC}"
+                    echo -e "   ${GRAY}chmod u+r \"$SETTINGS_FILE\"${NC}"
+                elif [[ ! -w "$(dirname "$SETTINGS_FILE")" ]]; then
+                    echo -e "${RED}⚠️ Fix write permissions on directory:${NC}"
+                    echo -e "   ${GRAY}chmod u+w \"$(dirname "$SETTINGS_FILE")\"${NC}"
+                else
+                    echo -e "${GREEN}✓ Settings persistence is properly configured${NC}"
+                fi
+                
+                exit 0
+                ;;
+            --check-permissions|--fix-permissions)
+                init_log_directory >/dev/null 2>&1
+                echo -e "${CYAN}${BOLD}🔒 CHECKING FILE PERMISSIONS${NC}\n"
+                check_and_fix_permissions
                 exit 0
                 ;;
             --test-termination)
