@@ -429,16 +429,31 @@ check_for_updates() {
         return 0  # Silently fail if GitHub unreachable or SSL verification fails
     fi
     
-    # Fetch latest release info from GitHub API with SSL verification
+    # Fetch latest STABLE release info from GitHub API (excludes pre-releases)
+    # Using /releases/latest endpoint ensures we get only stable releases
     local release_json=$(curl -s --ssl-reqd --tlsv1.2 "$GITHUB_API_URL" -m 10 2>/dev/null)
     
     if [[ -z "$release_json" ]] || [[ "$release_json" == *"Not Found"* ]] || [[ "$release_json" == *"API rate limit"* ]]; then
         return 0  # Silently fail (return success to avoid ERR trap)
     fi
     
+    # Verify this is a stable release (not pre-release or draft)
+    local is_prerelease=$(echo "$release_json" | grep -o '"prerelease":[^,]*' | grep -o 'true\|false')
+    local is_draft=$(echo "$release_json" | grep -o '"draft":[^,]*' | grep -o 'true\|false')
+    
+    # Skip if this is a pre-release or draft (protection against RC/beta versions)
+    if [[ "$is_prerelease" == "true" ]] || [[ "$is_draft" == "true" ]]; then
+        return 0  # Skip pre-releases and drafts
+    fi
+    
     # Extract version tag
     local remote_tag=$(echo "$release_json" | grep -o '"tag_name":"[^"]*"' | cut -d'"' -f4)
     local remote_version=$(echo "$remote_tag" | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    
+    # Additional safety: verify tag doesn't contain RC, beta, alpha, or pre markers
+    if [[ "$remote_tag" =~ (rc|RC|beta|BETA|alpha|ALPHA|pre|PRE) ]]; then
+        return 0  # Skip release candidates and pre-releases
+    fi
     
     [[ -z "$remote_version" ]] && return 0  # Return success to avoid ERR trap
     
@@ -576,24 +591,31 @@ verify_gpg_signature() {
     return 0
 }
 
-# 🔐 Verify SHA256 checksum
+# 🔐 Verify SHA256 checksum (MANDATORY)
 verify_sha256() {
     local file="$1"
     local expected_sha="$2"
     
+    # SHA256 is MANDATORY - no bypasses for security
     if [[ -z "$expected_sha" ]]; then
-        echo -e "${YELLOW}⚠️  No SHA256 in release, skipping verification${NC}"
-        return 0
+        echo -e "${RED}❌ SECURITY ERROR: No SHA256 checksum found!${NC}"
+        echo -e "${RED}Update cannot proceed without SHA256 verification.${NC}"
+        echo -e "${YELLOW}This protects you from corrupted or malicious files.${NC}"
+        return 1
     fi
     
-    echo -e "${CYAN}🔐 Verifying SHA256...${NC}"
+    echo -e "${CYAN}🔐 Verifying SHA256 checksum...${NC}"
     local actual_sha=$(sha256sum "$file" | awk '{print $1}')
     
+    echo -e "${GRAY}Expected: ${expected_sha}${NC}"
+    echo -e "${GRAY}Actual:   ${actual_sha}${NC}"
+    
     if [[ "$actual_sha" == "$expected_sha" ]]; then
-        echo -e "${GREEN}✓ SHA256 verified!${NC}"
+        echo -e "${GREEN}      ✓ SHA256 MATCH - File integrity confirmed!${NC}"
         return 0
     else
-        echo -e "${RED}❌ SHA256 FAILED! Update aborted.${NC}"
+        echo -e "${RED}❌ SHA256 MISMATCH! File is corrupted or tampered!${NC}"
+        echo -e "${RED}Update aborted for your safety.${NC}"
         return 1
     fi
 }
@@ -645,6 +667,23 @@ perform_update() {
     local release_tag="$2"
     local release_json="$3"
     
+    # Set up atomic update protection
+    local update_lock="${BASH_SOURCE[0]}.updating"
+    local update_temp="${BASH_SOURCE[0]}.new"
+    local update_backup="${BASH_SOURCE[0]}.backup"
+    
+    # Trap interruptions for cleanup
+    trap 'update_cleanup_on_interrupt "$update_lock" "$update_temp" "$update_backup"' INT TERM HUP
+    
+    # Check if previous update was interrupted
+    if [[ -f "$update_lock" ]]; then
+        echo -e "${YELLOW}⚠️  Previous update was interrupted!${NC}"
+        recover_from_interrupted_update "$update_lock" "$update_backup"
+    fi
+    
+    # Create update lock file
+    echo "UPDATE_IN_PROGRESS" > "$update_lock"
+    
     echo -e "${CYAN}⬇️  Downloading v${new_version} from ${release_tag}...${NC}"
     
     # Extract SHA256 from release (tries assets first, then body)
@@ -656,10 +695,20 @@ perform_update() {
         echo -e "${YELLOW}⚠️  No SHA256 checksum found in release${NC}"
     fi
     
-    # Create backup
+    # Create backup (atomic operation)
     local backup_dir="$LOG_DIR/backups"
-    mkdir -p "$backup_dir"
+    mkdir -p "$backup_dir" 2>/dev/null
     local backup_file="$backup_dir/convert.sh.v${CURRENT_VERSION}-$(date +%Y%m%d-%H%M%S)"
+    
+    # Create atomic backup
+    if ! cp "${BASH_SOURCE[0]}" "$update_backup" 2>/dev/null; then
+        echo -e "${RED}❌ Failed to create safety backup${NC}"
+        rm -f "$update_lock"
+        trap - INT TERM HUP
+        return 1
+    fi
+    
+    # Also save to backups directory
     cp "${BASH_SOURCE[0]}" "$backup_file" 2>/dev/null
     echo -e "${GREEN}✓ Backup: $backup_file${NC}"
     
@@ -674,38 +723,88 @@ perform_update() {
     fi
     
     echo -e "${BLUE}🔒 Downloading with SSL certificate verification...${NC}"
-    if ! curl -sL --ssl-reqd --tlsv1.2 "$download_url" -o convert.sh.new 2>/dev/null || [[ ! -s "convert.sh.new" ]]; then
+    echo -e "${CYAN}Source: ${download_url}${NC}"
+    echo ""
+    
+    # Download with progress bar
+    if ! curl -L --ssl-reqd --tlsv1.2 --progress-bar "$download_url" -o convert.sh.new 2>&1 | \
+         while IFS= read -r line; do
+             # Show curl's progress bar
+             echo -ne "\r${CYAN}⬇️  ${line}${NC}"
+         done || [[ ! -s "convert.sh.new" ]]; then
+        echo ""
         echo -e "${YELLOW}⚠️  Tag download failed, trying main branch...${NC}"
-        if ! curl -sL --ssl-reqd --tlsv1.2 "$fallback_url" -o convert.sh.new 2>/dev/null; then
+        echo -e "${CYAN}Source: ${fallback_url}${NC}"
+        echo ""
+        if ! curl -L --ssl-reqd --tlsv1.2 --progress-bar "$fallback_url" -o convert.sh.new 2>&1 | \
+             while IFS= read -r line; do
+                 echo -ne "\r${CYAN}⬇️  ${line}${NC}"
+             done; then
+            echo ""
             echo -e "${RED}❌ SSL verification failed or download error${NC}"
             return 1
         fi
     fi
+    echo ""  # New line after progress
+    echo -e "${GREEN}✓ Download complete${NC}"
     
     if [[ ! -f "convert.sh.new" ]] || [[ ! -s "convert.sh.new" ]]; then
         echo -e "${RED}❌ Download failed${NC}"
         return 1
     fi
     
+    echo ""
+    echo -e "${CYAN}${BOLD}╔═══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}${BOLD}║              🔒 SECURITY VERIFICATION                       ║${NC}"
+    echo -e "${CYAN}${BOLD}╚═══════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${BLUE}Running multiple security checks...${NC}"
+    echo ""
+    
     # Security Check 1: File size sanity check
+    echo -e "${CYAN}[1/6] Checking file size...${NC}"
     local file_size=$(stat -c%s "convert.sh.new" 2>/dev/null || echo "0")
     if [[ $file_size -lt $MIN_FILE_SIZE ]]; then
         echo -e "${RED}❌ Downloaded file too small ($file_size bytes) - possibly corrupted or fake${NC}"
         rm -f convert.sh.new
         return 1
     fi
-    echo -e "${GREEN}✓ File size check passed ($file_size bytes)${NC}"
+    echo -e "${GREEN}      ✓ File size check passed ($file_size bytes)${NC}"
     
     # Security Check 2: Verify file starts with shebang
+    echo -e "${CYAN}[2/6] Verifying file format...${NC}"
     local first_line=$(head -n1 "convert.sh.new" 2>/dev/null)
     if [[ ! "$first_line" =~ ^#!/.*bash ]]; then
         echo -e "${RED}❌ File doesn't appear to be a valid bash script${NC}"
         rm -f convert.sh.new
         return 1
     fi
-    echo -e "${GREEN}✓ File format check passed${NC}"
+    echo -e "${GREEN}      ✓ File format check passed${NC}"
+    
+    # Security Check 2.5: Verify downloaded file version matches expected version
+    echo -e "${CYAN}[2.5/6] Verifying version number...${NC}"
+    local downloaded_version=$(grep -m1 '^CURRENT_VERSION=' "convert.sh.new" 2>/dev/null | cut -d'"' -f2)
+    
+    if [[ -z "$downloaded_version" ]]; then
+        echo -e "${RED}❌ Cannot detect version in downloaded file${NC}"
+        rm -f convert.sh.new
+        return 1
+    fi
+    
+    # Ensure downloaded version matches the release we're trying to install
+    if [[ "$downloaded_version" != "$new_version" ]]; then
+        echo -e "${RED}❌ VERSION MISMATCH!${NC}"
+        echo -e "${RED}   Expected: v${new_version}${NC}"
+        echo -e "${RED}   Got: v${downloaded_version}${NC}"
+        echo -e "${YELLOW}This can happen if a new release was published during download.${NC}"
+        echo -e "${YELLOW}Please run the update again to get the correct version.${NC}"
+        rm -f convert.sh.new
+        return 1
+    fi
+    echo -e "${GREEN}      ✓ Version verified: v${downloaded_version}${NC}"
     
     # Security Check 3: GPG signature verification (if available)
+    echo -e "${CYAN}[3/6] Checking GPG signature...${NC}"
     local sig_url=""
     if [[ -n "$assets_url" ]]; then
         local assets_json=$(curl -sL --ssl-reqd --tlsv1.2 "$(echo "$release_json" | grep -o '"assets_url":"[^"]*"' | cut -d'"' -f4)" -m 10 2>/dev/null)
@@ -718,30 +817,60 @@ perform_update() {
     fi
     
     # Security Check 4: SHA256 checksum
+    echo -e "${CYAN}[4/6] Verifying SHA256 checksum...${NC}"
     if ! verify_sha256 "convert.sh.new" "$expected_sha256"; then
         rm -f convert.sh.new
         return 1
     fi
     
     # Security Check 5: Bash syntax validation
+    echo -e "${CYAN}[5/6] Validating bash syntax...${NC}"
     if ! bash -n convert.sh.new 2>/dev/null; then
         echo -e "${RED}❌ Syntax error in download${NC}"
         rm -f convert.sh.new
         return 1
     fi
+    echo -e "${GREEN}      ✓ Syntax validation passed${NC}"
     
-    # Replace
-    mv convert.sh.new "${BASH_SOURCE[0]}"
-    chmod +x "${BASH_SOURCE[0]}"
+    # Security Check 6: Install (ATOMIC OPERATION)
+    echo -e "${CYAN}[6/6] Installing update...${NC}"
     
-    echo -e "${GREEN}${BOLD}✓ Updated to v${new_version}!${NC}"
-    echo -e "${YELLOW}🔄 Restart script to use new version${NC}"
+    # Atomic replace using mv (single syscall, safe even if interrupted)
+    if ! mv -f "convert.sh.new" "${BASH_SOURCE[0]}" 2>/dev/null; then
+        echo -e "${RED}❌ Installation failed!${NC}"
+        echo -e "${YELLOW}Restoring from backup...${NC}"
+        mv -f "$update_backup" "${BASH_SOURCE[0]}" 2>/dev/null
+        rm -f "$update_lock"
+        trap - INT TERM HUP
+        return 1
+    fi
+    
+    chmod +x "${BASH_SOURCE[0]}" 2>/dev/null
+    
+    # Clean up atomic update files
+    rm -f "$update_lock" "$update_backup" 2>/dev/null
+    
+    # Remove trap
+    trap - INT TERM HUP
+    
+    echo -e "${GREEN}      ✓ Installation complete${NC}"
+    
+    echo ""
+    echo -e "${GREEN}${BOLD}╔═══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}${BOLD}║               ✓ UPDATE SUCCESSFUL!                          ║${NC}"
+    echo -e "${GREEN}${BOLD}╚═══════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${CYAN}Updated from v${CURRENT_VERSION} to v${new_version}${NC}"
+    echo -e "${BLUE}Backup saved at: ${backup_file}${NC}"
+    echo ""
+    echo -e "${YELLOW}🔄 Please restart the script to use the new version${NC}"
+    echo ""
     exit 0
 }
 
 # 🔧 Manual update command
 manual_update() {
-    echo -e "${CYAN}🔄 Checking GitHub Releases...${NC}"
+    echo -e "${CYAN}🔄 Checking GitHub Releases for stable versions...${NC}"
     
     local release_json=$(curl -s --ssl-reqd --tlsv1.2 "$GITHUB_API_URL" 2>/dev/null)
     
@@ -751,9 +880,26 @@ manual_update() {
         return 1
     fi
     
+    # Verify this is a stable release (not pre-release or draft)
+    local is_prerelease=$(echo "$release_json" | grep -o '"prerelease":[^,]*' | grep -o 'true\|false')
+    local is_draft=$(echo "$release_json" | grep -o '"draft":[^,]*' | grep -o 'true\|false')
+    
+    if [[ "$is_prerelease" == "true" ]] || [[ "$is_draft" == "true" ]]; then
+        echo -e "${YELLOW}⚠️  Latest release is a pre-release or draft, skipping${NC}"
+        echo -e "${BLUE}Only stable releases are used for updates${NC}"
+        return 0
+    fi
+    
     local remote_tag=$(echo "$release_json" | grep -o '"tag_name":"[^"]*"' | cut -d'"' -f4)
     local remote_version=$(echo "$remote_tag" | grep -oE '[0-9]+\.[0-9]+' | head -1)
     local release_body=$(echo "$release_json" | grep -o '"body":"[^"]*"' | cut -d'"' -f4 | sed 's/\\n/\n/g' | sed 's/\\r//g')
+    
+    # Additional safety: verify tag doesn't contain RC, beta, alpha, or pre markers
+    if [[ "$remote_tag" =~ (rc|RC|beta|BETA|alpha|ALPHA|pre|PRE) ]]; then
+        echo -e "${YELLOW}⚠️  Skipping release candidate or pre-release: ${remote_tag}${NC}"
+        echo -e "${BLUE}Only stable releases are used for updates${NC}"
+        return 0
+    fi
     
     if [[ -z "$remote_version" ]]; then
         echo -e "${RED}❌ Cannot parse version${NC}"
@@ -774,7 +920,7 @@ manual_update() {
     read -r response
     
     if [[ "$response" =~ ^[Yy]$ ]]; then
-        perform_update "$remote_version" "$remote_tag" "$release_body"
+        perform_update "$remote_version" "$remote_tag" "$release_json"
     fi
 }
 
@@ -783,6 +929,62 @@ show_version_info() {
     echo -e "${CYAN}${BOLD}Smart GIF Converter v${CURRENT_VERSION}${NC}"
     echo -e "${BLUE}Repository: ${CYAN}https://github.com/${GITHUB_REPO}${NC}"
     echo -e "${BLUE}Releases: ${CYAN}${GITHUB_RELEASES_URL}${NC}"
+}
+
+# 🛡️ Cleanup on update interruption
+update_cleanup_on_interrupt() {
+    local lock_file="$1"
+    local temp_file="$2"
+    local backup_file="$3"
+    
+    echo ""
+    echo -e "${RED}❌ Update interrupted!${NC}"
+    
+    # Clean up temporary files
+    rm -f "$temp_file" "convert.sh.new" 2>/dev/null
+    
+    # Check if original file still exists
+    if [[ ! -f "${BASH_SOURCE[0]}" ]] && [[ -f "$backup_file" ]]; then
+        echo -e "${YELLOW}Restoring from backup...${NC}"
+        mv -f "$backup_file" "${BASH_SOURCE[0]}" 2>/dev/null
+        chmod +x "${BASH_SOURCE[0]}" 2>/dev/null
+        echo -e "${GREEN}✓ Original file restored${NC}"
+    fi
+    
+    # Keep lock file to detect interrupted update on next run
+    echo -e "${BLUE}ℹ️  Update was safely cancelled. Original file is intact.${NC}"
+    exit 1
+}
+
+# 🔄 Recover from previously interrupted update
+recover_from_interrupted_update() {
+    local lock_file="$1"
+    local backup_file="$2"
+    
+    echo -e "${CYAN}Checking for recovery...${NC}"
+    
+    # If backup exists and original is missing or corrupted
+    if [[ -f "$backup_file" ]]; then
+        if [[ ! -f "${BASH_SOURCE[0]}" ]]; then
+            echo -e "${YELLOW}Original file missing, restoring from backup...${NC}"
+            mv -f "$backup_file" "${BASH_SOURCE[0]}" 2>/dev/null
+            chmod +x "${BASH_SOURCE[0]}" 2>/dev/null
+            echo -e "${GREEN}✓ File restored from backup${NC}"
+        elif ! bash -n "${BASH_SOURCE[0]}" 2>/dev/null; then
+            echo -e "${YELLOW}Original file corrupted, restoring from backup...${NC}"
+            mv -f "$backup_file" "${BASH_SOURCE[0]}" 2>/dev/null
+            chmod +x "${BASH_SOURCE[0]}" 2>/dev/null
+            echo -e "${GREEN}✓ Corrupted file replaced with backup${NC}"
+        else
+            echo -e "${GREEN}✓ Original file is intact${NC}"
+            rm -f "$backup_file" 2>/dev/null
+        fi
+    fi
+    
+    # Clean up lock file
+    rm -f "$lock_file" 2>/dev/null
+    echo -e "${GREEN}✓ Recovery check complete${NC}"
+    echo ""
 }
 
 # 🆕 First-run auto-update preference prompt
