@@ -955,6 +955,13 @@ manual_update() {
     local remote_version=$(echo "$remote_tag" | grep -oE '[0-9]+\.[0-9]+' | head -1)
     local release_body=$(echo "$release_json" | grep -o '"body":"[^"]*"' | cut -d'"' -f4 | sed 's/\\n/\n/g' | sed 's/\\r//g')
     
+    # Extract release timestamp for validation
+    local remote_timestamp_iso=$(echo "$release_json" | grep -o '"published_at":"[^"]*"' | cut -d'"' -f4)
+    local remote_timestamp=0
+    if [[ -n "$remote_timestamp_iso" ]]; then
+        remote_timestamp=$(date -d "$remote_timestamp_iso" +%s 2>/dev/null || echo "0")
+    fi
+    
     # Additional safety: verify tag doesn't contain RC, beta, alpha, or pre markers
     if [[ "$remote_tag" =~ (rc|RC|beta|BETA|alpha|ALPHA|pre|PRE) ]]; then
         echo -e "${YELLOW}⚠️  Skipping release candidate or pre-release: ${remote_tag}${NC}"
@@ -965,6 +972,18 @@ manual_update() {
     if [[ -z "$remote_version" ]]; then
         echo -e "${RED}❌ Cannot parse version${NC}"
         return 1
+    fi
+    
+    # Load installed fingerprint for timestamp comparison
+    load_release_fingerprint 2>/dev/null
+    
+    # Timestamp validation: prevent downgrade to older releases
+    if [[ "$remote_timestamp" -gt 0 && "$INSTALLED_RELEASE_TIMESTAMP" != "0" ]]; then
+        if [[ "$remote_timestamp" -le "$INSTALLED_RELEASE_TIMESTAMP" ]]; then
+            echo -e "${YELLOW}⚠️  Remote release is not newer than installed version (timestamp check)${NC}"
+            echo -e "${GREEN}✓ Already have the latest release${NC}"
+            return 0
+        fi
     fi
     
     if [[ "$remote_version" == "$CURRENT_VERSION" ]]; then
