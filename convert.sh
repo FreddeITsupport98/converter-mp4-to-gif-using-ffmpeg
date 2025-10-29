@@ -689,7 +689,23 @@ check_for_updates() {
     
     if [[ "$needs_update" == "true" ]]; then
         local release_body=$(echo "$release_json" | grep -o '"body":"[^"]*"' | cut -d'"' -f4 | sed 's/\\n/\n/g' | sed 's/\\r//g')
+        
+        # Save update info to file for main menu display
+        local update_info_file="$LOG_DIR/.update_available"
+        cat > "$update_info_file" 2>/dev/null << EOF
+UPDATE_AVAILABLE=true
+REMOTE_VERSION="$remote_version"
+REMOTE_TAG="$remote_tag"
+REMOTE_TIMESTAMP="$remote_timestamp"
+REMOTE_SHA256="$remote_sha256"
+CHECKED_AT=$(date +%s)
+EOF
+        
         show_update_available "$remote_version" "$remote_tag" "$release_body" "prompt"
+    else
+        # No update available - clear the update info file
+        local update_info_file="$LOG_DIR/.update_available"
+        rm -f "$update_info_file" 2>/dev/null || true
     fi
     
     return 0  # Always return success
@@ -11414,7 +11430,29 @@ show_main_menu() {
         local clickable_output=$(make_clickable_path "$output_abs_path" "$output_display")
         
         echo -e "${MAGENTA}⚙️  Current Settings: ${QUALITY} quality, ${ASPECT_RATIO} aspect ratio, AI:${ai_status}${NC}"
-        echo -e "${BLUE}💾 Output Directory: $clickable_output${NC}\n"
+        echo -e "${BLUE}💾 Output Directory: $clickable_output${NC}"
+        
+        # Dev Mode and Update Status Display
+        local dev_status=$([[ "$DEV_MODE" == true ]] && echo "${YELLOW}DEV${NC}" || echo "${GREEN}USER${NC}")
+        local update_status=""
+        local update_info_file="$LOG_DIR/.update_available"
+        
+        # Check if update is available
+        if [[ -f "$update_info_file" && "$AUTO_UPDATE_ENABLED" == "true" ]]; then
+            # Load update information
+            source "$update_info_file" 2>/dev/null || true
+            if [[ "$UPDATE_AVAILABLE" == "true" && -n "$REMOTE_VERSION" ]]; then
+                update_status="${YELLOW}UPDATE AVAILABLE${NC} - Smart GIF Converter ${GREEN}v${REMOTE_VERSION}${NC}"
+            else
+                update_status="${GREEN}UP TO DATE${NC}"
+            fi
+        elif [[ "$AUTO_UPDATE_ENABLED" == "true" ]]; then
+            update_status="${GREEN}UP TO DATE${NC}"
+        else
+            update_status="${RED}DISABLED${NC}"
+        fi
+        
+        echo -e "${CYAN}🔧 Mode: $dev_status | 🔄 Updates: $update_status${NC}\n"
         
         echo -e "${CYAN}${BOLD}🎯 MAIN MENU${NC}"
         echo -e "${YELLOW}🎹 Navigation: ${GREEN}w${NC}=Up ${GREEN}s${NC}=Down ${GREEN}Enter${NC}=Select ${GREEN}q${NC}=Quit ${GREEN}h${NC}=Help${NC}\n"
@@ -14470,10 +14508,10 @@ start_conversion() {
 # 🎡 Welcome screen with friendly introduction
 show_welcome() {
     clear
-    echo -e "${CYAN}${BOLD}╔═══════════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}${BOLD}║                    🎬 SMART GIF CONVERTER v5.1                    ║${NC}"
+    echo -e "${CYAN}${BOLD}╔═════════════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}${BOLD}║                    🎬 SMART GIF CONVERTER v5.3                    ║${NC}"
     echo -e "${CYAN}${BOLD}║                  🤖 AI-Powered Video to GIF Magic                  ║${NC}"
-    echo -e "${CYAN}${BOLD}╚═══════════════════════════════════════════════════════════════════════╝${NC}"
+    echo -e "${CYAN}${BOLD}╚═════════════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "${GREEN}👋 Welcome! Let me help you convert videos to amazing GIFs!${NC}"
     echo -e "${BLUE}💻 This tool automatically optimizes everything for you.${NC}"
@@ -14640,7 +14678,7 @@ get_responsive_help_text() {
 # 🎪 Function to print fancy headers (simplified for menus)
 print_header() {
     echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}${BOLD}║                🎬 SMART GIF CONVERTER v5.1                ║${NC}"
+    echo -e "${CYAN}${BOLD}║                🎬 SMART GIF CONVERTER v5.3                ║${NC}"
     echo -e "${CYAN}${BOLD}║                AI-Powered Video to GIF Magic                  ║${NC}"
     echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
