@@ -7,21 +7,65 @@
 [![FFmpeg](https://img.shields.io/badge/Powered%20by-FFmpeg-007808?logo=ffmpeg&logoColor=white)](https://ffmpeg.org/)
 [![AI](https://img.shields.io/badge/AI-Powered-FF6B6B?logo=brain&logoColor=white)](#ai-features)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-5.2-brightgreen.svg)](#latest-updates)
+[![Version](https://img.shields.io/badge/Version-5.3-brightgreen.svg)](#latest-updates)
 
 ---
 
-## 🆕 Latest Updates (Version 5.2)
+## 🆕 Latest Updates (Version 5.3)
+
+### **🚀 What's New in v5.3**
+
+#### **🛠️ Development Mode Protection** (NEW!)
+**Foolproof protection for developers** - The script now intelligently detects Git repositories!
+
+- **🧠 6-Layer Auto-Detection**:
+  - ✅ Git repository detection
+  - ✅ Repository identity verification
+  - ✅ Development file indicators (WARP.md, CHANGELOG.md)
+  - ✅ Git tracking status
+  - ✅ Uncommitted changes detection
+  - ✅ Manual override markers (`.dev_mode`)
+
+- **🛡️ What It Does**:
+  - Auto-disables updates in development environments
+  - Protects your work from accidental overwrites
+  - Zero configuration needed - just works!
+  - Clear messages explaining why dev mode is active
+
+- **🏷️ Manual Control**:
+  ```bash
+  touch .dev_mode      # Force development mode ON
+  touch .no_dev_mode   # Force user mode ON (testing)
+  ```
+
+#### **🔒 Enhanced Security** (Bulletproof Updates)
+- **🕒 Timestamp Validation**: Only accepts releases NEWER than installed version
+  - Extracts `published_at` from GitHub API
+  - Blocks updates if remote ≤ installed timestamp
+  - Prevents stale cache or older releases
+
+- **💼 Release Fingerprint System**: Tracks exact version identity
+  - Stores: version, SHA256, Git tag, **timestamp**, install date
+  - Location: `~/.smart-gif-converter/.release_fingerprint`
+  - Prevents re-downloading same version
+  - Detects hotfixes (same version, different SHA256)
+
+- **🔐 Mandatory SHA256 Verification**: No bypasses for security
+  - Extracts from GitHub release assets or notes
+  - **Aborts if checksum missing or fails**
+  - Cryptographic verification before installation
+
+- **🚫 Pre-Release Filtering**: Only stable releases
+  - Checks `prerelease` and `draft` flags
+  - Skips RC/beta/alpha releases automatically
 
 ### **🔄 Bulletproof Auto-Update System**
 - **✅ GitHub Releases Integration**: Automatic update checking from GitHub Releases API
-- **🔐 SHA256 Verification**: Secure updates with cryptographic checksum validation (MANDATORY - no bypasses)
-- **🕒 Timestamp Validation**: Ensures only NEWER releases are accepted (prevents older release confusion)
-- **💼 Release Fingerprint Tracking**: Stores SHA256 + timestamp of installed version for comparison
-- **🚫 Pre-Release Filtering**: Automatically skips RC/beta/alpha releases, only stable versions
+- **7-Layer Security Verification**: File size, format, version, SHA256, syntax, atomic install, fingerprint
 - **📝 Release Notes Display**: Preview release notes before updating
 - **⚙️ User Preference**: Enable/disable auto-updates with first-run prompt
 - **🛡️ Safe Updates**: Automatic backups, syntax validation, atomic file replacement, and rollback capability
+- **💾 Backup Directory**: `~/.smart-gif-converter/backups/` - All update backups saved
 
 ### **📦 Enhanced Dependency Management**
 - **✅ git & curl Required**: Added as dependencies for auto-update functionality
@@ -64,6 +108,47 @@ Every update goes through 7 security checks:
 ./convert.sh --update           # Download and install latest version
 ```
 
+### **🌟 v5.3 Feature Highlights**
+
+| Feature | Description | Benefit |
+|---------|-------------|----------|
+| 🛠️ **Dev Mode Protection** | Auto-detects Git repositories | Developers can work safely without update interference |
+| 🕒 **Timestamp Validation** | Only accepts newer releases | Prevents older release confusion |
+| 💼 **Release Fingerprint** | Tracks SHA256 + timestamp | 100% version accuracy |
+| 🔐 **Mandatory SHA256** | No bypasses for security | Guaranteed file integrity |
+| 🏷️ **Manual Markers** | `.dev_mode` / `.no_dev_mode` files | Absolute control when needed |
+| 🚫 **Pre-Release Filter** | Skips RC/beta/alpha | Only stable releases installed |
+| 💾 **Auto Backups** | Timestamped backups before updates | Easy rollback if needed |
+
+### **⚡ Quick Start with v5.3 Features**
+
+#### **For Regular Users:**
+```bash
+# Updates now have bulletproof security
+./convert.sh --check-update     # Check for updates (SHA256 + timestamp verified)
+./convert.sh --update           # Install with 7-layer security verification
+
+# AI-powered conversion works as before
+./convert.sh --ai --preset high
+```
+
+#### **For Developers:**
+```bash
+# Clone repository for development
+git clone https://github.com/FreddeITsupport98/converter-mp4-to-gif-using-ffmpeg.git
+cd converter-mp4-to-gif-using-ffmpeg
+
+# Development mode activates automatically!
+./convert.sh
+# Output: ⚠️  DEVELOPMENT MODE ACTIVE
+#         🛠️  Auto-update: DISABLED
+
+# Optional: Add .dev_mode marker for absolute protection
+touch .dev_mode
+
+# Work safely - updates won't interfere!
+```
+
 ### **🔐 Release Fingerprint System**
 The script now tracks the exact identity of your installed version:
 
@@ -91,6 +176,50 @@ The script now tracks the exact identity of your installed version:
    - Remote version ≠ current version (detects new releases)
 3. Only proceeds with update if ALL checks pass
 4. After update, saves new fingerprint with verified SHA256 + timestamp
+
+### **🛠️ Development Mode Protection**
+**Foolproof protection for developers** - Auto-detects Git repositories and disables updates!
+
+#### **6-Layer Detection System**
+The script automatically detects if it's running in a development environment:
+
+1. **📌 Git Repository**: Checks for `.git` directory
+2. **🎯 Identity Verification**: Matches repository URL to this project
+3. **📚 Development Files**: Looks for WARP.md, CHANGELOG.md, .gitignore
+4. **📝 Git Tracking**: Checks if script is tracked by Git
+5. **✏️ Uncommitted Changes**: Detects pending modifications
+6. **🏷️ Manual Markers**: `.dev_mode` or `.no_dev_mode` files
+
+#### **Protection Features**
+```bash
+⚠️  DEVELOPMENT MODE ACTIVE
+🛠️  Auto-update: DISABLED
+   Git repo: /path/to/your/repo
+   Reason: Script is Git-tracked
+   Reason: Uncommitted changes detected
+   → Your work is protected from auto-updates
+```
+
+**What Happens in Dev Mode:**
+- ✅ Auto-update checks: **Silently skipped**
+- ✅ Manual `--update`: **Blocked with helpful message**
+- ✅ Git workflow guidance: **Suggests proper commands**
+- ✅ Zero configuration: **Just works automatically**
+
+#### **Manual Control (Optional)**
+```bash
+# Force development mode ON (absolute protection)
+touch .dev_mode
+
+# Force user mode ON (for testing updates)
+touch .no_dev_mode
+```
+
+**🎯 Perfect For:**
+- Developers working on the script
+- Git repository clones for development
+- Testing changes without interference
+- Contributing to the project
 
 ### **📚 Enhanced Documentation**
 - **AUTO_UPDATE_IMPLEMENTATION.md**: Complete auto-update system documentation
@@ -1100,8 +1229,9 @@ rm -rf ~/.smart-gif-converter/ai_cache/
 **Settings & Data** (with clickable paths in supported terminals):
 - **Settings**: `~/.smart-gif-converter/settings.conf`
 - **Logs**: `~/.smart-gif-converter/errors.log`
-- **Release Fingerprint**: `~/.smart-gif-converter/.release_fingerprint` - Installed version tracking (NEW in v5.2)
+- **Release Fingerprint**: `~/.smart-gif-converter/.release_fingerprint` - Installed version tracking (NEW in v5.3)
 - **Update Backups**: `~/.smart-gif-converter/backups/` - Automatic backup before each update
+- **Dev Mode Marker**: `.dev_mode` - Optional file to force development mode (NEW in v5.3)
 - **AI Cache**: `~/.smart-gif-converter/ai_cache/`
   - `analysis_cache.db` - Main cache database (auto-cleaned every 7 days)
   - `.last_cleanup` - Timestamp of last cleanup run
@@ -1143,18 +1273,22 @@ chmod +x convert.sh
 - ✅ **Quality**: Professional-grade FFmpeg processing
 - ✅ **Speed**: Local processing with full hardware utilization
 - ✅ **Control**: 20+ customizable parameters
+- ✅ **Security**: Bulletproof updates with SHA256 + timestamp verification (v5.3)
 
 ### **🆚 vs. Other CLI Tools**
 - ✅ **AI-Powered**: Intelligent content analysis and optimization
 - ✅ **User-Friendly**: Interactive menus and guided setup
 - ✅ **Comprehensive**: Batch processing, duplicate detection, error recovery
 - ✅ **Modern**: Clickable paths, progress tracking, session recovery
+- ✅ **Developer-Friendly**: Auto-detects Git repos, disables updates in dev mode (v5.3)
+- ✅ **Enterprise Security**: 7-layer verification, release fingerprinting (v5.3)
 
 ### **🆚 vs. GUI Applications**
 - ✅ **Automation**: Perfect for scripts and batch workflows
 - ✅ **Performance**: Lower overhead, faster processing
 - ✅ **Flexibility**: Combine with other CLI tools and scripts
 - ✅ **Reliability**: Runs on servers and headless systems
+- ✅ **Safe Development**: Won't break your workflow if you're coding (v5.3)
 
 ---
 
@@ -1164,8 +1298,8 @@ chmod +x convert.sh
 > [📖 Read the complete technical documentation in WARP.md](WARP.md)
 
 ### **Architecture Overview**
-- **16,300+ lines** of advanced Bash scripting
-- **Version 5.2** - Latest stable release
+- **16,500+ lines** of advanced Bash scripting
+- **Version 5.3** - Latest stable release
 - **Multi-stage AI analysis** with ML-inspired algorithms
 - **Bulletproof auto-update system** with GitHub integration (NEW in v5.2)
 - **Release fingerprint tracking** with SHA256 + timestamp validation (NEW in v5.2)
