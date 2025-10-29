@@ -13,12 +13,15 @@
 
 ## 🆕 Latest Updates (Version 5.2)
 
-### **🔄 Auto-Update System**
+### **🔄 Bulletproof Auto-Update System**
 - **✅ GitHub Releases Integration**: Automatic update checking from GitHub Releases API
-- **🔐 SHA256 Verification**: Secure updates with cryptographic checksum validation
+- **🔐 SHA256 Verification**: Secure updates with cryptographic checksum validation (MANDATORY - no bypasses)
+- **🕒 Timestamp Validation**: Ensures only NEWER releases are accepted (prevents older release confusion)
+- **💼 Release Fingerprint Tracking**: Stores SHA256 + timestamp of installed version for comparison
+- **🚫 Pre-Release Filtering**: Automatically skips RC/beta/alpha releases, only stable versions
 - **📝 Release Notes Display**: Preview release notes before updating
 - **⚙️ User Preference**: Enable/disable auto-updates with first-run prompt
-- **🛡️ Safe Updates**: Automatic backups, syntax validation, and atomic file replacement
+- **🛡️ Safe Updates**: Automatic backups, syntax validation, atomic file replacement, and rollback capability
 
 ### **📦 Enhanced Dependency Management**
 - **✅ git & curl Required**: Added as dependencies for auto-update functionality
@@ -27,6 +30,26 @@
 - **✅ Post-Install Verification**: Automatic verification after package installation
 - **💡 Better Error Messages**: Clear explanations when installation fails
 
+### **🔒 Multi-Layer Security Verification**
+Every update goes through 7 security checks:
+
+1. **📄 File Size Validation**: Ensures download isn't corrupted/truncated
+2. **📜 Bash Script Verification**: Validates file starts with proper shebang
+3. **🏷️ Version Number Check**: Ensures downloaded version matches expected
+4. **🔐 SHA256 Checksum** (MANDATORY): Cryptographic verification - aborts on mismatch
+5. **✅ Syntax Validation**: `bash -n` check before installation
+6. **📦 Atomic Installation**: Single syscall replacement (safe even if interrupted)
+7. **💼 Fingerprint Update**: Saves verified SHA256 + timestamp for future comparisons
+
+**🚫 Update Aborts If**:
+- SHA256 is missing from release
+- SHA256 doesn't match downloaded file
+- Downloaded version differs from expected
+- Release timestamp is older than installed
+- Release is marked as pre-release/draft
+- Release tag contains RC/beta/alpha markers
+- Syntax errors detected in downloaded file
+
 ### **🐧 Cross-Distribution Support**
 - **✅ 10+ Distribution Families**: Debian, Ubuntu, Fedora, RHEL, Arch, openSUSE, Alpine, Gentoo, Void, NixOS
 - **🔍 Improved Detection**: Enhanced distro detection using ID and ID_LIKE fields
@@ -34,12 +57,40 @@
 - **📚 Distribution Guides**: Manual installation commands for all major distros
 - **🔗 Package Repository Links**: Direct links to official package searches
 
-### **🛠️ New Commands**
+### **🔧 New Commands**
 ```bash
 ./convert.sh --version          # Show version and repository info
 ./convert.sh --check-update     # Check for updates manually
 ./convert.sh --update           # Download and install latest version
 ```
+
+### **🔐 Release Fingerprint System**
+The script now tracks the exact identity of your installed version:
+
+- **🏷️ Fingerprint Storage**: `~/.smart-gif-converter/.release_fingerprint`
+- **📝 Tracks**:
+  - Version number (e.g., 5.2)
+  - SHA256 checksum of installed script
+  - GitHub release tag (e.g., v5.2)
+  - GitHub release timestamp (Unix epoch)
+  - Installation date and previous version
+
+**🛡️ Protection Against**:
+- ❌ Older releases being fetched as "updates"
+- ❌ GitHub API returning stale/cached data
+- ❌ Release confusion during simultaneous publishing
+- ❌ Accidental downgrades
+- ❌ Corrupted or tampered files
+- ❌ Re-downloading same version
+
+**✅ How It Works**:
+1. On first run, creates fingerprint with SHA256 of current script
+2. When checking updates, compares:
+   - Remote timestamp > installed timestamp (REQUIRED)
+   - Remote SHA256 ≠ installed SHA256 (detects hotfixes)
+   - Remote version ≠ current version (detects new releases)
+3. Only proceeds with update if ALL checks pass
+4. After update, saves new fingerprint with verified SHA256 + timestamp
 
 ### **📚 Enhanced Documentation**
 - **AUTO_UPDATE_IMPLEMENTATION.md**: Complete auto-update system documentation
@@ -108,10 +159,14 @@
 
 **Full Documentation:**
 - 📝 [Complete Changelog](CHANGELOG.md) - All version history
-- 🔄 [Auto-Update Guide](AUTO_UPDATE_IMPLEMENTATION.md) - Update system documentation
-- 🐧 [Cross-Distribution Support](CROSS_DISTRO_SUPPORT.md) - Linux distribution guide
-- 📊 [Update Quick Reference](UPDATE_QUICK_REFERENCE.md) - Update commands
-- 📖 [Development Guide](WARP.md) - For developers
+- 🔄 [Auto-Update System Guide](AUTO_UPDATE_IMPLEMENTATION.md) - Complete update system documentation
+  - Release fingerprint system
+  - GitHub timestamp validation  
+  - Multi-layer security verification
+  - Cross-distribution dependency management
+- 🐧 [Cross-Distribution Support](CROSS_DISTRO_SUPPORT.md) - Linux distribution guide (10+ distros)
+- ⚡ [Update Quick Reference](UPDATE_QUICK_REFERENCE.md) - Quick command guide
+- 📖 [Development Guide](WARP.md) - For developers (16,300+ lines of code)
 
 ### **🚀 Performance Revolution**
 - **⚡ 10x Faster Pre-Scan**: Memory-based O(1) cache lookups instead of disk searches
@@ -1045,6 +1100,8 @@ rm -rf ~/.smart-gif-converter/ai_cache/
 **Settings & Data** (with clickable paths in supported terminals):
 - **Settings**: `~/.smart-gif-converter/settings.conf`
 - **Logs**: `~/.smart-gif-converter/errors.log`
+- **Release Fingerprint**: `~/.smart-gif-converter/.release_fingerprint` - Installed version tracking (NEW in v5.2)
+- **Update Backups**: `~/.smart-gif-converter/backups/` - Automatic backup before each update
 - **AI Cache**: `~/.smart-gif-converter/ai_cache/`
   - `analysis_cache.db` - Main cache database (auto-cleaned every 7 days)
   - `.last_cleanup` - Timestamp of last cleanup run
@@ -1107,11 +1164,14 @@ chmod +x convert.sh
 > [📖 Read the complete technical documentation in WARP.md](WARP.md)
 
 ### **Architecture Overview**
-- **16,200+ lines** of advanced Bash scripting
-- **Version 5.1** - Latest stable release
+- **16,300+ lines** of advanced Bash scripting
+- **Version 5.2** - Latest stable release
 - **Multi-stage AI analysis** with ML-inspired algorithms
-- **Persistent output directory** with seamless configuration (NEW in v5.1)
-- **Fixed configuration flow** with proper settings persistence (NEW in v5.1)
+- **Bulletproof auto-update system** with GitHub integration (NEW in v5.2)
+- **Release fingerprint tracking** with SHA256 + timestamp validation (NEW in v5.2)
+- **Multi-layer security verification** - 7 checks before every update (NEW in v5.2)
+- **Timestamp-based update validation** - prevents older releases (NEW in v5.2)
+- **Persistent output directory** with seamless configuration
 - **Permission management system** with auto-fix capabilities
 - **Settings diagnostics** with comprehensive validation
 - **Cache integrity validation** with corruption detection
