@@ -4,6 +4,103 @@ All notable changes to Smart GIF Converter will be documented in this file.
 
 ## [5.3.0] - 2024-10-29
 
+### 🔬 Level 6: Advanced Frame-by-Frame Color & Structure Matching
+
+#### AI-Powered Deep Visual Analysis
+- **Perceptual Hash (dHash)**: Advanced difference hash algorithm for visual structure detection
+  - Calculates 64-bit hash per frame (8x8 grid)
+  - Detects visual structure changes independent of color shifts
+  - Uses Hamming distance for similarity comparison
+  - Threshold: < 5 bits different = visually similar
+  - Resistant to compression artifacts and minor modifications
+
+- **Color Histogram Analysis**: Comprehensive color profile matching
+  - 16-bin per channel histogram (4,096 color buckets)
+  - Analyzes color distribution across frames
+  - Uses correlation scoring for similarity
+  - Threshold: > 85% correlation = color match
+  - Detects recompression, color grading, and palette changes
+
+#### Frame Extraction & Comparison
+- **Multi-Frame Sampling**: Extracts 5 evenly distributed frames from each GIF
+- **Parallel Analysis**: Compares corresponding frames for consistency
+- **Dual Metrics**: Visual structure (dHash) + Color profile (histogram)
+- **Smart Pre-Filtering**: Only analyzes files with similar properties:
+  - Frame count within 10%
+  - Duration within 10%
+  - File size within 30%
+
+#### Detection Criteria (Level 6)
+- **Visual Structure Match**: ≥ 80% of frames have similar visual structure (Hamming distance < 5)
+- **Color Profile Match**: ≥ 85% of frames have similar color distribution (correlation > 85%)
+- **Both Required**: Must pass BOTH visual AND color checks to be flagged as duplicate
+- **Result Format**: Shows match percentages (e.g., "frame_analysis_match(V:95%,C:92%)")
+
+#### Technical Implementation
+- **Function**: `ai_advanced_frame_comparison()`
+  - Extracts frames using FFmpeg
+  - Calculates dHash using ImageMagick
+  - Generates color histograms
+  - Compares frame-by-frame
+  - Returns visual:color match percentages
+
+- **Helper Functions**:
+  - `ai_calculate_dhash()`: Difference hash generation
+  - `ai_hamming_distance()`: Binary hash comparison
+  - `ai_calculate_color_histogram()`: Color distribution analysis
+  - `ai_compare_histograms()`: Histogram correlation scoring
+  - `ai_extract_sample_frames()`: Frame extraction from GIFs
+
+#### Performance Optimization
+- **Selective Execution**: Only runs when:
+  - AI_ENABLED=true
+  - AI_VISUAL_SIMILARITY=true
+  - ImageMagick (convert) is installed
+  - Files pass pre-filtering checks
+- **Efficient Sampling**: Analyzes only 5 frames (not entire GIF)
+- **Early Termination**: Skips expensive analysis when basic properties differ
+- **Automatic Cleanup**: Temporary frame files cleaned immediately
+
+#### Use Cases
+- **Detects Recompressed GIFs**: Same content, different compression settings
+- **Finds Color-Graded Duplicates**: Same video with color adjustments
+- **Identifies Re-encoded Files**: Same source, different encoding parameters
+- **Catches Resized Versions**: Similar visual content at different resolutions (if close enough)
+
+#### Requirements
+- **ImageMagick**: Required for perceptual hashing and histogram analysis
+- **FFmpeg/FFprobe**: Required for frame extraction
+- **bc**: Used for binary/hex conversions in hash calculations
+
+### 📊 Enhanced Main Menu Status Display
+
+#### Real-Time Update Information
+- **Update Status Line**: Shows current mode and update availability
+  - **Mode Display**: 
+    - `DEV` (yellow) - Development mode active (Git repository detected)
+    - `USER` (green) - Normal user mode
+  - **Update Status**:
+    - `DISABLED` (red) - Auto-updates turned off
+    - `UP TO DATE` (green) - No updates available
+    - `UPDATE AVAILABLE - Smart GIF Converter v5.4` (yellow/green) - Shows specific version available
+
+#### Persistent Update Information
+- **Update Cache File**: `~/.smart-gif-converter/.update_available`
+  - Stores: version, tag, timestamp, SHA256, check time
+  - Persists across script runs
+  - Automatically cleared when no update available
+  - Updated during background update checks
+
+#### Display Format
+```
+🔧 Mode: USER | 🔄 Updates: UPDATE AVAILABLE - Smart GIF Converter v5.4
+```
+
+- User sees update notification immediately upon opening menu
+- No need to wait for background update check
+- Clear visual indication of development vs production mode
+- Clickable file paths for easy navigation to settings and logs
+
 ### 🔄 Bulletproof Auto-Update System
 
 #### GitHub Releases Integration

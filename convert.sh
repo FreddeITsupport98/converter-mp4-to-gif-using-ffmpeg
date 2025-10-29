@@ -6313,6 +6313,346 @@ finish_script() {
     cleanup_ram_disk >/dev/null 2>&1
 }
 
+# 🎨 Advanced Perceptual Hash (dHash) - Frame Visual Structure
+# Calculates difference hash for a single frame to detect visual structure
+ai_calculate_dhash() {
+    local frame_file="$1"
+    local hash_size=${2:-8}  # Default 8x8 = 64 bits
+    
+    if [[ ! -f "$frame_file" ]]; then
+        echo "ERROR"
+        return 1
+    fi
+    
+    # Check if ImageMagick is available
+    if ! command -v convert >/dev/null 2>&1; then
+        echo "NO_IMAGEMAGICK"
+        return 1
+    fi
+    
+    # dHash (Difference Hash) algorithm:
+    # 1. Resize to (hash_size+1) x hash_size (9x8 for default)
+    # 2. Convert to grayscale
+    # 3. Compare each pixel to its right neighbor
+    # 4. Generate hash based on pixel > neighbor comparisons
+    
+    local temp_pixels="$(mktemp)"
+    
+    # Extract grayscale pixel values in a grid
+    convert "$frame_file" -resize "$((hash_size + 1))x${hash_size}!" -colorspace Gray \
+        -depth 8 txt:- 2>/dev/null | grep -oP '\(\K[0-9]+' > "$temp_pixels" 2>/dev/null
+    
+    if [[ ! -s "$temp_pixels" ]]; then
+        rm -f "$temp_pixels"
+        echo "ERROR"
+        return 1
+    fi
+    
+    # Read pixels into array
+    local pixels=()
+    while read -r pixel; do
+        pixels+=("$pixel")
+    done < "$temp_pixels"
+    rm -f "$temp_pixels"
+    
+    # Calculate dHash by comparing adjacent pixels
+    local hash_binary=""
+    local row_width=$((hash_size + 1))
+    
+    for ((row=0; row<hash_size; row++)); do
+        for ((col=0; col<hash_size; col++)); do
+            local idx=$((row * row_width + col))
+            local idx_next=$((idx + 1))
+            
+            local current="${pixels[$idx]:-0}"
+            local next="${pixels[$idx_next]:-0}"
+            
+            # Compare: if current > next, bit is 1, else 0
+            if [[ $current -gt $next ]]; then
+                hash_binary+="1"
+            else
+                hash_binary+="0"
+            fi
+        done
+    done
+    
+    # Convert binary to hexadecimal for compact storage
+    local hash_hex=""
+    for ((i=0; i<${#hash_binary}; i+=4)); do
+        local nibble="${hash_binary:$i:4}"
+        local hex_digit=$((2#$nibble))
+        hash_hex+=$(printf '%x' "$hex_digit")
+    done
+    
+    echo "$hash_hex"
+    return 0
+}
+
+# 🎨 Calculate Hamming Distance between two hashes
+ai_hamming_distance() {
+    local hash1="$1"
+    local hash2="$2"
+    
+    if [[ -z "$hash1" || -z "$hash2" || "$hash1" == "ERROR" || "$hash2" == "ERROR" ]]; then
+        echo "999"  # Return large distance for errors
+        return 1
+    fi
+    
+    # Convert hex to binary
+    local binary1=""
+    local binary2=""
+    
+    for ((i=0; i<${#hash1}; i++)); do
+        local hex_char="${hash1:$i:1}"
+        binary1+=$(printf '%04d' $(echo "obase=2; ibase=16; ${hex_char^^}" | bc 2>/dev/null || echo "0"))
+    done
+    
+    for ((i=0; i<${#hash2}; i++)); do
+        local hex_char="${hash2:$i:1}"
+        binary2+=$(printf '%04d' $(echo "obase=2; ibase=16; ${hex_char^^}" | bc 2>/dev/null || echo "0"))
+    done
+    
+    # Count differing bits
+    local distance=0
+    local max_len=${#binary1}
+    [[ ${#binary2} -gt $max_len ]] && max_len=${#binary2}
+    
+    for ((i=0; i<max_len; i++)); do
+        local bit1="${binary1:$i:1}"
+        local bit2="${binary2:$i:1}"
+        
+        if [[ "$bit1" != "$bit2" ]]; then
+            ((distance++))
+        fi
+    done
+    
+    echo "$distance"
+    return 0
+}
+
+# 🌈 Color Histogram Analysis - Frame Color Profile
+ai_calculate_color_histogram() {
+    local frame_file="$1"
+    local bins=${2:-16}  # Number of bins per channel (16 = 4096 total colors)
+    
+    if [[ ! -f "$frame_file" ]]; then
+        echo "ERROR"
+        return 1
+    fi
+    
+    if ! command -v convert >/dev/null 2>&1; then
+        echo "NO_IMAGEMAGICK"
+        return 1
+    fi
+    
+    # Create histogram using ImageMagick
+    # Format: reduce colors to bins, then get color distribution
+    local temp_hist="$(mktemp)"
+    
+    # Quantize to desired bins and extract histogram
+    convert "$frame_file" -colors $((bins * bins * bins)) -format "%c" histogram:info:- 2>/dev/null | \
+        grep -oP '\(\K[0-9,]+' | head -20 > "$temp_hist" 2>/dev/null
+    
+    if [[ ! -s "$temp_hist" ]]; then
+        rm -f "$temp_hist"
+        echo "ERROR"
+        return 1
+    fi
+    
+    # Create compact histogram signature (top dominant colors)
+    local histogram_sig=""
+    while IFS=, read -r r g b; do
+        # Normalize to bin ranges
+        local r_bin=$((r * bins / 256))
+        local g_bin=$((g * bins / 256))
+        local b_bin=$((b * bins / 256))
+        histogram_sig+="${r_bin},${g_bin},${b_bin};"
+    done < "$temp_hist"
+    
+    rm -f "$temp_hist"
+    echo "${histogram_sig%;}"
+    return 0
+}
+
+# 📊 Compare Color Histograms using Correlation
+ai_compare_histograms() {
+    local hist1="$1"
+    local hist2="$2"
+    
+    if [[ -z "$hist1" || -z "$hist2" || "$hist1" == "ERROR" || "$hist2" == "ERROR" ]]; then
+        echo "0"  # No correlation
+        return 1
+    fi
+    
+    # Parse histograms into arrays
+    IFS=';' read -ra colors1 <<< "$hist1"
+    IFS=';' read -ra colors2 <<< "$hist2"
+    
+    # Calculate intersection (common colors)
+    local matches=0
+    local total=$((${#colors1[@]} + ${#colors2[@]}))
+    
+    for color1 in "${colors1[@]}"; do
+        for color2 in "${colors2[@]}"; do
+            # Calculate color distance
+            IFS=',' read -r r1 g1 b1 <<< "$color1"
+            IFS=',' read -r r2 g2 b2 <<< "$color2"
+            
+            local r_diff=$((r1 - r2))
+            local g_diff=$((g1 - g2))
+            local b_diff=$((b1 - b2))
+            
+            # Euclidean distance (squared for speed)
+            local distance=$((r_diff * r_diff + g_diff * g_diff + b_diff * b_diff))
+            
+            # If colors are very close, count as match
+            if [[ $distance -lt 5 ]]; then
+                ((matches++))
+                break
+            fi
+        done
+    done
+    
+    # Calculate correlation percentage
+    local correlation=0
+    if [[ $total -gt 0 ]]; then
+        correlation=$((matches * 200 / total))  # Scale to 0-100
+    fi
+    
+    echo "$correlation"
+    return 0
+}
+
+# 🎬 Extract Multiple Frames for Analysis
+ai_extract_sample_frames() {
+    local gif_file="$1"
+    local num_frames=${2:-5}  # Sample 5 frames by default
+    local output_dir="$3"
+    
+    if [[ ! -f "$gif_file" ]]; then
+        return 1
+    fi
+    
+    mkdir -p "$output_dir" 2>/dev/null || return 1
+    
+    # Get total frame count
+    local total_frames=$(ffprobe -v error -select_streams v:0 -count_packets \
+        -show_entries stream=nb_read_packets -of csv=p=0 "$gif_file" 2>/dev/null)
+    
+    if [[ -z "$total_frames" || $total_frames -eq 0 ]]; then
+        return 1
+    fi
+    
+    # Extract evenly distributed frames
+    local frame_indices=()
+    for ((i=0; i<num_frames; i++)); do
+        local frame_idx=$((total_frames * i / num_frames))
+        frame_indices+=("$frame_idx")
+    done
+    
+    # Extract frames using FFmpeg
+    local success=0
+    for idx in "${frame_indices[@]}"; do
+        local output_frame="$output_dir/frame_${idx}.png"
+        if timeout 3 ffmpeg -i "$gif_file" -vf "select=eq(n\\,$idx)" \
+            -vframes 1 -y "$output_frame" >/dev/null 2>&1; then
+            ((success++))
+        fi
+    done
+    
+    echo "$success"
+    return 0
+}
+
+# 🔬 Level 6: Frame-by-Frame Color & Structure Analysis
+ai_advanced_frame_comparison() {
+    local gif1="$1"
+    local gif2="$2"
+    local temp_dir="$3"
+    
+    # Create separate directories for each GIF's frames
+    local frames_dir1="$temp_dir/frames_$(basename "$gif1" .gif)_$$"
+    local frames_dir2="$temp_dir/frames_$(basename "$gif2" .gif)_$$"
+    mkdir -p "$frames_dir1" "$frames_dir2" 2>/dev/null || return 1
+    
+    # Extract sample frames from both GIFs
+    local num_frames1=$(ai_extract_sample_frames "$gif1" 5 "$frames_dir1")
+    local num_frames2=$(ai_extract_sample_frames "$gif2" 5 "$frames_dir2")
+    
+    if [[ $num_frames1 -eq 0 || $num_frames2 -eq 0 ]]; then
+        rm -rf "$frames_dir1" "$frames_dir2" 2>/dev/null
+        echo "0:0"  # No match
+        return 1
+    fi
+    
+    # Compare frames: Calculate perceptual hashes and color histograms
+    local total_comparisons=0
+    local visual_matches=0
+    local color_matches=0
+    
+    shopt -s nullglob
+    local frames1=("$frames_dir1"/*.png)
+    local frames2=("$frames_dir2"/*.png)
+    shopt -u nullglob
+    
+    # Compare corresponding frames
+    local max_frames=${#frames1[@]}
+    [[ ${#frames2[@]} -lt $max_frames ]] && max_frames=${#frames2[@]}
+    
+    for ((i=0; i<max_frames; i++)); do
+        local frame1="${frames1[$i]}"
+        local frame2="${frames2[$i]}"
+        
+        if [[ ! -f "$frame1" || ! -f "$frame2" ]]; then
+            continue
+        fi
+        
+        # Calculate perceptual hashes (visual structure)
+        local dhash1=$(ai_calculate_dhash "$frame1" 8)
+        local dhash2=$(ai_calculate_dhash "$frame2" 8)
+        
+        if [[ "$dhash1" != "ERROR" && "$dhash2" != "ERROR" && "$dhash1" != "NO_IMAGEMAGICK" ]]; then
+            local hamming_dist=$(ai_hamming_distance "$dhash1" "$dhash2")
+            
+            # Hamming distance < 5 means very similar visual structure
+            if [[ $hamming_dist -lt 5 ]]; then
+                ((visual_matches++))
+            fi
+        fi
+        
+        # Calculate color histograms (color profile)
+        local hist1=$(ai_calculate_color_histogram "$frame1" 16)
+        local hist2=$(ai_calculate_color_histogram "$frame2" 16)
+        
+        if [[ "$hist1" != "ERROR" && "$hist2" != "ERROR" ]]; then
+            local color_correlation=$(ai_compare_histograms "$hist1" "$hist2")
+            
+            # Correlation > 85% means very similar color profile
+            if [[ $color_correlation -gt 85 ]]; then
+                ((color_matches++))
+            fi
+        fi
+        
+        ((total_comparisons++))
+    done
+    
+    # Cleanup
+    rm -rf "$frames_dir1" "$frames_dir2" 2>/dev/null
+    
+    # Calculate match percentages
+    local visual_match_pct=0
+    local color_match_pct=0
+    
+    if [[ $total_comparisons -gt 0 ]]; then
+        visual_match_pct=$((visual_matches * 100 / total_comparisons))
+        color_match_pct=$((color_matches * 100 / total_comparisons))
+    fi
+    
+    # Return results as "visual:color"
+    echo "${visual_match_pct}:${color_match_pct}"
+    return 0
+}
+
 # 🔍 Hyper-Optimized AI-Powered Duplicate Detection with Multi-Threading
 detect_duplicate_gifs() {
     echo -e "${BLUE}${BOLD}🚀 AI-Enhanced Parallel Duplicate Detection${NC}"
@@ -7273,6 +7613,48 @@ detect_duplicate_gifs() {
                         is_duplicate=true
                         similarity_reason="filename_property_match"
                         ((DUPLICATE_STATS_NEAR_IDENTICAL++))
+                    fi
+                fi
+            # Level 6: Advanced Frame-by-Frame Color & Structure Matching (AI-powered deep analysis)
+            elif [[ "$AI_ENABLED" == "true" ]] && [[ "$AI_VISUAL_SIMILARITY" == "true" ]] && \
+                 command -v convert >/dev/null 2>&1; then
+                
+                # Perform deep frame analysis only if:
+                # 1. Frame counts are close (within 10%)
+                # 2. Durations are close (within 10%)
+                # 3. File sizes are similar (within 30%)
+                
+                local frame1="${gif_frame_counts[$file1]}"
+                local frame2="${gif_frame_counts[$file2]}"
+                local dur1="${gif_durations[$file1]}"
+                local dur2="${gif_durations[$file2]}"
+                local size1="${gif_sizes[$file1]}"
+                local size2="${gif_sizes[$file2]}"
+                
+                # Quick pre-check before expensive frame analysis
+                if [[ $frame1 -gt 0 && $frame2 -gt 0 && $dur1 -gt 0 && $dur2 -gt 0 ]]; then
+                    local frame_diff=$(( (frame1 > frame2 ? frame1 - frame2 : frame2 - frame1) * 100 / (frame1 > frame2 ? frame1 : frame2) ))
+                    local dur_diff=$(( (dur1 > dur2 ? dur1 - dur2 : dur2 - dur1) * 100 / (dur1 > dur2 ? dur1 : dur2) ))
+                    local size_diff=$(( (size1 > size2 ? size1 - size2 : size2 - size1) * 100 / (size1 > size2 ? size1 : size2) ))
+                    
+                    # Only proceed with expensive frame analysis if basic properties are close
+                    if [[ $frame_diff -lt 10 && $dur_diff -lt 10 && $size_diff -lt 30 ]]; then
+                        # Perform advanced frame-by-frame comparison
+                        local frame_analysis=$(ai_advanced_frame_comparison "$file1" "$file2" "$temp_analysis_dir")
+                        
+                        if [[ "$frame_analysis" != "0:0" ]]; then
+                            # Parse results: visual_match:color_match
+                            local visual_match=$(echo "$frame_analysis" | cut -d':' -f1)
+                            local color_match=$(echo "$frame_analysis" | cut -d':' -f2)
+                            
+                            # STRICT CRITERIA for Level 6:
+                            # Visual structure match >= 80% AND Color profile match >= 85%
+                            if [[ $visual_match -ge 80 && $color_match -ge 85 ]]; then
+                                is_duplicate=true
+                                similarity_reason="frame_analysis_match(V:${visual_match}%,C:${color_match}%)"
+                                ((DUPLICATE_STATS_NEAR_IDENTICAL++))
+                            fi
+                        fi
                     fi
                 fi
             fi
