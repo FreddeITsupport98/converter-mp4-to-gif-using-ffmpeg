@@ -7,11 +7,33 @@
 [![FFmpeg](https://img.shields.io/badge/Powered%20by-FFmpeg-007808?logo=ffmpeg&logoColor=white)](https://ffmpeg.org/)
 [![AI](https://img.shields.io/badge/AI-Powered-FF6B6B?logo=brain&logoColor=white)](#ai-features)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-5.0-brightgreen.svg)](#latest-updates)
+[![Version](https://img.shields.io/badge/Version-5.1-brightgreen.svg)](#latest-updates)
 
 ---
 
-## 🆕 Latest Updates (Version 5.0)
+## 🆕 Latest Updates (Version 5.1)
+
+### **📁 Output Directory Management**
+- **✅ Persistent Settings**: Output directory selection now persists across sessions and Ctrl+C interruptions
+- **🔧 Fixed Configuration Flow**: Resolved issues with directory settings being overwritten
+- **📊 Real-time Preview**: See exact output paths for each directory option before selecting
+- **💾 Auto-Save on Change**: All output directory changes saved immediately to config
+
+### **🎯 Enhanced Menu System**
+- **🖱️ Improved Navigation**: Fixed menu option mappings for output directory selection
+- **📂 Five Directory Options**: Default subfolder, Pictures, Current, Script directory, or Custom path
+- **✨ Visual Feedback**: Clickable paths in modern terminals for quick access
+- **🔄 Seamless Integration**: Settings load correctly after interruptions
+
+### **🛠️ Bug Fixes & Improvements**
+- **✅ Fixed Output Directory Persistence**: Directory selection now properly saved and restored
+- **🔧 Corrected Option Numbering**: All menu options properly aligned and functional
+- **📋 Config File Updates**: Enhanced settings.conf with OUTPUT_DIRECTORY and OUTPUT_DIR_MODE
+- **⚡ Zero Syntax Errors**: All changes validated with `bash -n`
+
+---
+
+## 🆕 Previous Updates (Version 5.0)
 
 ### **🔒 Permission Management & Diagnostics**
 - **✅ Permission Checking**: Comprehensive validation of directories and files
@@ -40,18 +62,17 @@
 # Validate cache integrity
 ./convert.sh --check-cache
 
-# Normal conversion with all v5.0 improvements
+# Configure output directory (interactive)
+./convert.sh  # Select "Configure Output Directory" from menu
+
+# Normal conversion with all v5.1 improvements
 ./convert.sh --ai --preset high
 ```
 
 **Full Documentation:**
-- 📝 [Complete Changelog](CHANGELOG_v5.0.md) - Technical details
+- 📝 [Complete Changelog](CHANGELOG_v5.1.md) - Technical details
 - 📊 [Update Summary](UPDATE_SUMMARY.md) - Quick reference
 - 📖 [Development Guide](WARP.md) - For developers
-
----
-
-## 🆕 Previous Updates (Version 2.0-4.0)
 
 ### **🚀 Performance Revolution**
 - **⚡ 10x Faster Pre-Scan**: Memory-based O(1) cache lookups instead of disk searches
@@ -1047,12 +1068,14 @@ chmod +x convert.sh
 > [📖 Read the complete technical documentation in WARP.md](WARP.md)
 
 ### **Architecture Overview**
-- **16,173 lines** of advanced Bash scripting (+342 in v5.0)
-- **Version 5.0** - Latest stable release
+- **16,200+ lines** of advanced Bash scripting
+- **Version 5.1** - Latest stable release
 - **Multi-stage AI analysis** with ML-inspired algorithms
-- **Permission management system** with auto-fix capabilities (NEW)
-- **Settings diagnostics** with comprehensive validation (NEW)
-- **Cache integrity validation** with corruption detection (NEW)
+- **Persistent output directory** with seamless configuration (NEW in v5.1)
+- **Fixed configuration flow** with proper settings persistence (NEW in v5.1)
+- **Permission management system** with auto-fix capabilities
+- **Settings diagnostics** with comprehensive validation
+- **Cache integrity validation** with corruption detection
 - **Corruption-proof caching** with atomic operations
 - **Generation-based learning** with persistent AI models
 - **Parallel processing** with intelligent resource allocation

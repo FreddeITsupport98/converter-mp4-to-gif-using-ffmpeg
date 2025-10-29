@@ -107,7 +107,7 @@ trap cleanup_lock_file EXIT
 # 🎬 SMART GIF CONVERTER - Revolutionary Video-to-GIF Conversion Tool
 # =============================================================================
 # Author: AI Assistant
-# Version: 4.0
+# Version: 5.1
 # Description: Advanced, customizable video-to-GIF converter with intelligent
 #              processing, quality optimization, and extensive configuration options.
 # =============================================================================
@@ -9813,13 +9813,11 @@ configure_output_directory() {
     local converted_gifs_path="$current_dir/converted_gifs"  # Option 1: ./converted_gifs from current dir
     local pictures_path="$HOME/Pictures/GIFs"                # Option 2: Pictures folder
     local current_dir_path="$current_dir"                    # Option 3: Current directory itself
-    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"  # Option 4: Script directory
     
     local options=(
         "./converted_gifs - Keep videos & GIFs organized"
         "Pictures folder - Save to system Pictures directory"
         "Current directory - Save with your video files"
-        "Script directory - Where convert.sh is located"
         "Custom path - Choose your own location"
         "Back to main menu"
     )
@@ -9827,7 +9825,6 @@ configure_output_directory() {
         "Path: $converted_gifs_path"
         "Path: $pictures_path"
         "Path: $current_dir_path"
-        "Path: $script_dir"
         "Browse with file picker or type any path you want"
         "Return to main menu without changes"
     )
@@ -9879,7 +9876,6 @@ configure_output_directory() {
             0) clickable_desc=$(make_clickable_path "$converted_gifs_path" "$converted_gifs_path") ;;
             1) clickable_desc=$(make_clickable_path "$pictures_path" "$pictures_path") ;;
             2) clickable_desc=$(make_clickable_path "$current_dir_path" "$current_dir_path") ;;
-            3) clickable_desc=$(make_clickable_path "$script_dir" "$script_dir") ;;
             *) clickable_desc="${descriptions[$selected]}" ;;
         esac
         
@@ -9992,27 +9988,6 @@ configure_output_directory() {
             sleep 2
             ;;
         "4")
-            # Script directory (where the script is located)
-            local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-            OUTPUT_DIRECTORY="$script_dir"
-            OUTPUT_DIR_MODE="script"
-            
-            # Verify directory is writable
-            if [[ ! -w "$OUTPUT_DIRECTORY" ]]; then
-                echo -e "\n${RED}❌ Script directory is not writable${NC}"
-                sleep 2
-                return 1
-            fi
-            
-            clear
-            print_header
-            echo -e "\n${GREEN}✓ Output directory set to: $script_dir${NC}"
-            echo -e "  ${CYAN}💡 Same folder as convert.sh script${NC}"
-            echo -e "  ${GREEN}✓ Directory ready${NC}"
-            save_settings --silent
-            sleep 2
-            ;;
-        "5")
             # Custom path - try file picker first
             local picker=$(detect_file_picker)
             local custom_path=""
@@ -10079,7 +10054,7 @@ configure_output_directory() {
             save_settings --silent
             sleep 2
             ;;
-        "6"|"0"|"")
+        "5"|"0"|"")
             return 0
             ;;
     esac
@@ -13215,7 +13190,7 @@ start_conversion() {
 show_welcome() {
     clear
     echo -e "${CYAN}${BOLD}╔═══════════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}${BOLD}║                    🎬 SMART GIF CONVERTER v5.0                    ║${NC}"
+    echo -e "${CYAN}${BOLD}║                    🎬 SMART GIF CONVERTER v5.1                    ║${NC}"
     echo -e "${CYAN}${BOLD}║                  🤖 AI-Powered Video to GIF Magic                  ║${NC}"
     echo -e "${CYAN}${BOLD}╚═══════════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
@@ -13384,7 +13359,7 @@ get_responsive_help_text() {
 # 🎪 Function to print fancy headers (simplified for menus)
 print_header() {
     echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}${BOLD}║                🎬 SMART GIF CONVERTER v5.0                ║${NC}"
+    echo -e "${CYAN}${BOLD}║                🎬 SMART GIF CONVERTER v5.1                ║${NC}"
     echo -e "${CYAN}${BOLD}║                AI-Powered Video to GIF Magic                  ║${NC}"
     echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
