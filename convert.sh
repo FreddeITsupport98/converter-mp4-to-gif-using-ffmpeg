@@ -9808,15 +9808,17 @@ select_video_folder() {
 configure_output_directory() {
     local selected=0
     
-    # Calculate actual paths for display
+    # Calculate actual paths for display based on what each option WILL set
     local current_dir="$(pwd)"
-    local converted_gifs_path="$current_dir/converted_gifs"
-    local pictures_path="$HOME/Pictures/GIFs"
-    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local converted_gifs_path="$current_dir/converted_gifs"  # Option 1: ./converted_gifs from current dir
+    local pictures_path="$HOME/Pictures/GIFs"                # Option 2: Pictures folder
+    local current_dir_path="$current_dir"                    # Option 3: Current directory itself
+    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"  # Option 4: Script directory
     
     local options=(
         "./converted_gifs - Keep videos & GIFs organized"
         "Pictures folder - Save to system Pictures directory"
+        "Current directory - Save with your video files"
         "Script directory - Where convert.sh is located"
         "Custom path - Choose your own location"
         "Back to main menu"
@@ -9824,6 +9826,7 @@ configure_output_directory() {
     local descriptions=(
         "Path: $converted_gifs_path"
         "Path: $pictures_path"
+        "Path: $current_dir_path"
         "Path: $script_dir"
         "Browse with file picker or type any path you want"
         "Return to main menu without changes"
@@ -9875,7 +9878,8 @@ configure_output_directory() {
         case $selected in
             0) clickable_desc=$(make_clickable_path "$converted_gifs_path" "$converted_gifs_path") ;;
             1) clickable_desc=$(make_clickable_path "$pictures_path" "$pictures_path") ;;
-            2) clickable_desc=$(make_clickable_path "$script_dir" "$script_dir") ;;
+            2) clickable_desc=$(make_clickable_path "$current_dir_path" "$current_dir_path") ;;
+            3) clickable_desc=$(make_clickable_path "$script_dir" "$script_dir") ;;
             *) clickable_desc="${descriptions[$selected]}" ;;
         esac
         
@@ -9968,6 +9972,27 @@ configure_output_directory() {
             sleep 2
             ;;
         "3")
+            # Current directory (where user is running the script FROM)
+            OUTPUT_DIRECTORY="$(pwd)"
+            OUTPUT_DIR_MODE="current"
+            
+            # Verify directory is writable
+            if [[ ! -w "$OUTPUT_DIRECTORY" ]]; then
+                echo -e "\n${RED}❌ Current directory is not writable${NC}"
+                sleep 2
+                return 1
+            fi
+            
+            clear
+            print_header
+            echo -e "\n${GREEN}✓ Output directory set to: $(pwd)${NC}"
+            echo -e "  ${CYAN}💡 Same folder as your video files (current directory)${NC}"
+            echo -e "  ${GREEN}✓ Directory ready${NC}"
+            save_settings --silent
+            sleep 2
+            ;;
+        "4")
+            # Script directory (where the script is located)
             local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
             OUTPUT_DIRECTORY="$script_dir"
             OUTPUT_DIR_MODE="script"
@@ -9987,7 +10012,7 @@ configure_output_directory() {
             save_settings --silent
             sleep 2
             ;;
-        "4")
+        "5")
             # Custom path - try file picker first
             local picker=$(detect_file_picker)
             local custom_path=""
@@ -10054,7 +10079,7 @@ configure_output_directory() {
             save_settings --silent
             sleep 2
             ;;
-        "5"|"0"|"")
+        "6"|"0"|"")
             return 0
             ;;
     esac
@@ -15444,6 +15469,13 @@ main() {
                         OUTPUT_DIR_MODE="default"
                     }
                     echo -e "\n${GREEN}✓ GIFs will be saved to: $OUTPUT_DIRECTORY${NC}"
+                    ;;
+                "3")
+                    # Current directory (where user is running the script FROM)
+                    OUTPUT_DIRECTORY="$(pwd)"
+                    OUTPUT_DIR_MODE="current"
+                    echo -e "\n${GREEN}✓ GIFs will be saved to: $OUTPUT_DIRECTORY${NC}"
+                    echo -e "  ${CYAN}💡 Same folder as your video files (current directory)${NC}"
                     ;;
                 "4")
                     # Script directory (where the script is located)
