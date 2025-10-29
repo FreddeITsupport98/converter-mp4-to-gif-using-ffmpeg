@@ -260,6 +260,10 @@ UPDATE_CHECK_INTERVAL=86400  # Check once per day (in seconds)
 AUTO_UPDATE_ENABLED=true  # Enable automatic update checks (user configurable)
 UPDATE_FIRST_RUN_PROMPT_DONE=false  # Track if first-run update prompt was shown
 
+# 🛠️ Development Mode Configuration (Auto-detected, hidden from settings)
+DEV_MODE=false           # Auto-detected: true if running in Git repository
+DEV_MODE_DETECTED=false  # Set to true if Git repository detected
+
 # 🔐 Release Fingerprint System - Track installed version integrity
 RELEASE_FINGERPRINT_FILE="$LOG_DIR/.release_fingerprint"
 INSTALLED_RELEASE_SHA256=""       # SHA256 of currently installed release
@@ -412,8 +416,184 @@ update_file_progress() {
 # 🔄 Auto-Update System (GitHub Releases with SHA256 Verification)
 # =================================================================
 
+# 🛠️ Detect if script is running in a Git repository (Development Mode)
+# FOOLPROOF: Multiple layers of detection to ensure 100% accuracy
+detect_dev_mode() {
+    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local script_file="${BASH_SOURCE[0]}"
+    
+    # ==================================================================
+    # LAYER 1: Check if script is inside a Git repository
+    # ==================================================================
+    local check_dir="$script_dir"
+    local git_root=""
+    
+    while [[ "$check_dir" != "/" ]]; do
+        if [[ -d "$check_dir/.git" ]]; then
+            git_root="$check_dir"
+            break
+        fi
+        check_dir="$(dirname "$check_dir")"
+    done
+    
+    # No Git repository found - definitely user mode
+    if [[ -z "$git_root" ]]; then
+        DEV_MODE_DETECTED=false
+        DEV_MODE=false
+        return 1
+    fi
+    
+    # ==================================================================
+    # LAYER 2: Verify it's THIS project's repository
+    # ==================================================================
+    local is_our_repo=false
+    
+    if [[ -f "$git_root/.git/config" ]]; then
+        local git_remote=$(grep -E 'url\s*=' "$git_root/.git/config" 2>/dev/null | head -1)
+        if [[ "$git_remote" =~ converter-mp4-to-gif-using-ffmpeg ]]; then
+            is_our_repo=true
+        fi
+    fi
+    
+    # ==================================================================
+    # LAYER 3: Check for development indicators
+    # ==================================================================
+    local dev_indicators=0
+    
+    # Check for WARP.md (development documentation)
+    [[ -f "$git_root/WARP.md" ]] && ((dev_indicators++))
+    
+    # Check for CHANGELOG.md
+    [[ -f "$git_root/CHANGELOG.md" ]] && ((dev_indicators++))
+    
+    # Check for .gitignore
+    [[ -f "$git_root/.gitignore" ]] && ((dev_indicators++))
+    
+    # Check if script is directly in repository root or subdirectory
+    if [[ "$script_dir" == "$git_root" ]] || [[ "$script_dir" == "$git_root"/* ]]; then
+        ((dev_indicators++))
+    fi
+    
+    # ==================================================================
+    # LAYER 4: Check Git status (tracked vs untracked)
+    # ==================================================================
+    local is_tracked=false
+    
+    if command -v git >/dev/null 2>&1; then
+        # Check if script file is tracked by Git
+        if git -C "$git_root" ls-files --error-unmatch "$script_file" >/dev/null 2>&1; then
+            is_tracked=true
+            ((dev_indicators++))
+        fi
+    fi
+    
+    # ==================================================================
+    # LAYER 5: Check for uncommitted changes (strongest indicator)
+    # ==================================================================
+    local has_uncommitted=false
+    
+    if command -v git >/dev/null 2>&1; then
+        # Check if there are any uncommitted changes in the repo
+        if ! git -C "$git_root" diff --quiet 2>/dev/null || \
+           ! git -C "$git_root" diff --cached --quiet 2>/dev/null; then
+            has_uncommitted=true
+            ((dev_indicators++))
+        fi
+    fi
+    
+    # ==================================================================
+    # LAYER 6: Check for .dev_mode marker file (ABSOLUTE OVERRIDE)
+    # ==================================================================
+    # If .dev_mode file exists in Git root, FORCE dev mode ON
+    # If .no_dev_mode exists, FORCE dev mode OFF
+    # This gives you absolute control when needed
+    
+    local force_dev_mode=false
+    local force_user_mode=false
+    
+    if [[ -f "$git_root/.dev_mode" ]]; then
+        force_dev_mode=true
+    fi
+    
+    if [[ -f "$git_root/.no_dev_mode" ]]; then
+        force_user_mode=true
+    fi
+    
+    # ABSOLUTE OVERRIDE: .dev_mode file forces development mode
+    if [[ "$force_dev_mode" == "true" ]]; then
+        DEV_MODE_DETECTED=true
+        DEV_MODE=true
+        echo -e "${YELLOW}⚠️  ${BOLD}DEVELOPMENT MODE ACTIVE${NC}" >&2
+        echo -e "${BLUE}🛠️  Auto-update: ${RED}DISABLED${NC}" >&2
+        echo -e "${GRAY}   Reason: .dev_mode marker file found${NC}" >&2
+        echo -e "${CYAN}   → Your work is protected from auto-updates${NC}" >&2
+        echo "" >&2
+        return 0
+    fi
+    
+    # ABSOLUTE OVERRIDE: .no_dev_mode file forces user mode (for testing)
+    if [[ "$force_user_mode" == "true" ]]; then
+        DEV_MODE_DETECTED=false
+        DEV_MODE=false
+        echo -e "${CYAN}ℹ️  User mode forced by .no_dev_mode marker${NC}" >&2
+        return 1
+    fi
+    
+    # ==================================================================
+    # DECISION: Enable DEV_MODE if ANY strong indicator is present
+    # ==================================================================
+    
+    # Strong indicators (any one triggers DEV_MODE)
+    if [[ "$is_our_repo" == "true" ]] || \
+       [[ "$is_tracked" == "true" ]] || \
+       [[ "$has_uncommitted" == "true" ]] || \
+       [[ $dev_indicators -ge 3 ]]; then
+        
+        DEV_MODE_DETECTED=true
+        DEV_MODE=true
+        
+        # Show detailed development mode notice
+        echo -e "${YELLOW}⚠️  ${BOLD}DEVELOPMENT MODE ACTIVE${NC}" >&2
+        echo -e "${BLUE}🛠️  Auto-update: ${RED}DISABLED${NC}" >&2
+        echo -e "${GRAY}   Git repo: $git_root${NC}" >&2
+        
+        # Show why DEV_MODE was triggered
+        if [[ "$is_our_repo" == "true" ]]; then
+            echo -e "${GRAY}   Reason: This repository (converter-mp4-to-gif-using-ffmpeg)${NC}" >&2
+        fi
+        if [[ "$is_tracked" == "true" ]]; then
+            echo -e "${GRAY}   Reason: Script is Git-tracked${NC}" >&2
+        fi
+        if [[ "$has_uncommitted" == "true" ]]; then
+            echo -e "${GRAY}   Reason: Uncommitted changes detected${NC}" >&2
+        fi
+        if [[ $dev_indicators -ge 3 ]]; then
+            echo -e "${GRAY}   Reason: $dev_indicators development indicators found${NC}" >&2
+        fi
+        
+        echo -e "${CYAN}   → Your work is protected from auto-updates${NC}" >&2
+        echo "" >&2
+        
+        return 0
+    fi
+    
+    # ==================================================================
+    # FALLBACK: Even if in a Git repo, it's not a development environment
+    # ==================================================================
+    
+    # User might have cloned the repo just to use it (not develop)
+    # No strong indicators found - treat as user mode
+    DEV_MODE_DETECTED=false
+    DEV_MODE=false
+    return 1
+}
+
 # 🔍 Check for updates from GitHub Releases
 check_for_updates() {
+    # 🛠️ Skip update check if in development mode
+    if [[ "$DEV_MODE" == "true" ]]; then
+        return 0  # Silently skip - don't disturb development
+    fi
     # Skip if auto-update is disabled
     if [[ "$AUTO_UPDATE_ENABLED" != "true" ]]; then
         return 0
@@ -931,6 +1111,20 @@ perform_update() {
 
 # 🔧 Manual update command
 manual_update() {
+    # 🛠️ Block manual updates in development mode
+    if [[ "$DEV_MODE" == "true" ]]; then
+        echo ""
+        echo -e "${YELLOW}⚠️  Development Mode Active${NC}"
+        echo -e "${RED}🚫 Auto-update is disabled in Git repositories${NC}"
+        echo ""
+        echo -e "${BLUE}This protects your development work from being overwritten.${NC}"
+        echo -e "${GRAY}If you want to update:${NC}"
+        echo -e "${GRAY}1. Commit your changes: ${GREEN}git commit -am 'Your changes'${NC}"
+        echo -e "${GRAY}2. Pull latest: ${GREEN}git pull origin main${NC}"
+        echo ""
+        return 1
+    fi
+    
     echo -e "${CYAN}🔄 Checking GitHub Releases for stable versions...${NC}"
     
     local release_json=$(curl -s --ssl-reqd --tlsv1.2 "$GITHUB_API_URL" 2>/dev/null)
@@ -16403,10 +16597,14 @@ main() {
     
     print_header
     
+    # 🛠️ Detect development mode (Git repository detection)
+    detect_dev_mode 2>/dev/null || true
+    
     # Initialize release fingerprint system (track installed version integrity)
     load_release_fingerprint 2>/dev/null || true
     
     # Automatic update check (silent, runs in background)
+    # Automatically skipped if DEV_MODE=true
     check_for_updates &
     
     # System checks
