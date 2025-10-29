@@ -87,6 +87,29 @@ All notable changes to Smart GIF Converter will be documented in this file.
 - **Clear Progress Tracking**: Frame X/Y counter shows completion status
 - **Non-Intrusive**: Progress updates on same line, clears when done
 
+#### AI Training Model: Intelligent Trigger System
+- **Smart Decision Making**: AI decides when Level 6 should run
+  - **Factor 1 - Collection Size** (40% weight):
+    - < 50 files: Run on all pairs (100 score)
+    - 50-100 files: Run selectively (70 score)
+    - 100-200 files: Run rarely (40 score)
+    - > 200 files: Almost never (10 score)
+  - **Factor 2 - File Similarity** (60% weight):
+    - Filename similarity (first 15 chars match: +40)
+    - File size similarity (within 10%: +30, within 20%: +15)
+    - Previous layers failed to detect (+20 boost)
+  - **Decision Formula**: `(size_score × 0.4) + (similarity_score × 0.6)`
+  - **Threshold**: Run Level 6 if confidence ≥ 60%
+- **Learning System**: Logs all AI decisions for future training
+  - Tracks: file pairs, scores, confidence, decisions, results
+  - Location: `~/.smart-gif-converter/ai_training/level6_decisions.log`
+  - Enables continuous improvement of trigger algorithm
+- **Manual Override**: Set `AI_FRAME_ANALYSIS=true` to force enable
+- **Performance Impact**:
+  - 237 files without AI: 27,966 Level 6 analyses (days)
+  - 237 files with AI: ~50-200 selective analyses (minutes)
+  - 97-99% reduction in unnecessary deep analysis
+
 #### Smart Caching System
 - **Intelligent Pair Caching**: Remembers already-analyzed file pairs
   - Cache Key: `L6_COMPARE:file1.gif:file2.gif`

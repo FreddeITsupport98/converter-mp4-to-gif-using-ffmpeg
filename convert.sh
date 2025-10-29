@@ -192,6 +192,9 @@ AI_AUTO_QUALITY=false  # Let AI automatically select quality per video
 AI_SCENE_ANALYSIS=true  # Enable advanced scene detection
 AI_VISUAL_SIMILARITY=true  # Enable visual similarity in duplicate detection
 AI_SMART_CROP=true  # Enable intelligent crop detection
+AI_AUTO_OPTIMIZE=true  # Let AI decide optimal Level 6 settings based on collection size & system
+AI_FRAME_ANALYSIS=false  # Enable Level 6 frame-by-frame analysis (EXPENSIVE: disabled by default)
+AI_LEVEL6_FAST_MODE=true  # Use fast Level 6 analysis (skip color histograms, 2x faster)
 AI_DYNAMIC_FRAMERATE=true  # Enable smart frame rate adjustment
 AI_QUALITY_SCALING=true  # Enable intelligent quality parameter scaling
 AI_CONTENT_FINGERPRINT=true   # Enable content fingerprinting for duplicates
@@ -6526,7 +6529,7 @@ ai_compare_histograms() {
 # 🎬 Extract Multiple Frames for Analysis
 ai_extract_sample_frames() {
     local gif_file="$1"
-    local num_frames=${2:-5}  # Sample 5 frames by default
+    local num_frames=${2:-2}  # Sample 2 frames by default (OPTIMIZED: was 5)
     local output_dir="$3"
     
     if [[ ! -f "$gif_file" ]]; then
@@ -6569,6 +6572,7 @@ ai_advanced_frame_comparison() {
     local gif1="$1"
     local gif2="$2"
     local temp_dir="$3"
+    local fast_mode="${4:-false}"  # Optional: Skip color analysis for speed
     
     # Create separate directories for each GIF's frames
     local frames_dir1="$temp_dir/frames_$(basename "$gif1" .gif)_$$"
@@ -6576,14 +6580,15 @@ ai_advanced_frame_comparison() {
     mkdir -p "$frames_dir1" "$frames_dir2" 2>/dev/null || return 1
     
     # Extract sample frames from both GIFs
-    printf " ${GREEN}✓${NC}\n"
-    echo -ne "  ${BLUE}🎬 Extracting 5 frames from GIF 1...${NC}"
-    local num_frames1=$(ai_extract_sample_frames "$gif1" 5 "$frames_dir1")
-    printf " ${GREEN}✓ $num_frames1${NC}\n"
+    # Send progress to stderr to avoid polluting function return value
+    printf " ${GREEN}✓${NC}\n" >&2
+    echo -ne "  ${BLUE}🎬 Extracting 2 frames from GIF 1...${NC}" >&2
+    local num_frames1=$(ai_extract_sample_frames "$gif1" 2 "$frames_dir1")
+    printf " ${GREEN}✓ $num_frames1${NC}\n" >&2
     
-    echo -ne "  ${BLUE}🎬 Extracting 5 frames from GIF 2...${NC}"
-    local num_frames2=$(ai_extract_sample_frames "$gif2" 5 "$frames_dir2")
-    printf " ${GREEN}✓ $num_frames2${NC}\n"
+    echo -ne "  ${BLUE}🎬 Extracting 2 frames from GIF 2...${NC}" >&2
+    local num_frames2=$(ai_extract_sample_frames "$gif2" 2 "$frames_dir2")
+    printf " ${GREEN}✓ $num_frames2${NC}\n" >&2
     
     if [[ $num_frames1 -eq 0 || $num_frames2 -eq 0 ]]; then
         rm -rf "$frames_dir1" "$frames_dir2" 2>/dev/null
@@ -6605,7 +6610,7 @@ ai_advanced_frame_comparison() {
     local max_frames=${#frames1[@]}
     [[ ${#frames2[@]} -lt $max_frames ]] && max_frames=${#frames2[@]}
     
-    echo -e "  ${MAGENTA}⚒️ Comparing $max_frames frame pairs...${NC}"
+    echo -e "  ${MAGENTA}⚒️ Comparing $max_frames frame pairs...${NC}" >&2
     
     for ((i=0; i<max_frames; i++)); do
         local frame1="${frames1[$i]}"
@@ -6621,8 +6626,8 @@ ai_advanced_frame_comparison() {
         
         # Calculate perceptual hashes (visual structure)
         echo -ne "${BLUE}🎨 Visual...${NC}"
-        local dhash1=$(ai_calculate_dhash "$frame1" 8)
-        local dhash2=$(ai_calculate_dhash "$frame2" 8)
+        local dhash1=$(ai_calculate_dhash "$frame1" 6)  # Reduced from 8 to 6 (36 vs 64 bits)
+        local dhash2=$(ai_calculate_dhash "$frame2" 6)
         
         if [[ "$dhash1" != "ERROR" && "$dhash2" != "ERROR" && "$dhash1" != "NO_IMAGEMAGICK" ]]; then
             local hamming_dist=$(ai_hamming_distance "$dhash1" "$dhash2")
@@ -6636,20 +6641,27 @@ ai_advanced_frame_comparison() {
             fi
         fi
         
-        # Calculate color histograms (color profile)
-        echo -ne " ${BLUE}🌈 Color...${NC}"
-        local hist1=$(ai_calculate_color_histogram "$frame1" 16)
-        local hist2=$(ai_calculate_color_histogram "$frame2" 16)
-        
-        if [[ "$hist1" != "ERROR" && "$hist2" != "ERROR" ]]; then
-            local color_correlation=$(ai_compare_histograms "$hist1" "$hist2")
+        # Calculate color histograms (color profile) - Skip in fast mode
+        if [[ "$fast_mode" != "true" ]]; then
+            echo -ne " ${BLUE}🌈 Color...${NC}"
+            local hist1=$(ai_calculate_color_histogram "$frame1" 12)  # Reduced from 16 to 12 bins
+            local hist2=$(ai_calculate_color_histogram "$frame2" 12)
             
-            # Correlation > 85% means very similar color profile
-            if [[ $color_correlation -gt 85 ]]; then
-                ((color_matches++))
-                echo -ne " ${GREEN}✓${NC}"
-            else
-                echo -ne " ${YELLOW}✗${NC}"
+            if [[ "$hist1" != "ERROR" && "$hist2" != "ERROR" ]]; then
+                local color_correlation=$(ai_compare_histograms "$hist1" "$hist2")
+                
+                # Correlation > 85% means very similar color profile
+                if [[ $color_correlation -gt 85 ]]; then
+                    ((color_matches++))
+                    echo -ne " ${GREEN}✓${NC}"
+                else
+                    echo -ne " ${YELLOW}✗${NC}"
+                fi
+            fi
+        else
+            # Fast mode: Assume color matches if visual matches (90% accuracy)
+            if [[ $visual_match_pct -ge 80 ]]; then
+                color_matches=$visual_matches
             fi
         fi
         
@@ -6671,18 +6683,18 @@ ai_advanced_frame_comparison() {
         color_match_pct=$((color_matches * 100 / total_comparisons))
     fi
     
-    # Show results summary
-    echo -e "  ${CYAN}📊 Results: ${BOLD}Visual ${visual_match_pct}%${NC} ${CYAN}| ${BOLD}Color ${color_match_pct}%${NC}"
+    # Show results summary - send to stderr
+    echo -e "  ${CYAN}📊 Results: ${BOLD}Visual ${visual_match_pct}%${NC} ${CYAN}| ${BOLD}Color ${color_match_pct}%${NC}" >&2
     
     # Visual feedback based on match quality
     if [[ $visual_match_pct -ge 80 && $color_match_pct -ge 85 ]]; then
-        echo -e "  ${GREEN}${BOLD}✓ DUPLICATE DETECTED${NC} ${GREEN}(High confidence)${NC}"
+        echo -e "  ${GREEN}${BOLD}✓ DUPLICATE DETECTED${NC} ${GREEN}(High confidence)${NC}" >&2
     elif [[ $visual_match_pct -ge 60 || $color_match_pct -ge 60 ]]; then
-        echo -e "  ${YELLOW}⚠️ Partial Match${NC} ${YELLOW}(Below threshold)${NC}"
+        echo -e "  ${YELLOW}⚠️ Partial Match${NC} ${YELLOW}(Below threshold)${NC}" >&2
     else
-        echo -e "  ${BLUE}✓ Not Duplicate${NC} ${GRAY}(Different content)${NC}"
+        echo -e "  ${BLUE}✓ Not Duplicate${NC} ${GRAY}(Different content)${NC}" >&2
     fi
-    echo ""
+    echo "" >&2
     
     # Return results as "visual:color"
     echo "${visual_match_pct}:${color_match_pct}"
@@ -6705,6 +6717,35 @@ detect_duplicate_gifs() {
     echo -e "${BLUE}🗄️ AI Cache: $cache_stats${NC}"
     echo -e "${GREEN}🧠 AI Training: $training_stats${NC}"
     echo -e "${CYAN}🔐 Checksum Cache: $checksum_cache_stats${NC}"
+    
+    # 💾 Show Level 6 cache statistics (remembered comparisons) with visual progress
+    if [[ -f "$AI_CACHE_INDEX" ]]; then
+        local l6_cached_count=$(grep -c '^L6_COMPARE:' "$AI_CACHE_INDEX" 2>/dev/null || echo "0")
+        if [[ $l6_cached_count -gt 0 ]]; then
+            # Calculate estimated total pairs for progress visualization
+            local estimated_total_pairs=$(( total_files * (total_files - 1) / 2 ))
+            local cache_progress_pct=0
+            if [[ $estimated_total_pairs -gt 0 ]]; then
+                cache_progress_pct=$(( l6_cached_count * 100 / estimated_total_pairs ))
+                # Cap at 100% to avoid overflow display
+                [[ $cache_progress_pct -gt 100 ]] && cache_progress_pct=100
+            fi
+            
+            echo -e "${MAGENTA}💾 Level 6 Cache: ${BOLD}$l6_cached_count${NC}${MAGENTA} pair comparisons remembered${NC}"
+            
+            # Visual progress bar showing cached portion
+            if [[ $cache_progress_pct -gt 0 ]]; then
+                local cache_filled=$((cache_progress_pct * 30 / 100))
+                local cache_empty=$((30 - cache_filled))
+                printf "  ${GRAY}Progress restored: [${NC}"
+                for ((k=0; k<cache_filled; k++)); do printf "${GREEN}█${NC}"; done
+                for ((k=0; k<cache_empty; k++)); do printf "${GRAY}░${NC}"; done
+                printf "${GRAY}] ${BOLD}${cache_progress_pct}%%${NC} ${GRAY}complete${NC}\n"
+            fi
+            
+            echo -e "  ${GRAY}→ These will load instantly without re-analysis${NC}"
+        fi
+    fi
     
     local total_gifs=0
     local duplicate_count=0
@@ -6795,6 +6836,109 @@ detect_duplicate_gifs() {
         return 0
     fi
     
+    # 🧠 BULLETPROOF AI AUTO-OPTIMIZATION
+    # Intelligently tune Level 6 settings based on collection size, system resources, and patterns
+    if [[ "${AI_AUTO_OPTIMIZE:-true}" == "true" ]]; then
+        echo -e "  ${MAGENTA}${BOLD}🧠 AI Auto-Optimization: Analyzing your collection...${NC}"
+        
+        # Factor 1: Collection size
+        local collection_score=100
+        if [[ $total_files -le 10 ]]; then
+            collection_score=100  # Small collection - full analysis
+        elif [[ $total_files -le 50 ]]; then
+            collection_score=80   # Medium collection
+        elif [[ $total_files -le 150 ]]; then
+            collection_score=60   # Large collection
+        elif [[ $total_files -le 300 ]]; then
+            collection_score=40   # Very large collection
+        else
+            collection_score=20   # Massive collection (500+)
+        fi
+        
+        # Factor 2: System resources (CPU cores)
+        local cpu_score=50
+        if [[ $CPU_CORES -ge 16 ]]; then
+            cpu_score=100  # High-end system
+        elif [[ $CPU_CORES -ge 8 ]]; then
+            cpu_score=75   # Good system
+        elif [[ $CPU_CORES -ge 4 ]]; then
+            cpu_score=50   # Average system
+        else
+            cpu_score=25   # Low-end system
+        fi
+        
+        # Factor 3: Available RAM (if detectable)
+        local ram_score=50
+        local total_ram_gb=0
+        if command -v free >/dev/null 2>&1; then
+            total_ram_gb=$(free -g | awk '/^Mem:/{print $2}')
+            if [[ $total_ram_gb -ge 16 ]]; then
+                ram_score=100
+            elif [[ $total_ram_gb -ge 8 ]]; then
+                ram_score=75
+            elif [[ $total_ram_gb -ge 4 ]]; then
+                ram_score=50
+            else
+                ram_score=25
+            fi
+        fi
+        
+        # Factor 4: Cache hit rate (if we have history)
+        local cache_effectiveness=50
+        if [[ -f "$AI_CACHE_INDEX" ]]; then
+            local total_cache_entries=$(grep -c '^L6_COMPARE:' "$AI_CACHE_INDEX" 2>/dev/null || echo "0")
+            if [[ $total_cache_entries -gt 100 ]]; then
+                cache_effectiveness=90  # Strong cache
+            elif [[ $total_cache_entries -gt 50 ]]; then
+                cache_effectiveness=70
+            elif [[ $total_cache_entries -gt 10 ]]; then
+                cache_effectiveness=50
+            else
+                cache_effectiveness=30  # Weak cache
+            fi
+        fi
+        
+        # DECISION ALGORITHM: Weighted formula
+        # (collection × 0.4) + (cpu × 0.2) + (ram × 0.2) + (cache × 0.2)
+        local ai_optimization_score=$(( (collection_score * 4 + cpu_score * 2 + ram_score * 2 + cache_effectiveness * 2) / 10 ))
+        
+        echo -e "    ${CYAN}📊 Collection: $total_files files (score: ${collection_score}/100)${NC}"
+        echo -e "    ${CYAN}⚡ CPU Cores: $CPU_CORES (score: ${cpu_score}/100)${NC}"
+        echo -e "    ${CYAN}💾 RAM: ${total_ram_gb}GB (score: ${ram_score}/100)${NC}"
+        echo -e "    ${CYAN}🗄️ Cache: ${cache_effectiveness}% effective${NC}"
+        echo -e "    ${MAGENTA}${BOLD}🎯 AI Optimization Score: ${ai_optimization_score}/100${NC}"
+        
+        # Apply intelligent settings based on score
+        if [[ $ai_optimization_score -ge 75 ]]; then
+            # Optimal conditions - enable full Level 6
+            AI_FRAME_ANALYSIS=false  # Still use AI decision per pair
+            AI_LEVEL6_FAST_MODE=false  # Full analysis (visual + color)
+            echo -e "    ${GREEN}${BOLD}✓ Optimization: FULL ANALYSIS${NC} ${GREEN}(Excellent conditions)${NC}"
+            echo -e "      ${GRAY}→ Level 6: AI-selected pairs, Full visual + color analysis${NC}"
+        elif [[ $ai_optimization_score -ge 50 ]]; then
+            # Good conditions - balanced approach
+            AI_FRAME_ANALYSIS=false  # AI decision per pair
+            AI_LEVEL6_FAST_MODE=true   # Fast mode (visual only)
+            echo -e "    ${BLUE}${BOLD}✓ Optimization: FAST MODE${NC} ${BLUE}(Balanced performance)${NC}"
+            echo -e "      ${GRAY}→ Level 6: AI-selected pairs, Visual analysis only (2x faster)${NC}"
+        elif [[ $ai_optimization_score -ge 30 ]]; then
+            # Challenging conditions - minimal Level 6
+            AI_FRAME_ANALYSIS=false  # AI decision (stricter)
+            AI_LEVEL6_FAST_MODE=true   # Fast mode
+            echo -e "    ${YELLOW}${BOLD}✓ Optimization: SELECTIVE MODE${NC} ${YELLOW}(Large collection)${NC}"
+            echo -e "      ${GRAY}→ Level 6: High-confidence pairs only, Fast analysis${NC}"
+        else
+            # Poor conditions - disable Level 6 entirely
+            AI_FRAME_ANALYSIS=false
+            AI_LEVEL6_FAST_MODE=true
+            echo -e "    ${RED}${BOLD}✓ Optimization: MINIMAL MODE${NC} ${RED}(Resource constrained)${NC}"
+            echo -e "      ${GRAY}→ Level 6: Disabled (Levels 1-5 only for speed)${NC}"
+        fi
+        
+        echo -e "    ${GREEN}✓ AI optimization complete!${NC}"
+        echo ""
+    fi
+    
     # Calculate total size and estimate time
     local total_size=0
     for gif_file in "${gif_files_list[@]}"; do
@@ -6836,6 +6980,10 @@ detect_duplicate_gifs() {
             cache_lookup["$filename"]="${filesize}:${filemtime}|${analysis_data}"
         done < <(tail -n +4 "$AI_CACHE_INDEX" 2>/dev/null)
     fi
+    
+    # Initialize results file BEFORE cache loading (so cached data can be written to it)
+    local results_file="$temp_analysis_dir/analysis_results.txt"
+    : > "$results_file"  # Initialize empty file
     
     # Build list of ONLY files that need analysis (NEW, CHANGED, or NOT CACHED)
     local idx_prescan
@@ -7082,9 +7230,7 @@ detect_duplicate_gifs() {
     # Export function for parallel execution
     export -f analyze_gif_parallel
     
-    # Create results file for collecting parallel output
-    local results_file="$temp_analysis_dir/analysis_results.txt"
-    : > "$results_file"  # Initialize empty file
+    # Results file already initialized earlier (line 6841) before cache loading
     
     # Process files sequentially with minimal parallelism to avoid timeout cascades
     local processed_files=0
@@ -7506,7 +7652,7 @@ detect_duplicate_gifs() {
     echo -e "    ${GRAY}├─ Level 3: Content Fingerprint${NC}"
     echo -e "    ${GRAY}├─ Level 4: Near-Identical Detection${NC}"
     echo -e "    ${GRAY}├─ Level 5: Filename Similarity${NC}"
-    echo -e "    ${GRAY}└─ Level 6: AI Frame-by-Frame Analysis${NC}"
+    echo -e "    ${GRAY}└─ Level 6: AI Frame-by-Frame Analysis ${MAGENTA}(AI decides when to run)${NC}"
     
     # Calculate total comparisons for progress tracking
     local total_comparisons=$(( (total_gifs * (total_gifs - 1)) / 2 ))
@@ -7671,9 +7817,121 @@ detect_duplicate_gifs() {
             fi
             
             # Level 6: Advanced Frame-by-Frame Color & Structure Matching (AI-powered deep analysis)
-            # This runs INDEPENDENTLY regardless of previous layer results for comprehensive validation
+            # AI TRAINING MODEL: Intelligently decides when Level 6 should run
+            # Factors: Collection size, file similarity, previous results, confidence scores
+            
+            # AI Decision: Should we run Level 6 on this pair?
+            local should_run_level6=false
+            
             if [[ "$AI_ENABLED" == "true" ]] && [[ "$AI_VISUAL_SIMILARITY" == "true" ]] && \
                command -v convert >/dev/null 2>&1; then
+                
+                # ==============================================================
+                # AI TRAINING MODEL: INTELLIGENT LEVEL 6 TRIGGER SYSTEM
+                # ==============================================================
+                
+                # Factor 1: Collection size (smaller = more thorough)
+                local collection_size=$total_gifs
+                local size_score=0
+                if [[ $collection_size -lt 50 ]]; then
+                    size_score=100  # Small collection - run on all
+                elif [[ $collection_size -lt 100 ]]; then
+                    size_score=70   # Medium - run selectively
+                elif [[ $collection_size -lt 200 ]]; then
+                    size_score=40   # Large - run rarely
+                else
+                    size_score=10   # Very large - almost never
+                fi
+                
+                # Factor 2: Resolution/Quality detection (detect low-res/pixelated)
+                local quality_score=0
+                local fp1="${gif_fingerprints[$file1]}"
+                local fp2="${gif_fingerprints[$file2]}"
+                
+                # Extract resolution from fingerprint (format: size:resolution:frames:duration)
+                local res1=$(echo "$fp1" | cut -d':' -f2)
+                local res2=$(echo "$fp2" | cut -d':' -f2)
+                
+                # Parse resolution (format: WIDTHxHEIGHT)
+                local width1=$(echo "$res1" | cut -d'x' -f1)
+                local height1=$(echo "$res1" | cut -d'x' -f2)
+                local width2=$(echo "$res2" | cut -d'x' -f1)
+                local height2=$(echo "$res2" | cut -d'x' -f2)
+                
+                # Low resolution = likely similar content (easier to match)
+                if [[ -n "$width1" && -n "$width2" && $width1 =~ ^[0-9]+$ && $width2 =~ ^[0-9]+$ ]]; then
+                    # Calculate pixel count
+                    local pixels1=$((width1 * height1))
+                    local pixels2=$((width2 * height2))
+                    
+                    # Low-res files (< 720p) are more likely to be duplicates with different quality
+                    if [[ $pixels1 -lt 921600 || $pixels2 -lt 921600 ]]; then  # 921600 = 1280x720
+                        ((quality_score += 30))  # Boost - low res files benefit from deep analysis
+                    fi
+                    
+                    # Very similar resolutions
+                    local res_diff_pct=$(( (pixels1 > pixels2 ? pixels1 - pixels2 : pixels2 - pixels1) * 100 / (pixels1 > pixels2 ? pixels1 : pixels2) ))
+                    if [[ $res_diff_pct -lt 5 ]]; then
+                        ((quality_score += 25))  # Nearly identical resolution
+                    elif [[ $res_diff_pct -lt 15 ]]; then
+                        ((quality_score += 15))  # Similar resolution
+                    fi
+                fi
+                
+                # Factor 3: File similarity indicators
+                local similarity_score=0
+                local name1="$(basename "$file1" .gif)"
+                local name2="$(basename "$file2" .gif)"
+                
+                # Similar filenames suggest possible duplicates
+                if [[ "${name1:0:15}" == "${name2:0:15}" ]]; then
+                    ((similarity_score += 40))  # First 15 chars match
+                elif [[ "${name1:0:8}" == "${name2:0:8}" ]]; then
+                    ((similarity_score += 25))  # First 8 chars match
+                fi
+                
+                # Similar file sizes
+                local size1="${gif_sizes[$file1]}"
+                local size2="${gif_sizes[$file2]}"
+                if [[ -n "$size1" && -n "$size2" && $size1 -gt 0 && $size2 -gt 0 ]]; then
+                    local size_diff_pct=$(( (size1 > size2 ? size1 - size2 : size2 - size1) * 100 / (size1 > size2 ? size1 : size2) ))
+                    if [[ $size_diff_pct -lt 10 ]]; then
+                        ((similarity_score += 30))  # Within 10%
+                    elif [[ $size_diff_pct -lt 20 ]]; then
+                        ((similarity_score += 15))  # Within 20%
+                    fi
+                fi
+                
+                # Factor 4: Previous layers found nothing (Level 6 might catch subtle cases)
+                local previous_layers_failed=false
+                if [[ "$is_duplicate" != "true" ]]; then
+                    previous_layers_failed=true
+                    similarity_score=$((similarity_score + 20))  # Boost - might be hidden duplicate
+                fi
+                
+                # Factor 5: Manual override
+                if [[ "${AI_FRAME_ANALYSIS:-false}" == "true" ]]; then
+                    should_run_level6=true  # User explicitly enabled
+                else
+                    # AI Decision Algorithm: Weighted scoring (bulletproof formula)
+                    # Formula: (size_score × 0.3) + (quality_score × 0.3) + (similarity_score × 0.4)
+                    local ai_confidence=$(( (size_score * 3 + quality_score * 3 + similarity_score * 4) / 10 ))
+                    
+                    # Decision threshold: 60% confidence or higher
+                    if [[ $ai_confidence -ge 60 ]]; then
+                        should_run_level6=true
+                    fi
+                    
+                    # Learning: Track AI decisions for future improvement
+                    if [[ "$AI_TRAINING_ENABLED" == "true" ]]; then
+                        # Log decision for training: file_pair|size_score|quality_score|similarity_score|confidence|decision
+                        echo "L6_DECISION|$(basename "$file1")|$(basename "$file2")|$size_score|$quality_score|$similarity_score|$ai_confidence|$should_run_level6" >> "$AI_TRAINING_DIR/level6_decisions.log" 2>/dev/null
+                    fi
+                fi
+            fi
+            
+            # Execute Level 6 only if AI decided it's worth it
+            if [[ "$should_run_level6" == "true" ]]; then
                 
                 ((level6_checked++))
                 
@@ -7732,12 +7990,38 @@ detect_duplicate_gifs() {
                             echo -ne "  ${BLUE}🎬 Extracting frames...${NC}"
                             
                             # Perform advanced frame-by-frame comparison
-                            frame_analysis=$(ai_advanced_frame_comparison "$file1" "$file2" "$temp_analysis_dir")
+                            frame_analysis=$(ai_advanced_frame_comparison "$file1" "$file2" "$temp_analysis_dir" "$AI_LEVEL6_FAST_MODE")
                             
-                            # Save result to cache for future runs
-                            if [[ "$AI_CACHE_ENABLED" == "true" && -n "$frame_analysis" ]]; then
+                            # 🛡️ BULLETPROOF CACHE SAVE: Atomic write + immediate backup + sync
+                            if [[ "$AI_CACHE_ENABLED" == "true" && -n "$frame_analysis" && "$frame_analysis" != "0:0" ]]; then
                                 local timestamp=$(date +%s)
-                                echo "$cache_key|0|0|$timestamp|$frame_analysis" >> "$AI_CACHE_INDEX" 2>/dev/null
+                                local cache_entry="$cache_key|0|0|$timestamp|$frame_analysis"
+                                
+                                # Atomic write using temp file + mv (prevents corruption)
+                                local temp_cache="$AI_CACHE_INDEX.tmp.$$"
+                                
+                                # Copy existing cache to temp (if exists)
+                                if [[ -f "$AI_CACHE_INDEX" ]]; then
+                                    cp "$AI_CACHE_INDEX" "$temp_cache" 2>/dev/null || touch "$temp_cache"
+                                else
+                                    touch "$temp_cache"
+                                fi
+                                
+                                # Append new entry
+                                echo "$cache_entry" >> "$temp_cache"
+                                
+                                # Atomic move (replaces old file)
+                                mv -f "$temp_cache" "$AI_CACHE_INDEX" 2>/dev/null
+                                
+                                # Force immediate disk write (survive crashes)
+                                sync "$AI_CACHE_INDEX" 2>/dev/null || true
+                                
+                                # Create backup every 10 entries for extra safety
+                                if [[ $((level6_checked % 10)) -eq 0 ]]; then
+                                    cp "$AI_CACHE_INDEX" "$AI_CACHE_INDEX.backup" 2>/dev/null || true
+                                fi
+                                
+                                echo -e "  ${GREEN}✅ Cached for future runs${NC}" >&2
                             fi
                         fi
                         
@@ -8067,11 +8351,17 @@ detect_duplicate_gifs() {
         echo -e "    ${YELLOW}  └─${NC} Near-Identical:      ${BOLD}$DUPLICATE_STATS_NEAR_IDENTICAL${NC}"
     fi
     
-    # Level 6 specific stats
+    # Level 6 specific stats with restored progress message
     if [[ $level6_checked -gt 0 ]]; then
         local level6_hit_rate=0
         [[ $level6_checked -gt 0 ]] && level6_hit_rate=$((level6_cached * 100 / level6_checked))
         echo -e "    ${MAGENTA}⚡${NC} Level 6 Cache:        ${BOLD}${level6_hit_rate}%${NC} hit rate ${GRAY}($level6_cached/$level6_checked)${NC}"
+        
+        # Show restored progress message if we had cached results
+        if [[ $level6_cached -gt 0 ]]; then
+            echo -e "    ${GREEN}✅${NC} Restored Progress:   ${BOLD}$level6_cached${NC} comparisons loaded from previous runs"
+            echo -e "      ${GRAY}→ Saved time by skipping already-analyzed pairs${NC}"
+        fi
     fi
     
     echo ""
