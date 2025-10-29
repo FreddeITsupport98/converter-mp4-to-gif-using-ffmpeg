@@ -7,11 +7,51 @@
 [![FFmpeg](https://img.shields.io/badge/Powered%20by-FFmpeg-007808?logo=ffmpeg&logoColor=white)](https://ffmpeg.org/)
 [![AI](https://img.shields.io/badge/AI-Powered-FF6B6B?logo=brain&logoColor=white)](#ai-features)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.0-brightgreen.svg)](#latest-updates)
+[![Version](https://img.shields.io/badge/Version-5.0-brightgreen.svg)](#latest-updates)
 
 ---
 
-## 🆕 Latest Updates (Version 2.0)
+## 🆕 Latest Updates (Version 5.0)
+
+### **🔒 Permission Management & Diagnostics**
+- **✅ Permission Checking**: Comprehensive validation of directories and files
+- **🛠️ Auto-Fix System**: Interactive fixing with 4 options (auto/manual/continue/exit)
+- **🐛 Settings Diagnostics**: Deep analysis of settings persistence and integrity
+- **📊 System Health**: Complete diagnostic tools for troubleshooting
+
+### **🛡️ Cache Validation & Management**
+- **✅ Integrity Checking**: Validate cache for corruption and inconsistencies
+- **🧹 Smart Cleanup**: Automatic cache maintenance and optimization
+- **💾 Backup Creation**: Safe cache clearing with automatic backups
+- **📊 Entry Statistics**: Detailed cache analytics and health monitoring
+
+### **✨ Enhanced Reliability**
+- **✅ Zero Syntax Errors**: All code validated with `bash -n`
+- **🛠️ Fixed Control Flow**: Proper if/while/for statement closing
+- **📋 Updated Documentation**: 3 new commands fully documented
+- **⚡ 342 New Lines**: Major functionality additions
+
+### **🚀 Quick Start with New Features**
+```bash
+# Check system health and permissions
+./convert.sh --debug-settings
+./convert.sh --check-permissions
+
+# Validate cache integrity
+./convert.sh --check-cache
+
+# Normal conversion with all v5.0 improvements
+./convert.sh --ai --preset high
+```
+
+**Full Documentation:**
+- 📝 [Complete Changelog](CHANGELOG_v5.0.md) - Technical details
+- 📊 [Update Summary](UPDATE_SUMMARY.md) - Quick reference
+- 📖 [Development Guide](WARP.md) - For developers
+
+---
+
+## 🆕 Previous Updates (Version 2.0-4.0)
 
 ### **🚀 Performance Revolution**
 - **⚡ 10x Faster Pre-Scan**: Memory-based O(1) cache lookups instead of disk searches
@@ -674,6 +714,18 @@ AI analyzes each video's characteristics and selects optimal quality settings:
 ```bash
 # Comprehensive AI system status
 ./convert.sh --ai-status
+
+# Settings persistence diagnostics (NEW in v5.0)
+./convert.sh --debug-settings
+
+# Permission checking and fixing (NEW in v5.0)
+./convert.sh --check-permissions
+./convert.sh --fix-permissions
+
+# Cache validation (v5.0)
+./convert.sh --check-cache
+./convert.sh --validate-cache
+./convert.sh --clear-cache
 ```
 **Features:**
 - 🔗 **Clickable file paths** (open in file manager)
@@ -681,6 +733,9 @@ AI analyzes each video's characteristics and selects optimal quality settings:
 - 🤖 **AI generation tracking**
 - 💾 **Cache and training system status**
 - 🎯 **Performance metrics**
+- 🔒 **Permission validation** (NEW)
+- 🐛 **Settings diagnostics** (NEW)
+- 🛡️ **Cache integrity checking** (NEW)
 
 ### **💾 Smart Cache Management**
 
@@ -896,9 +951,12 @@ brew install ffmpeg       # macOS
 #### **Check system status**
 ```bash
 # Comprehensive diagnostics
-./convert.sh --ai-status
-./convert.sh --show-settings
-./convert.sh --show-logs
+./convert.sh --ai-status           # AI system health
+./convert.sh --debug-settings      # Settings diagnostics (v5.0)
+./convert.sh --check-permissions   # Permission validation (v5.0)
+./convert.sh --show-settings       # View current settings
+./convert.sh --show-logs           # View log locations
+./convert.sh --check-cache         # Validate cache integrity (v5.0)
 ```
 
 #### **Cache issues**
@@ -989,9 +1047,12 @@ chmod +x convert.sh
 > [📖 Read the complete technical documentation in WARP.md](WARP.md)
 
 ### **Architecture Overview**
-- **13,700+ lines** of advanced Bash scripting
-- **Version 2.0** - Latest stable release
+- **16,173 lines** of advanced Bash scripting (+342 in v5.0)
+- **Version 5.0** - Latest stable release
 - **Multi-stage AI analysis** with ML-inspired algorithms
+- **Permission management system** with auto-fix capabilities (NEW)
+- **Settings diagnostics** with comprehensive validation (NEW)
+- **Cache integrity validation** with corruption detection (NEW)
 - **Corruption-proof caching** with atomic operations
 - **Generation-based learning** with persistent AI models
 - **Parallel processing** with intelligent resource allocation

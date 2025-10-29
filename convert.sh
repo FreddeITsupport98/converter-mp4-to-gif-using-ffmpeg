@@ -13190,7 +13190,7 @@ start_conversion() {
 show_welcome() {
     clear
     echo -e "${CYAN}${BOLD}╔═══════════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}${BOLD}║                    🎬 SMART GIF CONVERTER v2.0                    ║${NC}"
+    echo -e "${CYAN}${BOLD}║                    🎬 SMART GIF CONVERTER v5.0                    ║${NC}"
     echo -e "${CYAN}${BOLD}║                  🤖 AI-Powered Video to GIF Magic                  ║${NC}"
     echo -e "${CYAN}${BOLD}╚═══════════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
@@ -13359,7 +13359,7 @@ get_responsive_help_text() {
 # 🎪 Function to print fancy headers (simplified for menus)
 print_header() {
     echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}${BOLD}║                🎬 SMART GIF CONVERTER v4.0                ║${NC}"
+    echo -e "${CYAN}${BOLD}║                🎬 SMART GIF CONVERTER v5.0                ║${NC}"
     echo -e "${CYAN}${BOLD}║                AI-Powered Video to GIF Magic                  ║${NC}"
     echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
