@@ -21,7 +21,7 @@
 
 ### **🎯 Enhanced Menu System**
 - **🖱️ Improved Navigation**: Fixed menu option mappings for output directory selection
-- **📂 Five Directory Options**: Default subfolder, Pictures, Current, Script directory, or Custom path
+- **📂 Four Directory Options**: Default subfolder, Pictures, Current directory, or Custom path
 - **✨ Visual Feedback**: Clickable paths in modern terminals for quick access
 - **🔄 Seamless Integration**: Settings load correctly after interruptions
 
