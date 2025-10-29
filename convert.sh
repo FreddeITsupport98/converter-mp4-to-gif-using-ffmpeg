@@ -262,9 +262,10 @@ UPDATE_FIRST_RUN_PROMPT_DONE=false  # Track if first-run update prompt was shown
 
 # 🔐 Release Fingerprint System - Track installed version integrity
 RELEASE_FINGERPRINT_FILE="$LOG_DIR/.release_fingerprint"
-INSTALLED_RELEASE_SHA256=""  # SHA256 of currently installed release
-INSTALLED_RELEASE_VERSION=""  # Version of currently installed release
-INSTALLED_RELEASE_TAG=""      # Git tag of currently installed release
+INSTALLED_RELEASE_SHA256=""       # SHA256 of currently installed release
+INSTALLED_RELEASE_VERSION=""      # Version of currently installed release
+INSTALLED_RELEASE_TAG=""          # Git tag of currently installed release
+INSTALLED_RELEASE_TIMESTAMP="0"   # GitHub release timestamp (Unix epoch)
 
 # 🔐 Security Configuration
 GPG_SIGNATURE_REQUIRED=false  # Require GPG signature verification (set true for max security)
@@ -452,9 +453,18 @@ check_for_updates() {
         return 0  # Skip pre-releases and drafts
     fi
     
-    # Extract version tag
+    # Extract version tag and release timestamp
     local remote_tag=$(echo "$release_json" | grep -o '"tag_name":"[^"]*"' | cut -d'"' -f4)
     local remote_version=$(echo "$remote_tag" | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    
+    # Extract GitHub release published_at timestamp (ISO 8601 format)
+    local remote_timestamp_iso=$(echo "$release_json" | grep -o '"published_at":"[^"]*"' | cut -d'"' -f4)
+    local remote_timestamp=0
+    
+    # Convert ISO 8601 to Unix epoch timestamp for comparison
+    if [[ -n "$remote_timestamp_iso" ]]; then
+        remote_timestamp=$(date -d "$remote_timestamp_iso" +%s 2>/dev/null || echo "0")
+    fi
     
     # Additional safety: verify tag doesn't contain RC, beta, alpha, or pre markers
     if [[ "$remote_tag" =~ (rc|RC|beta|BETA|alpha|ALPHA|pre|PRE) ]]; then
@@ -473,15 +483,25 @@ check_for_updates() {
     # Load current installation fingerprint
     load_release_fingerprint 2>/dev/null
     
-    # Compare versions AND checksums - only notify if different
+    # 🔒 BULLETPROOF: Compare versions, checksums AND timestamps
     # This prevents confusion when same version with different checksums exists
+    # and ensures we NEVER consider older releases as updates
     local needs_update=false
     
+    # Timestamp validation: ONLY accept releases NEWER than installed version
+    if [[ "$remote_timestamp" -gt 0 && "$INSTALLED_RELEASE_TIMESTAMP" != "0" ]]; then
+        if [[ "$remote_timestamp" -le "$INSTALLED_RELEASE_TIMESTAMP" ]]; then
+            # Remote release is OLDER or SAME age - skip it
+            return 0
+        fi
+    fi
+    
     if [[ "$remote_version" != "$CURRENT_VERSION" ]]; then
-        # Different version number - definitely an update
+        # Different version number - check if it's actually newer
         needs_update=true
     elif [[ -n "$remote_sha256" && -n "$INSTALLED_RELEASE_SHA256" ]]; then
         # Same version but check if SHA256 differs (hotfix/rebuild)
+        # AND timestamp is newer (already validated above)
         if [[ "$remote_sha256" != "$INSTALLED_RELEASE_SHA256" ]]; then
             needs_update=true
         fi
@@ -720,6 +740,13 @@ perform_update() {
         echo -e "${YELLOW}⚠️  No SHA256 checksum found in release${NC}"
     fi
     
+    # Extract release timestamp for fingerprint tracking
+    local release_timestamp_iso=$(echo "$release_json" | grep -o '"published_at":"[^"]*"' | cut -d'"' -f4)
+    local release_timestamp=0
+    if [[ -n "$release_timestamp_iso" ]]; then
+        release_timestamp=$(date -d "$release_timestamp_iso" +%s 2>/dev/null || echo "0")
+    fi
+    
     # Create backup (atomic operation)
     local backup_dir="$LOG_DIR/backups"
     mkdir -p "$backup_dir" 2>/dev/null
@@ -880,9 +907,9 @@ perform_update() {
     
     echo -e "${GREEN}      ✓ Installation complete${NC}"
     
-    # Security Check 7: Update release fingerprint with verified SHA256
+    # Security Check 7: Update release fingerprint with verified SHA256 and timestamp
     echo -e "${CYAN}[7/7] Updating release fingerprint...${NC}"
-    if update_release_fingerprint "$new_version" "$release_tag" "$expected_sha256"; then
+    if update_release_fingerprint "$new_version" "$release_tag" "$expected_sha256" "$release_timestamp"; then
         echo -e "${GREEN}      ✓ Release fingerprint saved${NC}"
     else
         echo -e "${YELLOW}⚠️  Warning: Could not update release fingerprint${NC}"
@@ -1028,6 +1055,10 @@ load_release_fingerprint() {
         INSTALLED_RELEASE_SHA256=$(grep '^SHA256=' "$RELEASE_FINGERPRINT_FILE" 2>/dev/null | cut -d'=' -f2)
         INSTALLED_RELEASE_VERSION=$(grep '^VERSION=' "$RELEASE_FINGERPRINT_FILE" 2>/dev/null | cut -d'=' -f2)
         INSTALLED_RELEASE_TAG=$(grep '^TAG=' "$RELEASE_FINGERPRINT_FILE" 2>/dev/null | cut -d'=' -f2)
+        INSTALLED_RELEASE_TIMESTAMP=$(grep '^RELEASE_TIMESTAMP=' "$RELEASE_FINGERPRINT_FILE" 2>/dev/null | cut -d'=' -f2)
+        
+        # Default to 0 if not found
+        [[ -z "$INSTALLED_RELEASE_TIMESTAMP" ]] && INSTALLED_RELEASE_TIMESTAMP="0"
         
         # Validate loaded data
         if [[ -n "$INSTALLED_RELEASE_SHA256" && "$INSTALLED_RELEASE_VERSION" == "$CURRENT_VERSION" ]]; then
@@ -1063,6 +1094,7 @@ create_release_fingerprint() {
 VERSION=$CURRENT_VERSION
 SHA256=$script_sha256
 TAG=
+RELEASE_TIMESTAMP=0
 INSTALL_DATE=$(date +%s)
 INSTALL_DATE_READABLE=$(date '+%Y-%m-%d %H:%M:%S')
 EOF
@@ -1071,6 +1103,7 @@ EOF
     INSTALLED_RELEASE_SHA256="$script_sha256"
     INSTALLED_RELEASE_VERSION="$CURRENT_VERSION"
     INSTALLED_RELEASE_TAG=""
+    INSTALLED_RELEASE_TIMESTAMP="0"
     
     echo -e "${GREEN}✓ Release fingerprint created${NC}"
     echo -e "${GRAY}Version: v${CURRENT_VERSION}${NC}"
@@ -1084,6 +1117,7 @@ update_release_fingerprint() {
     local new_version="$1"
     local new_tag="$2"
     local new_sha256="$3"
+    local new_timestamp="${4:-0}"  # GitHub release timestamp
     
     if [[ -z "$new_sha256" ]]; then
         # Calculate SHA256 of newly installed script
@@ -1106,16 +1140,19 @@ update_release_fingerprint() {
 VERSION=$new_version
 SHA256=$new_sha256
 TAG=$new_tag
+RELEASE_TIMESTAMP=$new_timestamp
 INSTALL_DATE=$(date +%s)
 INSTALL_DATE_READABLE=$(date '+%Y-%m-%d %H:%M:%S')
 PREVIOUS_VERSION=$INSTALLED_RELEASE_VERSION
 PREVIOUS_SHA256=$INSTALLED_RELEASE_SHA256
+PREVIOUS_TIMESTAMP=$INSTALLED_RELEASE_TIMESTAMP
 EOF
     
     # Update in-memory variables
     INSTALLED_RELEASE_SHA256="$new_sha256"
     INSTALLED_RELEASE_VERSION="$new_version"
     INSTALLED_RELEASE_TAG="$new_tag"
+    INSTALLED_RELEASE_TIMESTAMP="$new_timestamp"
     
     echo -e "${GREEN}✓ Release fingerprint updated${NC}"
     
