@@ -7577,9 +7577,160 @@ detect_duplicate_gifs() {
     local level1_checked=0 level2_checked=0 level3_checked=0 level4_checked=0 level5_checked=0 level6_checked=0
     local level6_cached=0
     
-    # Advanced duplicate detection with multiple similarity levels
+    # 🚀 SMART DELTA DETECTION: Track new/modified files for incremental analysis
+    local file_tracking_db="$LOG_DIR/.file_tracking.db"
+    local current_run_timestamp=$(date +%s)
+    declare -A old_files  # Files from previous run
+    declare -A new_files  # New or modified files
+    declare -A file_is_new  # Quick lookup: is this file new?
+    
+    local new_file_count=0
+    local old_file_count=0
+    local modified_file_count=0
+    local delta_mode_enabled=false
+    
+    # Load previous file tracking data
+    if [[ -f "$file_tracking_db" ]]; then
+        while IFS='|' read -r tracked_file file_mtime file_size; do
+            [[ -z "$tracked_file" || "$tracked_file" =~ ^# ]] && continue
+            old_files["$tracked_file"]="$file_mtime:$file_size"
+        done < "$file_tracking_db"
+        
+        if [[ ${#old_files[@]} -gt 0 ]]; then
+            delta_mode_enabled=true
+            echo -e "  ${CYAN}📡 Delta detection: Found ${BOLD}${#old_files[@]}${NC}${CYAN} tracked files from previous run${NC}"
+        fi
+    fi
+    
+    # Identify new/modified files
     local gif_files=("${!gif_checksums[@]}")
-    for ((i=0; i<${#gif_files[@]}; i++)); do
+    for gif_file in "${gif_files[@]}"; do
+        local file_mtime=$(stat -c%Y "$gif_file" 2>/dev/null || echo "0")
+        local file_size="${gif_sizes[$gif_file]}"
+        local file_fingerprint="${file_mtime}:${file_size}"
+        
+        if [[ -n "${old_files[$gif_file]}" ]]; then
+            # File was tracked before
+            if [[ "${old_files[$gif_file]}" != "$file_fingerprint" ]]; then
+                # File was modified (mtime or size changed)
+                new_files["$gif_file"]=1
+                file_is_new["$gif_file"]=1
+                ((modified_file_count++))
+            else
+                # File unchanged
+                ((old_file_count++))
+            fi
+        else
+            # New file (not in previous tracking)
+            new_files["$gif_file"]=1
+            file_is_new["$gif_file"]=1
+            ((new_file_count++))
+        fi
+    done
+    
+    # Calculate optimized comparison count
+    local total_comparisons=$(( (total_gifs * (total_gifs - 1)) / 2 ))
+    local optimized_comparisons=$total_comparisons
+    local skipped_comparisons=0
+    
+    # ⚠️ LEVEL 6 USER PROMPT: Ask upfront before starting comparisons
+    if [[ -z "${LEVEL6_USER_CONFIRMED:-}" ]]; then
+        echo ""
+        echo -e "${YELLOW}${BOLD}⚠️  LEVEL 6 DEEP FRAME ANALYSIS OPTION${NC}"
+        echo ""
+        echo -e "${CYAN}📊 What is Level 6?${NC}"
+        echo -e "  Level 6 performs ${BOLD}deep frame-by-frame comparison${NC} on suspicious GIF pairs."
+        echo -e "  The AI will decide which pairs need this analysis (typically < 0.1% of pairs)."
+        echo -e "  It extracts and compares actual pixel data to detect visually identical"
+        echo -e "  duplicates that hash-based methods (Levels 1-5) might miss."
+        echo ""
+        echo -e "${CYAN}⏱️  Time Investment:${NC}"
+        echo -e "  • If AI triggers Level 6: Adds ~1-2 seconds per pair analyzed"
+        echo -e "  • Your collection: ${BOLD}$total_gifs files${NC} (~$((total_comparisons / 1000)) max Level 6 comparisons)"
+        echo -e "  • Most collections: ${GREEN}Level 6 rarely triggers${NC} (AI is very selective)"
+        echo ""
+        echo -e "${CYAN}🎯 When to enable Level 6:${NC}"
+        echo -e "  ${GREEN}✓${NC} You suspect visual duplicates with different file sizes"
+        echo -e "  ${GREEN}✓${NC} You want the most thorough duplicate detection possible"
+        echo -e "  ${GREEN}✓${NC} You have time and want maximum accuracy"
+        echo ""
+        echo -e "${CYAN}⚡ When to disable Level 6:${NC}"
+        echo -e "  ${YELLOW}→${NC} You're in a hurry (Levels 1-5 find most duplicates)"
+        echo -e "  ${YELLOW}→${NC} You trust the fast hash-based detection"
+        echo -e "  ${YELLOW}→${NC} Your collection is very large and time is critical"
+        echo ""
+        echo -e "${GRAY}💡 Note: Selecting 'No' will still run Levels 1-5 (fast hash-based detection)${NC}"
+        echo -e "${GRAY}   Only the slow Level 6 frame analysis will be skipped.${NC}"
+        echo ""
+        echo -ne "${BOLD}Enable Level 6 deep analysis? [y/N]: ${NC}"
+        read -r level6_response
+        
+        if [[ "$level6_response" =~ ^[Yy]$ ]]; then
+            LEVEL6_USER_CONFIRMED="yes"
+            echo -e "${GREEN}✓ Level 6 enabled - AI will use it when needed${NC}"
+        else
+            LEVEL6_USER_CONFIRMED="no"
+            echo -e "${YELLOW}⊘ Level 6 disabled - continuing with fast Levels 1-5${NC}"
+        fi
+        echo ""
+    fi
+    
+    if [[ $delta_mode_enabled == true && ${#new_files[@]} -gt 0 ]]; then
+        # In delta mode: only compare NEW×NEW and NEW×OLD
+        local new_count=${#new_files[@]}
+        local old_count=$old_file_count
+        
+        # NEW×NEW comparisons: new_count * (new_count - 1) / 2
+        # NEW×OLD comparisons: new_count * old_count
+        optimized_comparisons=$(( (new_count * (new_count - 1)) / 2 + (new_count * old_count) ))
+        skipped_comparisons=$((total_comparisons - optimized_comparisons))
+        
+        echo -e "  ${GREEN}⚡ Smart delta mode active!${NC}"
+        echo -e "    ${YELLOW}🆕 New files: ${BOLD}$new_file_count${NC}"
+        if [[ $modified_file_count -gt 0 ]]; then
+            echo -e "    ${YELLOW}✏️  Modified files: ${BOLD}$modified_file_count${NC}"
+        fi
+        echo -e "    ${GREEN}✓ Unchanged files: ${BOLD}$old_file_count${NC}"
+        echo -e "    ${CYAN}🚀 Optimized comparisons: ${BOLD}$optimized_comparisons${NC}${CYAN} (was $total_comparisons)${NC}"
+        echo -e "    ${MAGENTA}⏩ Skipping: ${BOLD}$skipped_comparisons${NC}${MAGENTA} fully cached pairs${NC}"
+        echo ""
+    elif [[ $delta_mode_enabled == true && ${#new_files[@]} -eq 0 ]]; then
+        echo -e "  ${GREEN}✓ No new or modified files detected - skipping duplicate detection!${NC}"
+        echo -e "    ${GRAY}📁 All $total_gifs files are unchanged since last run${NC}"
+        
+        # Skip duplicate detection entirely and jump to cleanup
+        # Save tracking data and exit early
+        : > "$file_tracking_db"
+        echo "# File Tracking Database - Updated: $(date)" >> "$file_tracking_db"
+        echo "# Format: filename|mtime|size" >> "$file_tracking_db"
+        for gif_file in "${gif_files[@]}"; do
+            local file_mtime=$(stat -c%Y "$gif_file" 2>/dev/null || echo "0")
+            local file_size="${gif_sizes[$gif_file]}"
+            echo "$gif_file|$file_mtime|$file_size" >> "$file_tracking_db"
+        done
+        
+        # Return early - no duplicates to process
+        return 0
+    fi
+    
+    # 💾 STAGE 2 PROGRESS PERSISTENCE
+    local stage2_progress_file="$LOG_DIR/.stage2_progress"
+    local resume_i=0
+    local resume_j=0
+    
+    # Try to restore previous progress
+    if [[ -f "$stage2_progress_file" ]]; then
+        source "$stage2_progress_file" 2>/dev/null && {
+            resume_i=${STAGE2_LAST_I:-0}
+            resume_j=${STAGE2_LAST_J:-0}
+            if [[ $resume_i -gt 0 || $resume_j -gt 0 ]]; then
+                echo -e "  ${GREEN}✅ Resuming from previous session: pair index [$resume_i,$resume_j]${NC}"
+            fi
+        }
+    fi
+    
+    # Advanced duplicate detection with multiple similarity levels
+    for ((i=resume_i; i<${#gif_files[@]}; i++)); do
         # Check for interrupt
         if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
             echo -e "\n  ${YELLOW}⏸️  Duplicate detection interrupted by user${NC}"
@@ -7587,9 +7738,32 @@ detect_duplicate_gifs() {
         fi
         
         local file1="${gif_files[i]}"
-        for ((j=i+1; j<${#gif_files[@]}; j++)); do
+        
+        # Determine starting point for inner loop (resume support)
+        local start_j=$((i + 1))
+        if [[ $i -eq $resume_i && $resume_j -gt $start_j ]]; then
+            start_j=$resume_j
+        fi
+        
+        for ((j=start_j; j<${#gif_files[@]}; j++)); do
             local file2="${gif_files[j]}"
+            
+            # 🚀 DELTA MODE OPTIMIZATION: Skip OLD×OLD pairs (already analyzed)
+            if [[ $delta_mode_enabled == true && ${#new_files[@]} -gt 0 ]]; then
+                # Both files are old (not new/modified) - skip this pair entirely
+                if [[ -z "${file_is_new[$file1]}" && -z "${file_is_new[$file2]}" ]]; then
+                    ((skipped_comparisons++))
+                    continue  # Skip to next pair
+                fi
+            fi
+            
             ((current_comparison++))
+            
+            # 💾 Save progress every 100 comparisons
+            if [[ $((current_comparison % 100)) -eq 0 ]]; then
+                echo "STAGE2_LAST_I=$i" > "$stage2_progress_file"
+                echo "STAGE2_LAST_J=$j" >> "$stage2_progress_file"
+            fi
             
             # Display progress for stage 2
             if [[ $total_comparisons -gt 5 ]]; then  # Only show progress bar if significant work
@@ -7597,10 +7771,23 @@ detect_duplicate_gifs() {
                 local filled=$((progress * 25 / 100))  # Shorter bar for comparison stage
                 local empty=$((25 - filled))
                 
-                printf "\r  ${MAGENTA}Compare [${NC}"
-                for ((k=0; k<filled; k++)); do printf "${BLUE}█${NC}"; done
-                for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
-                printf "${MAGENTA}] ${BOLD}%3d%%${NC} ${YELLOW}%s ↔ %s${NC}" "$progress" "$(basename -- "${file1:0:12}")..." "$(basename -- "${file2:0:12}")..."
+                # Show different message based on Level 6 status
+                if [[ "${LEVEL6_USER_CONFIRMED:-no}" == "yes" ]]; then
+                    # Level 6 enabled - show full analysis label
+                    printf "\r  ${CYAN}⚡ Fast Check (L1-5) [${NC}"
+                    for ((k=0; k<filled; k++)); do printf "${GREEN}█${NC}"; done
+                    for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
+                    printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}%s ↔ %s${NC}" "$progress" "$(basename -- "${file1:0:12}")..." "$(basename -- "${file2:0:12}")..."
+                else
+                    # Level 6 disabled - emphasize fast-only mode
+                    printf "\r  ${GREEN}⚡ Fast Hash Check [${NC}"
+                    for ((k=0; k<filled; k++)); do printf "${GREEN}█${NC}"; done
+                    for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
+                    printf "${GREEN}] ${BOLD}%3d%%${NC} ${GRAY}(L1-5 only)${NC}"
+                    # Add helpful text below progress bar
+                    printf "\n  ${GRAY}💡 Checking $current_comparison of $total_comparisons pairs (instant hash lookups, Level 6 skipped)${NC}"
+                    printf "\r\033[1A"  # Move cursor back up to progress bar line
+                fi
             fi
             
             local is_duplicate=false
@@ -7956,88 +8143,6 @@ detect_duplicate_gifs() {
                 fi
             fi
             
-            # Execute Level 6 if decided
-            if [[ "$should_run_level6" == "true" ]]; then
-                local vhash1="${gif_visual_hashes[$file1]}"
-                local vhash2="${gif_visual_hashes[$file2]}"
-                if [[ -n "$vhash1" && -n "$vhash2" && "$vhash1" != "0" && "$vhash2" != "0" ]]; then
-                    # Calculate similarity (already done by Level 2, reuse it!)
-                    if [[ "$vhash1" == "$vhash2" ]]; then
-                        suspicious_score=$((suspicious_score + 50))  # Very suspicious!
-                    else
-                        # Close but not exact
-                        local hash_dist=$(echo "scale=0; ($vhash1 - $vhash2) / $vhash1 * 100" | bc -l 2>/dev/null | tr -d '-' || echo "100")
-                        if [[ ${hash_dist%.*} -lt 10 ]]; then
-                            suspicious_score=$((suspicious_score + 30))  # Suspicious
-                        fi
-                    fi
-                fi
-                
-                # Use Level 3 results: Same content fingerprint?
-                local fp1="${gif_fingerprints[$file1]}"
-                local fp2="${gif_fingerprints[$file2]}"
-                if [[ -n "$fp1" && -n "$fp2" && "$fp1" == "$fp2" ]]; then
-                    suspicious_score=$((suspicious_score + 40))  # Same signature!
-                fi
-                
-                # Use Level 4/5 results: Same frames + duration?
-                local frame1="${gif_frame_counts[$file1]}"
-                local frame2="${gif_frame_counts[$file2]}"
-                local dur1="${gif_durations[$file1]}"
-                local dur2="${gif_durations[$file2]}"
-                if [[ $frame1 -gt 0 && $frame2 -gt 0 && $frame1 -eq $frame2 ]] && \
-                   [[ $dur1 -gt 0 && $dur2 -gt 0 && $dur1 -eq $dur2 ]]; then
-                    suspicious_score=$((suspicious_score + 45))  # Identical timing!
-                fi
-                
-                # Use file size similarity (basic check)
-                local size1="${gif_sizes[$file1]}"
-                local size2="${gif_sizes[$file2]}"
-                if [[ -n "$size1" && -n "$size2" && $size1 -gt 0 && $size2 -gt 0 ]]; then
-                    local size_diff=$(( (size1 > size2 ? size1 - size2 : size2 - size1) * 100 / (size1 > size2 ? size1 : size2) ))
-                    if [[ $size_diff -lt 5 ]]; then
-                        suspicious_score=$((suspicious_score + 30))  # Very close size
-                    elif [[ $size_diff -lt 15 ]]; then
-                        suspicious_score=$((suspicious_score + 15))  # Close size
-                    fi
-                fi
-                
-                # Simple threshold decision for large collections (237 files):
-                # Require MULTIPLE strong indicators to trigger Level 6
-                local collection_size=$total_gifs
-                
-                # For large collections (150+): Require 100+ suspicious score (multiple matches)
-                # For medium collections (75-149): Require 80+ suspicious score
-                # For small collections (<75): Require 60+ suspicious score
-                local required_threshold=60
-                if [[ $collection_size -ge 150 ]]; then
-                    required_threshold=100  # STRICT: Need multiple indicators
-                elif [[ $collection_size -ge 75 ]]; then
-                    required_threshold=80
-                fi
-                
-                # Make decision
-                if [[ "${AI_FRAME_ANALYSIS:-false}" == "true" ]]; then
-                    should_run_level6=true  # User explicitly enabled
-                elif [[ $suspicious_score -ge $required_threshold ]]; then
-                    should_run_level6=true
-                    
-                    # DEBUG: Show what triggered Level 6 (for large collections only)
-                    if [[ $collection_size -ge 150 ]]; then
-                        echo "" >&2
-                        echo -e "  ${YELLOW}🔍 Level 6 triggered!${NC}" >&2
-                        echo -e "    ${GRAY}Files: $(basename "$file1") ↔ $(basename "$file2")${NC}" >&2
-                        echo -e "    ${GRAY}Suspicion: ${BOLD}${suspicious_score}${NC}${GRAY} >= Threshold: ${BOLD}${required_threshold}${NC}" >&2
-                        echo -e "    ${GRAY}Levels 1-5 found: Similar hashes/fingerprints/frames${NC}" >&2
-                    fi
-                fi
-                
-                # Log decision for learning
-                if [[ "$AI_TRAINING_ENABLED" == "true" ]]; then
-                    echo "L6|$(basename "$file1")|$(basename "$file2")|suspicion:$suspicious_score|threshold:$required_threshold|decision:$should_run_level6" >> "$AI_TRAINING_DIR/level6_decisions.log" 2>/dev/null
-                fi
-            fi
-            
             # OLD COMPLEX CODE DELETED BELOW - IGNORE IT
             if false; then  # Never execute
                 # Factor 2: MD5 Hash Proximity Analysis
@@ -8270,6 +8375,55 @@ detect_duplicate_gifs() {
             
             # Execute Level 6 only if AI decided it's worth it
             if [[ "$should_run_level6" == "true" ]]; then
+                # Check if user wants to skip Level 6 (only ask once per session)
+                if [[ -z "${LEVEL6_USER_CONFIRMED:-}" ]]; then
+                    echo ""
+                    echo -e "${YELLOW}${BOLD}⚠️  LEVEL 6 DEEP FRAME ANALYSIS DETECTED${NC}"
+                    echo ""
+                    echo -e "${CYAN}📊 What is Level 6?${NC}"
+                    echo -e "  Level 6 performs ${BOLD}deep frame-by-frame comparison${NC} between GIF pairs."
+                    echo -e "  It extracts and compares actual pixel data to detect visually identical"
+                    echo -e "  or near-identical duplicates that other methods might miss."
+                    echo ""
+                    echo -e "${CYAN}⏱️  Time Investment:${NC}"
+                    echo -e "  • Small collections (< 30 files): ~1-2 minutes"
+                    echo -e "  • Medium collections (30-100 files): ~5-15 minutes"
+                    echo -e "  • Large collections (100+ files): ~30+ minutes"
+                    echo -e "  • Your collection: ${BOLD}$total_gifs files${NC}"
+                    echo ""
+                    echo -e "${CYAN}🎯 When to use Level 6:${NC}"
+                    echo -e "  ${GREEN}✓${NC} You suspect visual duplicates with different file sizes"
+                    echo -e "  ${GREEN}✓${NC} You want the most thorough duplicate detection possible"
+                    echo -e "  ${GREEN}✓${NC} You have time and want maximum accuracy"
+                    echo ""
+                    echo -e "${CYAN}⚡ When to skip Level 6:${NC}"
+                    echo -e "  ${YELLOW}→${NC} You're in a hurry (Levels 1-5 already found most duplicates)"
+                    echo -e "  ${YELLOW}→${NC} Your collection is very large and time is limited"
+                    echo -e "  ${YELLOW}→${NC} You trust the fast hash-based detection (Levels 1-5)"
+                    echo ""
+                    echo -ne "${BOLD}Run Level 6 deep analysis? [y/N]: ${NC}"
+                    read -r level6_response
+                    
+                    if [[ "$level6_response" =~ ^[Yy]$ ]]; then
+                        LEVEL6_USER_CONFIRMED="yes"
+                        echo -e "${GREEN}✓ Level 6 enabled for this session${NC}"
+                        echo ""
+                    else
+                        LEVEL6_USER_CONFIRMED="no"
+                        echo -e "${YELLOW}⊘ Level 6 skipped - using fast detection only (Levels 1-5)${NC}"
+                        echo ""
+                        should_run_level6=false
+                    fi
+                fi
+                
+                # Check user's previous response
+                if [[ "$LEVEL6_USER_CONFIRMED" == "no" ]]; then
+                    should_run_level6=false
+                fi
+            fi
+            
+            # Continue with Level 6 execution only if still enabled
+            if [[ "$should_run_level6" == "true" ]]; then
                 
                 ((level6_checked++))
                 
@@ -8323,9 +8477,32 @@ detect_duplicate_gifs() {
                             [[ ${#name1} -gt 20 ]] && name1="${name1:0:17}..."
                             [[ ${#name2} -gt 20 ]] && name2="${name2:0:17}..."
                             
-                            echo -e "  ${MAGENTA}${BOLD}✨ Level 6: Deep Frame Analysis${NC}"
+                            echo ""
+                            echo -e "  ${MAGENTA}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                            echo -e "  ${MAGENTA}${BOLD}🔬 LEVEL 6 DEEP FRAME ANALYSIS RUNNING${NC}"
+                            echo -e "  ${MAGENTA}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                            echo -e "  ${YELLOW}⚠️  This is the SLOW deep analysis you enabled${NC}"
                             echo -e "  ${CYAN}🔍 Analyzing: ${BOLD}$name1${NC} ${YELLOW}↔${NC} ${BOLD}$name2${NC}"
-                            echo -ne "  ${BLUE}🎬 Extracting frames...${NC}"
+                            
+                            # Show Level 6 progress bar
+                            local l6_total_analyzed=$((level6_checked - level6_cached))
+                            local l6_progress_pct=0
+                            local estimated_l6_max=$((total_comparisons / 1000))  # ~0.1% estimate
+                            [[ $estimated_l6_max -lt 1 ]] && estimated_l6_max=1
+                            if [[ $estimated_l6_max -gt 0 ]]; then
+                                l6_progress_pct=$((l6_total_analyzed * 100 / estimated_l6_max))
+                                [[ $l6_progress_pct -gt 100 ]] && l6_progress_pct=100
+                            fi
+                            local l6_filled=$((l6_progress_pct * 30 / 100))
+                            local l6_empty=$((30 - l6_filled))
+                            
+                            echo -e "  ${MAGENTA}L6 Progress [${NC}"
+                            for ((k=0; k<l6_filled; k++)); do printf "${MAGENTA}█${NC}"; done
+                            for ((k=0; k<l6_empty; k++)); do printf "${GRAY}░${NC}"; done
+                            printf "${MAGENTA}] ${BOLD}%3d%%${NC}\n" "$l6_progress_pct"
+                            echo -e "  ${GRAY}📊 Level 6 comparisons: $l6_total_analyzed analyzed, $level6_cached cached${NC}"
+                            
+                            echo -ne "  ${BLUE}🎬 Extracting and comparing frames pixel-by-pixel...${NC}"
                             
                             # Perform advanced frame-by-frame comparison
                             frame_analysis=$(ai_advanced_frame_comparison "$file1" "$file2" "$temp_analysis_dir" "$AI_LEVEL6_FAST_MODE")
@@ -8591,6 +8768,23 @@ detect_duplicate_gifs() {
     # Clear Stage 2 progress line and show completion
     if [[ $total_comparisons -gt 5 ]]; then
         printf "\r  ${GREEN}✓ Duplicate analysis complete! Compared $total_comparisons file pairs${NC}\n"
+    fi
+    
+    # 💾 Clear progress file on successful completion
+    rm -f "$stage2_progress_file" 2>/dev/null
+    
+    # 🚀 Save file tracking database for next run (delta detection)
+    : > "$file_tracking_db"
+    echo "# File Tracking Database - Updated: $(date)" >> "$file_tracking_db"
+    echo "# Format: filename|mtime|size" >> "$file_tracking_db"
+    for gif_file in "${gif_files[@]}"; do
+        local file_mtime=$(stat -c%Y "$gif_file" 2>/dev/null || echo "0")
+        local file_size="${gif_sizes[$gif_file]}"
+        echo "$gif_file|$file_mtime|$file_size" >> "$file_tracking_db"
+    done
+    
+    if [[ $delta_mode_enabled == true && $skipped_comparisons -gt 0 ]]; then
+        echo -e "  ${GREEN}✓ File tracking database updated for next run${NC}"
     fi
     
     # ========================================================================
