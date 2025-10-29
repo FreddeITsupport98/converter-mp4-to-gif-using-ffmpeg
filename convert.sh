@@ -260,6 +260,12 @@ UPDATE_CHECK_INTERVAL=86400  # Check once per day (in seconds)
 AUTO_UPDATE_ENABLED=true  # Enable automatic update checks (user configurable)
 UPDATE_FIRST_RUN_PROMPT_DONE=false  # Track if first-run update prompt was shown
 
+# 🔐 Release Fingerprint System - Track installed version integrity
+RELEASE_FINGERPRINT_FILE="$LOG_DIR/.release_fingerprint"
+INSTALLED_RELEASE_SHA256=""  # SHA256 of currently installed release
+INSTALLED_RELEASE_VERSION=""  # Version of currently installed release
+INSTALLED_RELEASE_TAG=""      # Git tag of currently installed release
+
 # 🔐 Security Configuration
 GPG_SIGNATURE_REQUIRED=false  # Require GPG signature verification (set true for max security)
 GPG_KEY_FINGERPRINT=""  # Your GPG key fingerprint (set this for GPG verification)
@@ -461,8 +467,27 @@ check_for_updates() {
     mkdir -p "$(dirname "$UPDATE_CHECK_FILE")" 2>/dev/null || true
     echo "$(date +%s)" > "$UPDATE_CHECK_FILE" 2>/dev/null || true
     
-    # Compare versions - only notify if different
+    # Extract SHA256 from release to compare with installed fingerprint
+    local remote_sha256=$(extract_sha256_from_release "$release_json")
+    
+    # Load current installation fingerprint
+    load_release_fingerprint 2>/dev/null
+    
+    # Compare versions AND checksums - only notify if different
+    # This prevents confusion when same version with different checksums exists
+    local needs_update=false
+    
     if [[ "$remote_version" != "$CURRENT_VERSION" ]]; then
+        # Different version number - definitely an update
+        needs_update=true
+    elif [[ -n "$remote_sha256" && -n "$INSTALLED_RELEASE_SHA256" ]]; then
+        # Same version but check if SHA256 differs (hotfix/rebuild)
+        if [[ "$remote_sha256" != "$INSTALLED_RELEASE_SHA256" ]]; then
+            needs_update=true
+        fi
+    fi
+    
+    if [[ "$needs_update" == "true" ]]; then
         local release_body=$(echo "$release_json" | grep -o '"body":"[^"]*"' | cut -d'"' -f4 | sed 's/\\n/\n/g' | sed 's/\\r//g')
         show_update_available "$remote_version" "$remote_tag" "$release_body" "prompt"
     fi
@@ -855,6 +880,14 @@ perform_update() {
     
     echo -e "${GREEN}      ✓ Installation complete${NC}"
     
+    # Security Check 7: Update release fingerprint with verified SHA256
+    echo -e "${CYAN}[7/7] Updating release fingerprint...${NC}"
+    if update_release_fingerprint "$new_version" "$release_tag" "$expected_sha256"; then
+        echo -e "${GREEN}      ✓ Release fingerprint saved${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Warning: Could not update release fingerprint${NC}"
+    fi
+    
     echo ""
     echo -e "${GREEN}${BOLD}╔═══════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${GREEN}${BOLD}║               ✓ UPDATE SUCCESSFUL!                          ║${NC}"
@@ -862,6 +895,7 @@ perform_update() {
     echo ""
     echo -e "${CYAN}Updated from v${CURRENT_VERSION} to v${new_version}${NC}"
     echo -e "${BLUE}Backup saved at: ${backup_file}${NC}"
+    echo -e "${BLUE}Fingerprint: ${expected_sha256:0:16}...${NC}"
     echo ""
     echo -e "${YELLOW}🔄 Please restart the script to use the new version${NC}"
     echo ""
@@ -985,6 +1019,124 @@ recover_from_interrupted_update() {
     rm -f "$lock_file" 2>/dev/null
     echo -e "${GREEN}✓ Recovery check complete${NC}"
     echo ""
+}
+
+# 🔐 Load release fingerprint from file
+load_release_fingerprint() {
+    if [[ -f "$RELEASE_FINGERPRINT_FILE" ]]; then
+        # Load fingerprint data
+        INSTALLED_RELEASE_SHA256=$(grep '^SHA256=' "$RELEASE_FINGERPRINT_FILE" 2>/dev/null | cut -d'=' -f2)
+        INSTALLED_RELEASE_VERSION=$(grep '^VERSION=' "$RELEASE_FINGERPRINT_FILE" 2>/dev/null | cut -d'=' -f2)
+        INSTALLED_RELEASE_TAG=$(grep '^TAG=' "$RELEASE_FINGERPRINT_FILE" 2>/dev/null | cut -d'=' -f2)
+        
+        # Validate loaded data
+        if [[ -n "$INSTALLED_RELEASE_SHA256" && "$INSTALLED_RELEASE_VERSION" == "$CURRENT_VERSION" ]]; then
+            return 0  # Valid fingerprint loaded
+        fi
+    fi
+    
+    # No fingerprint or version mismatch - create new fingerprint
+    create_release_fingerprint
+    return $?
+}
+
+# 🔐 Create release fingerprint for current installation
+create_release_fingerprint() {
+    echo -e "${CYAN}🔐 Creating release fingerprint...${NC}"
+    
+    # Calculate SHA256 of current script
+    local script_sha256=$(sha256sum "${BASH_SOURCE[0]}" 2>/dev/null | awk '{print $1}')
+    
+    if [[ -z "$script_sha256" ]]; then
+        echo -e "${YELLOW}⚠️  Warning: Cannot calculate script checksum${NC}"
+        return 1
+    fi
+    
+    # Create/update fingerprint file
+    mkdir -p "$(dirname "$RELEASE_FINGERPRINT_FILE")" 2>/dev/null
+    
+    cat > "$RELEASE_FINGERPRINT_FILE" <<EOF
+# Smart GIF Converter - Release Fingerprint
+# This file tracks the SHA256 checksum of the installed version
+# Created: $(date '+%Y-%m-%d %H:%M:%S')
+
+VERSION=$CURRENT_VERSION
+SHA256=$script_sha256
+TAG=
+INSTALL_DATE=$(date +%s)
+INSTALL_DATE_READABLE=$(date '+%Y-%m-%d %H:%M:%S')
+EOF
+    
+    # Update in-memory variables
+    INSTALLED_RELEASE_SHA256="$script_sha256"
+    INSTALLED_RELEASE_VERSION="$CURRENT_VERSION"
+    INSTALLED_RELEASE_TAG=""
+    
+    echo -e "${GREEN}✓ Release fingerprint created${NC}"
+    echo -e "${GRAY}Version: v${CURRENT_VERSION}${NC}"
+    echo -e "${GRAY}SHA256: ${script_sha256:0:16}...${NC}"
+    
+    return 0
+}
+
+# 🔐 Update release fingerprint after successful update
+update_release_fingerprint() {
+    local new_version="$1"
+    local new_tag="$2"
+    local new_sha256="$3"
+    
+    if [[ -z "$new_sha256" ]]; then
+        # Calculate SHA256 of newly installed script
+        new_sha256=$(sha256sum "${BASH_SOURCE[0]}" 2>/dev/null | awk '{print $1}')
+    fi
+    
+    if [[ -z "$new_sha256" ]]; then
+        echo -e "${YELLOW}⚠️  Warning: Cannot calculate new script checksum${NC}"
+        return 1
+    fi
+    
+    # Update fingerprint file
+    mkdir -p "$(dirname "$RELEASE_FINGERPRINT_FILE")" 2>/dev/null
+    
+    cat > "$RELEASE_FINGERPRINT_FILE" <<EOF
+# Smart GIF Converter - Release Fingerprint
+# This file tracks the SHA256 checksum of the installed version
+# Updated: $(date '+%Y-%m-%d %H:%M:%S')
+
+VERSION=$new_version
+SHA256=$new_sha256
+TAG=$new_tag
+INSTALL_DATE=$(date +%s)
+INSTALL_DATE_READABLE=$(date '+%Y-%m-%d %H:%M:%S')
+PREVIOUS_VERSION=$INSTALLED_RELEASE_VERSION
+PREVIOUS_SHA256=$INSTALLED_RELEASE_SHA256
+EOF
+    
+    # Update in-memory variables
+    INSTALLED_RELEASE_SHA256="$new_sha256"
+    INSTALLED_RELEASE_VERSION="$new_version"
+    INSTALLED_RELEASE_TAG="$new_tag"
+    
+    echo -e "${GREEN}✓ Release fingerprint updated${NC}"
+    
+    return 0
+}
+
+# 🔍 Verify current installation matches fingerprint
+verify_installation_integrity() {
+    if [[ -z "$INSTALLED_RELEASE_SHA256" ]]; then
+        # No fingerprint loaded
+        return 1
+    fi
+    
+    # Calculate current SHA256
+    local current_sha256=$(sha256sum "${BASH_SOURCE[0]}" 2>/dev/null | awk '{print $1}')
+    
+    if [[ "$current_sha256" == "$INSTALLED_RELEASE_SHA256" ]]; then
+        return 0  # Integrity verified
+    else
+        return 1  # Mismatch detected
+    fi
 }
 
 # 🆕 First-run auto-update preference prompt
@@ -16194,6 +16346,9 @@ main() {
     log_settings_snapshot_once
     
     print_header
+    
+    # Initialize release fingerprint system (track installed version integrity)
+    load_release_fingerprint 2>/dev/null || true
     
     # Automatic update check (silent, runs in background)
     check_for_updates &
