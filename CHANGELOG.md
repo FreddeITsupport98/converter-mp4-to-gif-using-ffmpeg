@@ -25,16 +25,22 @@ All notable changes to Smart GIF Converter will be documented in this file.
 - **Multi-Frame Sampling**: Extracts 5 evenly distributed frames from each GIF
 - **Parallel Analysis**: Compares corresponding frames for consistency
 - **Dual Metrics**: Visual structure (dHash) + Color profile (histogram)
-- **Smart Pre-Filtering**: Only analyzes files with similar properties:
-  - Frame count within 10%
-  - Duration within 10%
-  - File size within 30%
+- **Relaxed Pre-Filtering**: Analyzes files with broader tolerance to catch more cases:
+  - Frame count within 30%
+  - Duration within 30%
+  - File size within 50%
+  - Ensures Level 6 catches duplicates that other layers missed
 
 #### Detection Criteria (Level 6)
 - **Visual Structure Match**: ≥ 80% of frames have similar visual structure (Hamming distance < 5)
 - **Color Profile Match**: ≥ 85% of frames have similar color distribution (correlation > 85%)
 - **Both Required**: Must pass BOTH visual AND color checks to be flagged as duplicate
-- **Result Format**: Shows match percentages (e.g., "frame_analysis_match(V:95%,C:92%)")
+- **Independent Validation**: Runs AFTER all other layers (not as fallback)
+  - If other layers already found duplicate: Level 6 confirms with detailed metrics
+  - If other layers missed it: Level 6 can find new duplicates independently
+- **Result Format**: 
+  - New duplicate: `L6_frame_analysis(V:95%,C:92%)`
+  - Confirmation: `exact_binary+L6_confirmed(V:95%,C:92%)`
 
 #### Technical Implementation
 - **Function**: `ai_advanced_frame_comparison()`
@@ -60,6 +66,44 @@ All notable changes to Smart GIF Converter will be documented in this file.
 - **Efficient Sampling**: Analyzes only 5 frames (not entire GIF)
 - **Early Termination**: Skips expensive analysis when basic properties differ
 - **Automatic Cleanup**: Temporary frame files cleaned immediately
+
+#### User-Friendly Progress Display
+- **Real-time Status Updates**: Shows exactly what Level 6 is doing
+  - Frame extraction progress for both GIFs
+  - Frame-by-frame comparison with visual/color indicators
+  - Live match/mismatch feedback (✓ for match, ✗ for no match)
+  - Final results summary with percentages
+- **Visual Feedback**:
+  - ✨ Level 6: Deep Frame Analysis header
+  - 🔍 Shows which files being compared
+  - 🎬 Frame extraction progress (5 frames per GIF)
+  - 🎨 Visual structure comparison per frame
+  - 🌈 Color profile comparison per frame
+  - 📊 Final match percentages (Visual % | Color %)
+  - Result classification:
+    - ✓ DUPLICATE DETECTED (High confidence) - Green
+    - ⚠️ Partial Match (Below threshold) - Yellow
+    - ✓ Not Duplicate (Different content) - Blue
+- **Clear Progress Tracking**: Frame X/Y counter shows completion status
+- **Non-Intrusive**: Progress updates on same line, clears when done
+
+#### Smart Caching System
+- **Intelligent Pair Caching**: Remembers already-analyzed file pairs
+  - Cache Key: `L6_COMPARE:file1.gif:file2.gif`
+  - Stores comparison results (visual:color percentages)
+  - Persistent across script runs
+  - Automatic cache invalidation when files change
+- **Performance Benefits**:
+  - ⚡ **Instant Results**: Cached comparisons load in milliseconds
+  - 📏 **Incremental Analysis**: Only new pairs need deep analysis
+  - 🔄 **Smart Re-runs**: Adding 1 new GIF only analyzes N new pairs (not N²)
+  - 💾 **Efficient Storage**: Results stored in AI cache index
+- **Cache Hit Indicator**: Shows `⚡ Level 6: Using cached comparison result` when cached
+- **How It Works**:
+  1. Check cache for this specific pair
+  2. If found: Use cached visual/color percentages instantly
+  3. If not found: Perform full frame analysis and cache result
+  4. Next run: Skip re-analysis for all previously compared pairs
 
 #### Use Cases
 - **Detects Recompressed GIFs**: Same content, different compression settings

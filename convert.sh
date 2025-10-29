@@ -6576,8 +6576,14 @@ ai_advanced_frame_comparison() {
     mkdir -p "$frames_dir1" "$frames_dir2" 2>/dev/null || return 1
     
     # Extract sample frames from both GIFs
+    printf " ${GREEN}✓${NC}\n"
+    echo -ne "  ${BLUE}🎬 Extracting 5 frames from GIF 1...${NC}"
     local num_frames1=$(ai_extract_sample_frames "$gif1" 5 "$frames_dir1")
+    printf " ${GREEN}✓ $num_frames1${NC}\n"
+    
+    echo -ne "  ${BLUE}🎬 Extracting 5 frames from GIF 2...${NC}"
     local num_frames2=$(ai_extract_sample_frames "$gif2" 5 "$frames_dir2")
+    printf " ${GREEN}✓ $num_frames2${NC}\n"
     
     if [[ $num_frames1 -eq 0 || $num_frames2 -eq 0 ]]; then
         rm -rf "$frames_dir1" "$frames_dir2" 2>/dev/null
@@ -6599,6 +6605,8 @@ ai_advanced_frame_comparison() {
     local max_frames=${#frames1[@]}
     [[ ${#frames2[@]} -lt $max_frames ]] && max_frames=${#frames2[@]}
     
+    echo -e "  ${MAGENTA}⚒️ Comparing $max_frames frame pairs...${NC}"
+    
     for ((i=0; i<max_frames; i++)); do
         local frame1="${frames1[$i]}"
         local frame2="${frames2[$i]}"
@@ -6607,7 +6615,12 @@ ai_advanced_frame_comparison() {
             continue
         fi
         
+        # Show progress for current frame
+        local frame_num=$((i + 1))
+        printf "\r  ${CYAN}  Frame %d/%d: ${NC}" "$frame_num" "$max_frames"
+        
         # Calculate perceptual hashes (visual structure)
+        echo -ne "${BLUE}🎨 Visual...${NC}"
         local dhash1=$(ai_calculate_dhash "$frame1" 8)
         local dhash2=$(ai_calculate_dhash "$frame2" 8)
         
@@ -6617,10 +6630,14 @@ ai_advanced_frame_comparison() {
             # Hamming distance < 5 means very similar visual structure
             if [[ $hamming_dist -lt 5 ]]; then
                 ((visual_matches++))
+                echo -ne " ${GREEN}✓${NC}"
+            else
+                echo -ne " ${YELLOW}✗${NC}"
             fi
         fi
         
         # Calculate color histograms (color profile)
+        echo -ne " ${BLUE}🌈 Color...${NC}"
         local hist1=$(ai_calculate_color_histogram "$frame1" 16)
         local hist2=$(ai_calculate_color_histogram "$frame2" 16)
         
@@ -6630,11 +6647,17 @@ ai_advanced_frame_comparison() {
             # Correlation > 85% means very similar color profile
             if [[ $color_correlation -gt 85 ]]; then
                 ((color_matches++))
+                echo -ne " ${GREEN}✓${NC}"
+            else
+                echo -ne " ${YELLOW}✗${NC}"
             fi
         fi
         
         ((total_comparisons++))
     done
+    
+    # Clear the progress line and show final newline
+    printf "\r\033[K"
     
     # Cleanup
     rm -rf "$frames_dir1" "$frames_dir2" 2>/dev/null
@@ -6647,6 +6670,19 @@ ai_advanced_frame_comparison() {
         visual_match_pct=$((visual_matches * 100 / total_comparisons))
         color_match_pct=$((color_matches * 100 / total_comparisons))
     fi
+    
+    # Show results summary
+    echo -e "  ${CYAN}📊 Results: ${BOLD}Visual ${visual_match_pct}%${NC} ${CYAN}| ${BOLD}Color ${color_match_pct}%${NC}"
+    
+    # Visual feedback based on match quality
+    if [[ $visual_match_pct -ge 80 && $color_match_pct -ge 85 ]]; then
+        echo -e "  ${GREEN}${BOLD}✓ DUPLICATE DETECTED${NC} ${GREEN}(High confidence)${NC}"
+    elif [[ $visual_match_pct -ge 60 || $color_match_pct -ge 60 ]]; then
+        echo -e "  ${YELLOW}⚠️ Partial Match${NC} ${YELLOW}(Below threshold)${NC}"
+    else
+        echo -e "  ${BLUE}✓ Not Duplicate${NC} ${GRAY}(Different content)${NC}"
+    fi
+    echo ""
     
     # Return results as "visual:color"
     echo "${visual_match_pct}:${color_match_pct}"
@@ -7464,14 +7500,26 @@ detect_duplicate_gifs() {
     echo -e "  ${GRAY}Used ${BOLD}$AI_DUPLICATE_THREADS threads${NC} ${GRAY}for parallel processing${NC}"
     
     echo -e "  ${BLUE}${BOLD}🔍 Stage 2: Multi-level duplicate detection...${NC}"
+    echo -e "  ${CYAN}Running 6-layer analysis system:${NC}"
+    echo -e "    ${GRAY}├─ Level 1: Exact Binary Match (MD5)${NC}"
+    echo -e "    ${GRAY}├─ Level 2: Visual Hash Matching${NC}"
+    echo -e "    ${GRAY}├─ Level 3: Content Fingerprint${NC}"
+    echo -e "    ${GRAY}├─ Level 4: Near-Identical Detection${NC}"
+    echo -e "    ${GRAY}├─ Level 5: Filename Similarity${NC}"
+    echo -e "    ${GRAY}└─ Level 6: AI Frame-by-Frame Analysis${NC}"
     
     # Calculate total comparisons for progress tracking
     local total_comparisons=$(( (total_gifs * (total_gifs - 1)) / 2 ))
     local current_comparison=0
     
     if [[ $total_comparisons -gt 0 ]]; then
-        echo -e "  ${GRAY}Performing $total_comparisons pairwise comparisons...${NC}"
+        echo -e "  ${GRAY}Performing $total_comparisons pairwise comparisons across all levels...${NC}"
+        echo ""
     fi
+    
+    # Initialize level counters for final summary
+    local level1_checked=0 level2_checked=0 level3_checked=0 level4_checked=0 level5_checked=0 level6_checked=0
+    local level6_cached=0
     
     # Advanced duplicate detection with multiple similarity levels
     local gif_files=("${!gif_checksums[@]}")
@@ -7506,17 +7554,20 @@ detect_duplicate_gifs() {
             ((DUPLICATE_STATS_TOTAL_CHECKED++))
             
             # Level 1: Exact binary match (highest confidence)
+            ((level1_checked++))
             if [[ "${gif_checksums[$file1]}" == "${gif_checksums[$file2]}" ]]; then
                 is_duplicate=true
                 similarity_reason="exact_binary"
                 ((DUPLICATE_STATS_EXACT_BINARY++))
             # Level 2: Visual similarity (high confidence)
+            ((level2_checked++))
             elif [[ -n "${gif_visual_hashes[$file1]}" && -n "${gif_visual_hashes[$file2]}" ]] && \
                  [[ "${gif_visual_hashes[$file1]}" == "${gif_visual_hashes[$file2]}" ]]; then
                 is_duplicate=true
                 similarity_reason="visual_identical"
                 ((DUPLICATE_STATS_VISUAL_IDENTICAL++))
             # Level 3: Content fingerprint match (medium confidence)
+            ((level3_checked++))
             elif [[ "${gif_fingerprints[$file1]}" == "${gif_fingerprints[$file2]}" ]]; then
                 # Additional validation for content fingerprint matches
                 local size1="${gif_sizes[$file1]}"
@@ -7531,6 +7582,7 @@ detect_duplicate_gifs() {
                     ((DUPLICATE_STATS_CONTENT_FINGERPRINT++))
                 fi
             # Level 4: AI-Enhanced Near-identical Detection (STRICT - visual similarity required)
+            ((level4_checked++))
             elif [[ "${gif_frame_counts[$file1]}" == "${gif_frame_counts[$file2]}" ]] && \
                  [[ "${gif_durations[$file1]}" == "${gif_durations[$file2]}" ]] && \
                  [[ "${gif_frame_counts[$file1]}" != "0" ]] && \
@@ -7575,6 +7627,7 @@ detect_duplicate_gifs() {
                 # NOTE: Without visual similarity, even if size/frames match, NOT flagged as duplicate
             # Level 5: Filename-based similarity for identical properties
             # Catches cases where GIFs have same dimensions/frames but different color tables
+            ((level5_checked++))
             elif [[ "${gif_frame_counts[$file1]}" == "${gif_frame_counts[$file2]}" ]] && \
                  [[ "${gif_durations[$file1]}" == "${gif_durations[$file2]}" ]] && \
                  [[ "${gif_frame_counts[$file1]}" != "0" ]] && \
@@ -7615,14 +7668,17 @@ detect_duplicate_gifs() {
                         ((DUPLICATE_STATS_NEAR_IDENTICAL++))
                     fi
                 fi
+            fi
+            
             # Level 6: Advanced Frame-by-Frame Color & Structure Matching (AI-powered deep analysis)
-            elif [[ "$AI_ENABLED" == "true" ]] && [[ "$AI_VISUAL_SIMILARITY" == "true" ]] && \
-                 command -v convert >/dev/null 2>&1; then
+            # This runs INDEPENDENTLY regardless of previous layer results for comprehensive validation
+            if [[ "$AI_ENABLED" == "true" ]] && [[ "$AI_VISUAL_SIMILARITY" == "true" ]] && \
+               command -v convert >/dev/null 2>&1; then
                 
-                # Perform deep frame analysis only if:
-                # 1. Frame counts are close (within 10%)
-                # 2. Durations are close (within 10%)
-                # 3. File sizes are similar (within 30%)
+                ((level6_checked++))
+                
+                # Perform deep frame analysis
+                # No pre-filtering - Level 6 should run on ALL pairs to provide independent validation
                 
                 local frame1="${gif_frame_counts[$file1]}"
                 local frame2="${gif_frame_counts[$file2]}"
@@ -7631,17 +7687,61 @@ detect_duplicate_gifs() {
                 local size1="${gif_sizes[$file1]}"
                 local size2="${gif_sizes[$file2]}"
                 
-                # Quick pre-check before expensive frame analysis
+                # Only require basic data availability (not strict thresholds)
                 if [[ $frame1 -gt 0 && $frame2 -gt 0 && $dur1 -gt 0 && $dur2 -gt 0 ]]; then
+                    # Calculate differences for informational purposes
                     local frame_diff=$(( (frame1 > frame2 ? frame1 - frame2 : frame2 - frame1) * 100 / (frame1 > frame2 ? frame1 : frame2) ))
                     local dur_diff=$(( (dur1 > dur2 ? dur1 - dur2 : dur2 - dur1) * 100 / (dur1 > dur2 ? dur1 : dur2) ))
                     local size_diff=$(( (size1 > size2 ? size1 - size2 : size2 - size1) * 100 / (size1 > size2 ? size1 : size2) ))
                     
-                    # Only proceed with expensive frame analysis if basic properties are close
-                    if [[ $frame_diff -lt 10 && $dur_diff -lt 10 && $size_diff -lt 30 ]]; then
-                        # Perform advanced frame-by-frame comparison
-                        local frame_analysis=$(ai_advanced_frame_comparison "$file1" "$file2" "$temp_analysis_dir")
+                    # Relaxed pre-check: allow more differences (within 50% for size, 30% for frames/duration)
+                    # This ensures Level 6 catches cases other layers missed
+                    if [[ $frame_diff -lt 30 && $dur_diff -lt 30 && $size_diff -lt 50 ]]; then
                         
+                        # =================================================================
+                        # SMART CACHING: Check if this pair was already analyzed
+                        # =================================================================
+                        local cache_key="L6_COMPARE:$(basename "$file1"):$(basename "$file2")"
+                        local cached_result=""
+                        
+                        # Try to load from cache
+                        if [[ "$AI_CACHE_ENABLED" == "true" && -f "$AI_CACHE_INDEX" ]]; then
+                            cached_result=$(grep "^$cache_key|" "$AI_CACHE_INDEX" 2>/dev/null | tail -1 | cut -d'|' -f5)
+                        fi
+                        
+                        local frame_analysis=""
+                        
+                        if [[ -n "$cached_result" ]]; then
+                            # Cache HIT! Use cached result
+                            ((level6_cached++))
+                            frame_analysis="$cached_result"
+                            printf "\r\033[K"
+                            echo -e "  ${GREEN}⚡ Level 6: Using cached comparison result${NC}"
+                        else
+                            # Cache MISS - Need to perform analysis
+                            # Show Level 6 analysis status (clear previous progress line)
+                            printf "\r\033[K"
+                            local name1="$(basename -- "$file1" .gif)"
+                            local name2="$(basename -- "$file2" .gif)"
+                            # Truncate long filenames
+                            [[ ${#name1} -gt 20 ]] && name1="${name1:0:17}..."
+                            [[ ${#name2} -gt 20 ]] && name2="${name2:0:17}..."
+                            
+                            echo -e "  ${MAGENTA}${BOLD}✨ Level 6: Deep Frame Analysis${NC}"
+                            echo -e "  ${CYAN}🔍 Analyzing: ${BOLD}$name1${NC} ${YELLOW}↔${NC} ${BOLD}$name2${NC}"
+                            echo -ne "  ${BLUE}🎬 Extracting frames...${NC}"
+                            
+                            # Perform advanced frame-by-frame comparison
+                            frame_analysis=$(ai_advanced_frame_comparison "$file1" "$file2" "$temp_analysis_dir")
+                            
+                            # Save result to cache for future runs
+                            if [[ "$AI_CACHE_ENABLED" == "true" && -n "$frame_analysis" ]]; then
+                                local timestamp=$(date +%s)
+                                echo "$cache_key|0|0|$timestamp|$frame_analysis" >> "$AI_CACHE_INDEX" 2>/dev/null
+                            fi
+                        fi
+                        
+                        # Process the frame analysis result (whether cached or fresh)
                         if [[ "$frame_analysis" != "0:0" ]]; then
                             # Parse results: visual_match:color_match
                             local visual_match=$(echo "$frame_analysis" | cut -d':' -f1)
@@ -7650,9 +7750,15 @@ detect_duplicate_gifs() {
                             # STRICT CRITERIA for Level 6:
                             # Visual structure match >= 80% AND Color profile match >= 85%
                             if [[ $visual_match -ge 80 && $color_match -ge 85 ]]; then
-                                is_duplicate=true
-                                similarity_reason="frame_analysis_match(V:${visual_match}%,C:${color_match}%)"
-                                ((DUPLICATE_STATS_NEAR_IDENTICAL++))
+                                # If already marked as duplicate by another layer, append Level 6 confirmation
+                                if [[ "$is_duplicate" == "true" ]]; then
+                                    similarity_reason="${similarity_reason}+L6_confirmed(V:${visual_match}%,C:${color_match}%)"
+                                else
+                                    # Level 6 found a NEW duplicate that other layers missed!
+                                    is_duplicate=true
+                                    similarity_reason="L6_frame_analysis(V:${visual_match}%,C:${color_match}%)"
+                                    ((DUPLICATE_STATS_NEAR_IDENTICAL++))
+                                fi
                             fi
                         fi
                     fi
@@ -7864,6 +7970,111 @@ detect_duplicate_gifs() {
     if [[ $total_comparisons -gt 5 ]]; then
         printf "\r  ${GREEN}✓ Duplicate analysis complete! Compared $total_comparisons file pairs${NC}\n"
     fi
+    
+    # ========================================================================
+    # COMPREHENSIVE LEVEL-BY-LEVEL PROGRESS SUMMARY
+    # ========================================================================
+    echo ""
+    echo -e "  ${CYAN}${BOLD}╔════════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "  ${CYAN}${BOLD}║          📊 6-LEVEL DUPLICATE DETECTION SUMMARY                   ║${NC}"
+    echo -e "  ${CYAN}${BOLD}╚════════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    
+    # Calculate total checks across all levels
+    local total_level_checks=$((level1_checked + level2_checked + level3_checked + level4_checked + level5_checked + level6_checked))
+    
+    # Level 1 Progress Bar
+    local level1_pct=0
+    [[ $level1_checked -gt 0 && $total_comparisons -gt 0 ]] && level1_pct=$((level1_checked * 100 / total_comparisons))
+    local level1_bar_filled=$((level1_pct * 40 / 100))
+    echo -e "  ${BLUE}Level 1: Exact Binary Match (MD5)${NC}"
+    printf "  ["
+    for ((k=0; k<level1_bar_filled; k++)); do printf "${GREEN}█${NC}"; done
+    for ((k=level1_bar_filled; k<40; k++)); do printf "${GRAY}░${NC}"; done
+    printf "] ${BOLD}%3d%%${NC} ${GRAY}($level1_checked comparisons)${NC}\n" "$level1_pct"
+    
+    # Level 2 Progress Bar
+    local level2_pct=0
+    [[ $level2_checked -gt 0 && $total_comparisons -gt 0 ]] && level2_pct=$((level2_checked * 100 / total_comparisons))
+    local level2_bar_filled=$((level2_pct * 40 / 100))
+    echo -e "  ${BLUE}Level 2: Visual Hash Matching${NC}"
+    printf "  ["
+    for ((k=0; k<level2_bar_filled; k++)); do printf "${GREEN}█${NC}"; done
+    for ((k=level2_bar_filled; k<40; k++)); do printf "${GRAY}░${NC}"; done
+    printf "] ${BOLD}%3d%%${NC} ${GRAY}($level2_checked comparisons)${NC}\n" "$level2_pct"
+    
+    # Level 3 Progress Bar
+    local level3_pct=0
+    [[ $level3_checked -gt 0 && $total_comparisons -gt 0 ]] && level3_pct=$((level3_checked * 100 / total_comparisons))
+    local level3_bar_filled=$((level3_pct * 40 / 100))
+    echo -e "  ${BLUE}Level 3: Content Fingerprint${NC}"
+    printf "  ["
+    for ((k=0; k<level3_bar_filled; k++)); do printf "${GREEN}█${NC}"; done
+    for ((k=level3_bar_filled; k<40; k++)); do printf "${GRAY}░${NC}"; done
+    printf "] ${BOLD}%3d%%${NC} ${GRAY}($level3_checked comparisons)${NC}\n" "$level3_pct"
+    
+    # Level 4 Progress Bar
+    local level4_pct=0
+    [[ $level4_checked -gt 0 && $total_comparisons -gt 0 ]] && level4_pct=$((level4_checked * 100 / total_comparisons))
+    local level4_bar_filled=$((level4_pct * 40 / 100))
+    echo -e "  ${BLUE}Level 4: Near-Identical Detection${NC}"
+    printf "  ["
+    for ((k=0; k<level4_bar_filled; k++)); do printf "${GREEN}█${NC}"; done
+    for ((k=level4_bar_filled; k<40; k++)); do printf "${GRAY}░${NC}"; done
+    printf "] ${BOLD}%3d%%${NC} ${GRAY}($level4_checked comparisons)${NC}\n" "$level4_pct"
+    
+    # Level 5 Progress Bar
+    local level5_pct=0
+    [[ $level5_checked -gt 0 && $total_comparisons -gt 0 ]] && level5_pct=$((level5_checked * 100 / total_comparisons))
+    local level5_bar_filled=$((level5_pct * 40 / 100))
+    echo -e "  ${BLUE}Level 5: Filename Similarity${NC}"
+    printf "  ["
+    for ((k=0; k<level5_bar_filled; k++)); do printf "${GREEN}█${NC}"; done
+    for ((k=level5_bar_filled; k<40; k++)); do printf "${GRAY}░${NC}"; done
+    printf "] ${BOLD}%3d%%${NC} ${GRAY}($level5_checked comparisons)${NC}\n" "$level5_pct"
+    
+    # Level 6 Progress Bar with Cache Info
+    local level6_pct=0
+    [[ $level6_checked -gt 0 && $total_comparisons -gt 0 ]] && level6_pct=$((level6_checked * 100 / total_comparisons))
+    local level6_bar_filled=$((level6_pct * 40 / 100))
+    local level6_analyzed=$((level6_checked - level6_cached))
+    echo -e "  ${MAGENTA}Level 6: AI Frame-by-Frame Analysis${NC}"
+    printf "  ["
+    for ((k=0; k<level6_bar_filled; k++)); do printf "${MAGENTA}█${NC}"; done
+    for ((k=level6_bar_filled; k<40; k++)); do printf "${GRAY}░${NC}"; done
+    if [[ $level6_checked -gt 0 ]]; then
+        printf "] ${BOLD}%3d%%${NC} ${GRAY}($level6_checked total: ${GREEN}$level6_cached cached${GRAY}, ${YELLOW}$level6_analyzed analyzed${GRAY})${NC}\n" "$level6_pct"
+    else
+        printf "] ${BOLD}%3d%%${NC} ${GRAY}(not triggered)${NC}\n" "$level6_pct"
+    fi
+    
+    echo ""
+    echo -e "  ${CYAN}${BOLD}📈 DETECTION STATISTICS:${NC}"
+    echo -e "    ${GREEN}✓${NC} Total Comparisons:     ${BOLD}$total_comparisons${NC} file pairs"
+    echo -e "    ${GREEN}✓${NC} Duplicates Found:      ${BOLD}$duplicate_count${NC} duplicates"
+    
+    # Show detection breakdown
+    if [[ $DUPLICATE_STATS_EXACT_BINARY -gt 0 ]]; then
+        echo -e "    ${GREEN}  ├─${NC} Exact Binary:        ${BOLD}$DUPLICATE_STATS_EXACT_BINARY${NC}"
+    fi
+    if [[ $DUPLICATE_STATS_VISUAL_IDENTICAL -gt 0 ]]; then
+        echo -e "    ${BLUE}  ├─${NC} Visual Identical:    ${BOLD}$DUPLICATE_STATS_VISUAL_IDENTICAL${NC}"
+    fi
+    if [[ $DUPLICATE_STATS_CONTENT_FINGERPRINT -gt 0 ]]; then
+        echo -e "    ${CYAN}  ├─${NC} Content Fingerprint: ${BOLD}$DUPLICATE_STATS_CONTENT_FINGERPRINT${NC}"
+    fi
+    if [[ $DUPLICATE_STATS_NEAR_IDENTICAL -gt 0 ]]; then
+        echo -e "    ${YELLOW}  └─${NC} Near-Identical:      ${BOLD}$DUPLICATE_STATS_NEAR_IDENTICAL${NC}"
+    fi
+    
+    # Level 6 specific stats
+    if [[ $level6_checked -gt 0 ]]; then
+        local level6_hit_rate=0
+        [[ $level6_checked -gt 0 ]] && level6_hit_rate=$((level6_cached * 100 / level6_checked))
+        echo -e "    ${MAGENTA}⚡${NC} Level 6 Cache:        ${BOLD}${level6_hit_rate}%${NC} hit rate ${GRAY}($level6_cached/$level6_checked)${NC}"
+    fi
+    
+    echo ""
     
     # Stage 3: Results summary
     echo -e "  ${YELLOW}${BOLD}📊 Stage 3: Analysis results and recommendations...${NC}"
