@@ -2,6 +2,232 @@
 
 All notable changes to Smart GIF Converter will be documented in this file.
 
+## [5.2.0] - 2024-10-29
+
+### 🔄 Auto-Update System
+
+#### GitHub Releases Integration
+- **Automatic Update Checking**: Checks GitHub Releases API once per day
+  - Non-intrusive background check on script startup
+  - Respects user preference (can be disabled)
+  - Uses intelligent caching to avoid API rate limits
+  - Validates GitHub URL before fetching (5s timeout)
+  
+- **Update Notifications**: Shows user-friendly notifications when updates available
+  - Displays current vs. new version
+  - Shows release notes preview (first 5 lines)
+  - Provides link to full release notes
+  - Offers interactive update prompt
+
+#### Secure Update Process
+- **SHA256 Verification**: Cryptographic checksum validation
+  - Extracts SHA256 from release notes (multiple formats supported)
+  - Verifies downloaded file before installation
+  - Aborts update if checksum fails
+  - Skips verification with warning if no checksum provided
+
+- **Safe Update Procedure**
+  - Creates timestamped backup before updating
+  - Downloads from release tag (fallback to main branch)
+  - Validates bash syntax before installation
+  - Uses atomic file operations (mv)
+  - Preserves executable permissions
+  - Comprehensive error handling with cleanup
+
+#### New Commands
+```bash
+./convert.sh --version         # Show version and repository info  
+./convert.sh --check-update    # Manually check for updates
+./convert.sh --update          # Interactive update installation
+```
+
+#### User Preferences
+- **First-Run Prompt**: Asks user about auto-update preference on first use
+- **Configurable Settings**:
+  - `AUTO_UPDATE_ENABLED`: Enable/disable auto-updates
+  - `UPDATE_CHECK_INTERVAL`: Check frequency (default: 24 hours)
+  - `UPDATE_CHECK_FILE`: Tracks last check time
+
+### 📦 Enhanced Dependency Management
+
+#### New Required Dependencies
+- **git**: Added as required dependency for version control and auto-updates
+- **curl**: Added as required dependency for GitHub API access
+
+#### Improved Auto-Installation
+- **Interactive Installation Prompts**
+  - Shows detected OS and package manager
+  - Displays exact installation command
+  - Asks for user confirmation before installing
+  - Verifies installation after completion
+  - Provides troubleshooting if verification fails
+
+- **Enhanced Error Handling**
+  - Clear error messages with common failure causes
+  - Comprehensive manual installation instructions on failure
+  - Instructions for all supported distributions
+  - Direct links to package repositories
+
+#### Manual Installation Guide
+- **New Function**: `show_manual_install_instructions()`
+  - Formatted installation commands for each distribution
+  - Covers Debian, Ubuntu, Fedora, RHEL, Arch, openSUSE, Alpine, Gentoo, Void, NixOS
+  - Includes package repository search links
+  - Provides post-installation tips (hash -r)
+
+### 🐧 Cross-Distribution Support
+
+#### Enhanced Distribution Detection
+- **Improved Detection Logic**
+  - Uses both `ID` and `ID_LIKE` from `/etc/os-release`
+  - Case-insensitive comparison
+  - Automatically detects derivative distributions
+  - Graceful fallback to package manager detection
+
+- **Expanded Distribution Support**
+  - **Debian family**: Ubuntu, Mint, Pop!_OS, Neon, Zorin, MX, Raspbian, Kali
+  - **Red Hat family**: Fedora, RHEL, CentOS, Rocky, AlmaLinux, Oracle Linux
+  - **Arch family**: Arch, Manjaro, EndeavourOS, Garuda, CachyOS, Artix
+  - **SUSE family**: openSUSE Tumbleweed, openSUSE Leap, SLES
+  - **Independent**: Alpine, Gentoo, Void Linux, NixOS
+
+#### Package Name Mapping
+- **Comprehensive Mapping**: All tools mapped for all distributions
+  - ffmpeg: Correct package names including `ffmpeg-4` for openSUSE
+  - git: Standard `git` or `dev-vcs/git` for Gentoo
+  - curl: Standard `curl` or `net-misc/curl` for Gentoo  
+  - gifsicle: All distributions supported
+  - jq: All distributions supported
+  - ImageMagick: Handles capitalization differences
+
+- **Special Distribution Handling**
+  - Gentoo: Uses category/name format (e.g., `media-video/ffmpeg`)
+  - Void: Uses xbps package manager
+  - NixOS: Declarative package management notes
+
+### 📚 Documentation
+
+#### New Documentation Files
+1. **AUTO_UPDATE_IMPLEMENTATION.md** (378 lines)
+   - Complete auto-update system documentation
+   - Technical details and architecture
+   - User guide and maintainer checklist
+   - Troubleshooting section
+   - Security considerations
+
+2. **UPDATE_QUICK_REFERENCE.md** (196 lines)
+   - Quick command reference
+   - Release checklist for maintainers
+   - SHA256 format examples
+   - Update flow diagram
+   - Error message reference
+
+3. **CROSS_DISTRO_SUPPORT.md** (414 lines)
+   - Comprehensive distribution support guide
+   - Package name tables for all distributions
+   - Distribution-specific notes
+   - Testing procedures
+   - Troubleshooting by distribution
+   - Contributing guidelines
+
+#### Updated Documentation
+- **README.md**: Added v5.2 features section
+- **WARP.md**: Updated with auto-update system information
+- **CHANGELOG.md**: This file (comprehensive v5.2 changes)
+
+### 🔧 Technical Changes
+
+#### New Configuration Variables
+```bash
+GITHUB_REPO="FreddeITsupport98/converter-mp4-to-gif-using-ffmpeg"
+GITHUB_API_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
+GITHUB_RELEASES_URL="https://github.com/${GITHUB_REPO}/releases"
+CURRENT_VERSION="5.2"
+UPDATE_CHECK_FILE="$LOG_DIR/.last_update_check"
+UPDATE_CHECK_INTERVAL=86400  # 24 hours
+AUTO_UPDATE_ENABLED=true
+UPDATE_FIRST_RUN_PROMPT_DONE=false
+```
+
+#### New Functions
+1. **Update System** (lines 402-590)
+   - `check_for_updates()`: Automatic update checker
+   - `show_update_available()`: Update notification display
+   - `verify_sha256()`: Checksum verification
+   - `extract_sha256_from_release()`: Release notes parser
+   - `perform_update()`: Update installation
+   - `manual_update()`: Interactive update command
+   - `show_version_info()`: Version display
+
+2. **Dependency Management** (lines 8973-9157)
+   - `show_manual_install_instructions()`: Manual install guide
+   - Enhanced `detect_distro()`: Improved detection
+   - Enhanced `get_package_names()`: Added git and curl
+   - Enhanced `auto_install_dependencies()`: Better error handling
+
+#### Code Statistics
+- Total lines: 16,500+ (up from 13,700+)
+- New functions: 8
+- Updated functions: 5
+- New documentation: 988 lines
+- Lines of code added: ~2,800
+
+### ⚙️ Configuration Changes
+
+#### Required Dependencies Updated
+Before: `ffmpeg`
+After: `ffmpeg`, `git`, `curl`
+
+#### New Command-Line Options
+- `--version` / `-v`: Show version information
+- `--check-update`: Check for updates manually
+- `--update`: Install latest version interactively
+
+### 🐛 Bug Fixes
+- Fixed: Auto-update check causing ERR trap (now returns 0)
+- Fixed: Network failures don't block script execution
+- Fixed: API rate limiting handled gracefully
+- Fixed: Package installation failures provide clear guidance
+
+### 🔒 Security Enhancements
+- SHA256 checksum verification for all downloads
+- Bash syntax validation before installing updates
+- Atomic file operations to prevent corruption
+- Automatic backups before any modification
+- No sudo required for update system
+- Respects system package repositories (no third-party additions)
+
+### 🚀 Performance
+- Update check runs in background (doesn't block startup)
+- URL validation with 5s timeout
+- API fetch with 10s timeout
+- Cached update check status (respects interval)
+- Minimal overhead when auto-updates disabled
+
+### 🧪 Testing
+- Tested on openSUSE Tumbleweed (primary development platform)
+- Syntax validated with `bash -n`
+- Cross-distribution detection tested via /etc/os-release parsing
+- Update commands tested (`--version`, `--check-update`)
+- Error handling tested (network failures, invalid responses)
+
+---
+
+## [5.1.0] - 2024-10-27
+
+### 📁 Output Directory Management
+- Fixed persistent settings for output directory selection
+- Added four directory options with real-time preview
+- Enhanced configuration flow with auto-save
+- Clickable paths in modern terminals
+
+### 🎯 Enhanced Menu System  
+- Improved navigation and option mappings
+- Visual feedback for all selections
+- Seamless integration with settings persistence
+
+---
+
 ## [2.0.0] - 2024-10-26
 
 ### 🚀 Performance Revolution

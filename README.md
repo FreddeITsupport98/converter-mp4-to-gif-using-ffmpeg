@@ -7,11 +7,48 @@
 [![FFmpeg](https://img.shields.io/badge/Powered%20by-FFmpeg-007808?logo=ffmpeg&logoColor=white)](https://ffmpeg.org/)
 [![AI](https://img.shields.io/badge/AI-Powered-FF6B6B?logo=brain&logoColor=white)](#ai-features)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-5.1-brightgreen.svg)](#latest-updates)
+[![Version](https://img.shields.io/badge/Version-5.2-brightgreen.svg)](#latest-updates)
 
 ---
 
-## 🆕 Latest Updates (Version 5.1)
+## 🆕 Latest Updates (Version 5.2)
+
+### **🔄 Auto-Update System**
+- **✅ GitHub Releases Integration**: Automatic update checking from GitHub Releases API
+- **🔐 SHA256 Verification**: Secure updates with cryptographic checksum validation
+- **📝 Release Notes Display**: Preview release notes before updating
+- **⚙️ User Preference**: Enable/disable auto-updates with first-run prompt
+- **🛡️ Safe Updates**: Automatic backups, syntax validation, and atomic file replacement
+
+### **📦 Enhanced Dependency Management**
+- **✅ git & curl Required**: Added as dependencies for auto-update functionality
+- **🚀 Auto-Installation**: Interactive dependency installation with user confirmation
+- **📝 Manual Instructions**: Comprehensive installation guides for all Linux distributions
+- **✅ Post-Install Verification**: Automatic verification after package installation
+- **💡 Better Error Messages**: Clear explanations when installation fails
+
+### **🐧 Cross-Distribution Support**
+- **✅ 10+ Distribution Families**: Debian, Ubuntu, Fedora, RHEL, Arch, openSUSE, Alpine, Gentoo, Void, NixOS
+- **🔍 Improved Detection**: Enhanced distro detection using ID and ID_LIKE fields
+- **📦 Package Mapping**: Correct package names for each distribution
+- **📚 Distribution Guides**: Manual installation commands for all major distros
+- **🔗 Package Repository Links**: Direct links to official package searches
+
+### **🛠️ New Commands**
+```bash
+./convert.sh --version          # Show version and repository info
+./convert.sh --check-update     # Check for updates manually
+./convert.sh --update           # Download and install latest version
+```
+
+### **📚 Enhanced Documentation**
+- **AUTO_UPDATE_IMPLEMENTATION.md**: Complete auto-update system documentation
+- **UPDATE_QUICK_REFERENCE.md**: Quick command reference for updates
+- **CROSS_DISTRO_SUPPORT.md**: Comprehensive cross-distribution guide
+
+---
+
+## 🔙 Previous Updates (Version 5.1)
 
 ### **📁 Output Directory Management**
 - **✅ Persistent Settings**: Output directory selection now persists across sessions and Ctrl+C interruptions
@@ -70,8 +107,10 @@
 ```
 
 **Full Documentation:**
-- 📝 [Complete Changelog](CHANGELOG_v5.1.md) - Technical details
-- 📊 [Update Summary](UPDATE_SUMMARY.md) - Quick reference
+- 📝 [Complete Changelog](CHANGELOG.md) - All version history
+- 🔄 [Auto-Update Guide](AUTO_UPDATE_IMPLEMENTATION.md) - Update system documentation
+- 🐧 [Cross-Distribution Support](CROSS_DISTRO_SUPPORT.md) - Linux distribution guide
+- 📊 [Update Quick Reference](UPDATE_QUICK_REFERENCE.md) - Update commands
 - 📖 [Development Guide](WARP.md) - For developers
 
 ### **🚀 Performance Revolution**

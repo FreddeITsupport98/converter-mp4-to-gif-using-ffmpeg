@@ -107,7 +107,7 @@ trap cleanup_lock_file EXIT
 # 🎬 SMART GIF CONVERTER - Revolutionary Video-to-GIF Conversion Tool
 # =============================================================================
 # Author: AI Assistant
-# Version: 5.1
+# Version: 5.2
 # Description: Advanced, customizable video-to-GIF converter with intelligent
 #              processing, quality optimization, and extensive configuration options.
 # =============================================================================
@@ -250,6 +250,22 @@ AI_LEARNING_RATE=0.1    # How quickly AI adapts (0.1 = moderate learning)
 AI_CONFIDENCE_MIN=0.3    # Minimum confidence threshold for AI decisions
 AI_TRAINING_MIN_SAMPLES=5  # Minimum samples before AI makes confident predictions
 
+# 🔄 Auto-Update System Configuration
+GITHUB_REPO="FreddeITsupport98/converter-mp4-to-gif-using-ffmpeg"
+GITHUB_API_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
+GITHUB_RELEASES_URL="https://github.com/${GITHUB_REPO}/releases"
+CURRENT_VERSION="5.2"  # Script version
+UPDATE_CHECK_FILE="$LOG_DIR/.last_update_check"
+UPDATE_CHECK_INTERVAL=86400  # Check once per day (in seconds)
+AUTO_UPDATE_ENABLED=true  # Enable automatic update checks (user configurable)
+UPDATE_FIRST_RUN_PROMPT_DONE=false  # Track if first-run update prompt was shown
+
+# 🔐 Security Configuration
+GPG_SIGNATURE_REQUIRED=false  # Require GPG signature verification (set true for max security)
+GPG_KEY_FINGERPRINT=""  # Your GPG key fingerprint (set this for GPG verification)
+TRUSTED_GITHUB_DOMAINS=("raw.githubusercontent.com" "github.com" "api.github.com")
+MIN_FILE_SIZE=10000  # Minimum expected file size in bytes (sanity check)
+
 # 🚀 Parallel Processing Utility Functions
 # =====================================================
 
@@ -384,6 +400,444 @@ update_file_progress() {
         printf "\033[K"  # Clear rest of line to remove any leftover characters
         printf "\r\033[1A"  # Move cursor back up to progress line
     fi
+}
+
+# 🔄 Auto-Update System (GitHub Releases with SHA256 Verification)
+# =================================================================
+
+# 🔍 Check for updates from GitHub Releases
+check_for_updates() {
+    # Skip if auto-update is disabled
+    if [[ "$AUTO_UPDATE_ENABLED" != "true" ]]; then
+        return 0
+    fi
+    
+    # Skip if checked recently
+    if [[ -f "$UPDATE_CHECK_FILE" ]]; then
+        local last_check=$(cat "$UPDATE_CHECK_FILE" 2>/dev/null || echo "0")
+        local now=$(date +%s)
+        local time_diff=$((now - last_check))
+        
+        if [[ $time_diff -lt $UPDATE_CHECK_INTERVAL ]]; then
+            return 0  # Skip check
+        fi
+    fi
+    
+    # Validate update URL is reachable with HTTPS certificate verification
+    if ! curl -sI --ssl-reqd --cacert /etc/ssl/certs/ca-certificates.crt "$GITHUB_API_URL" -m 5 2>/dev/null || \
+       ! curl -sI --ssl-reqd "$GITHUB_API_URL" -m 5 2>/dev/null; then
+        return 0  # Silently fail if GitHub unreachable or SSL verification fails
+    fi
+    
+    # Fetch latest release info from GitHub API with SSL verification
+    local release_json=$(curl -s --ssl-reqd --tlsv1.2 "$GITHUB_API_URL" -m 10 2>/dev/null)
+    
+    if [[ -z "$release_json" ]] || [[ "$release_json" == *"Not Found"* ]] || [[ "$release_json" == *"API rate limit"* ]]; then
+        return 0  # Silently fail (return success to avoid ERR trap)
+    fi
+    
+    # Extract version tag
+    local remote_tag=$(echo "$release_json" | grep -o '"tag_name":"[^"]*"' | cut -d'"' -f4)
+    local remote_version=$(echo "$remote_tag" | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    
+    [[ -z "$remote_version" ]] && return 0  # Return success to avoid ERR trap
+    
+    # Save check time
+    mkdir -p "$(dirname "$UPDATE_CHECK_FILE")" 2>/dev/null || true
+    echo "$(date +%s)" > "$UPDATE_CHECK_FILE" 2>/dev/null || true
+    
+    # Compare versions - only notify if different
+    if [[ "$remote_version" != "$CURRENT_VERSION" ]]; then
+        local release_body=$(echo "$release_json" | grep -o '"body":"[^"]*"' | cut -d'"' -f4 | sed 's/\\n/\n/g' | sed 's/\\r//g')
+        show_update_available "$remote_version" "$remote_tag" "$release_body" "prompt"
+    fi
+    
+    return 0  # Always return success
+}
+
+# 📢 Show update notification
+show_update_available() {
+    local new_version="$1"
+    local release_tag="$2"
+    local release_notes="$3"
+    local mode="${4:-notify}"  # notify or prompt
+    
+    echo ""
+    echo -e "${CYAN}${BOLD}╔═══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}${BOLD}║               🎉 UPDATE AVAILABLE: v${new_version}                       ║${NC}"
+    echo -e "${CYAN}${BOLD}╚═══════════════════════════════════════════════════════════════╝${NC}"
+    echo -e "${YELLOW}Current: v${CURRENT_VERSION}${NC} → ${GREEN}${BOLD}New: v${new_version}${NC}"
+    echo -e "${BLUE}🔗 View release: ${CYAN}${GITHUB_RELEASES_URL}/tag/${release_tag}${NC}"
+    
+    # Show release notes preview
+    if [[ -n "$release_notes" ]]; then
+        echo -e "\n${BLUE}📝 Release notes (preview):${NC}"
+        echo "$release_notes" | head -5 | sed 's/^/  /'
+        if [[ $(echo "$release_notes" | wc -l) -gt 5 ]]; then
+            echo -e "  ${GRAY}... (see full notes at link above)${NC}"
+        fi
+    fi
+    
+    if [[ "$mode" == "prompt" ]]; then
+        echo ""
+        echo -e "${YELLOW}Would you like to update now? [Y/n/later]: ${NC}"
+        read -r update_response
+        
+        case "$update_response" in
+            [Yy]|"")
+                echo -e "${CYAN}⬇️  Starting update process...${NC}"
+                perform_update "$new_version" "$release_tag" "$release_notes"
+                ;;
+            [Ll]*)
+                echo -e "${BLUE}ℹ️  Update postponed. Run ${GREEN}./convert.sh --update${BLUE} when ready.${NC}"
+                ;;
+            *)
+                echo -e "${YELLOW}⏸️  Update skipped. You can update anytime with: ${GREEN}./convert.sh --update${NC}"
+                ;;
+        esac
+    else
+        echo -e "${YELLOW}🔄 Update with: ${GREEN}./convert.sh --update${NC}"
+    fi
+    
+    echo ""
+}
+
+# 🔐 Verify GPG signature (most secure)
+verify_gpg_signature() {
+    local file="$1"
+    local signature_file="${file}.sig"
+    local signature_url="$2"
+    
+    # Check if GPG is available
+    if ! command -v gpg >/dev/null 2>&1 && ! command -v gpg2 >/dev/null 2>&1; then
+        if [[ "$GPG_SIGNATURE_REQUIRED" == "true" ]]; then
+            echo -e "${RED}❌ GPG not installed but signature verification required${NC}"
+            return 1
+        else
+            echo -e "${YELLOW}⚠️  GPG not available, skipping signature verification${NC}"
+            return 0
+        fi
+    fi
+    
+    local gpg_cmd="gpg"
+    command -v gpg2 >/dev/null 2>&1 && gpg_cmd="gpg2"
+    
+    # Download signature file
+    if [[ -n "$signature_url" ]]; then
+        echo -e "${CYAN}🔏 Downloading GPG signature...${NC}"
+        if ! curl -sL --ssl-reqd --tlsv1.2 "$signature_url" -o "$signature_file" 2>/dev/null; then
+            if [[ "$GPG_SIGNATURE_REQUIRED" == "true" ]]; then
+                echo -e "${RED}❌ Failed to download GPG signature${NC}"
+                return 1
+            else
+                echo -e "${YELLOW}⚠️  No GPG signature available${NC}"
+                return 0
+            fi
+        fi
+        
+        # Verify signature
+        echo -e "${CYAN}🔐 Verifying GPG signature...${NC}"
+        if [[ -n "$GPG_KEY_FINGERPRINT" ]]; then
+            # Verify with specific key fingerprint
+            if $gpg_cmd --verify --status-fd 1 "$signature_file" "$file" 2>/dev/null | grep -q "$GPG_KEY_FINGERPRINT"; then
+                echo -e "${GREEN}✓ GPG signature verified with trusted key!${NC}"
+                rm -f "$signature_file"
+                return 0
+            else
+                echo -e "${RED}❌ GPG signature verification FAILED!${NC}"
+                rm -f "$signature_file"
+                return 1
+            fi
+        else
+            # Verify signature exists and is valid (any key)
+            if $gpg_cmd --verify "$signature_file" "$file" 2>/dev/null; then
+                echo -e "${YELLOW}⚠️  GPG signature valid but key not pinned (set GPG_KEY_FINGERPRINT for max security)${NC}"
+                rm -f "$signature_file"
+                return 0
+            else
+                if [[ "$GPG_SIGNATURE_REQUIRED" == "true" ]]; then
+                    echo -e "${RED}❌ GPG signature verification FAILED!${NC}"
+                    rm -f "$signature_file"
+                    return 1
+                else
+                    echo -e "${YELLOW}⚠️  GPG verification failed, continuing anyway${NC}"
+                    rm -f "$signature_file"
+                    return 0
+                fi
+            fi
+        fi
+    else
+        if [[ "$GPG_SIGNATURE_REQUIRED" == "true" ]]; then
+            echo -e "${RED}❌ GPG signature required but not found${NC}"
+            return 1
+        fi
+    fi
+    
+    return 0
+}
+
+# 🔐 Verify SHA256 checksum
+verify_sha256() {
+    local file="$1"
+    local expected_sha="$2"
+    
+    if [[ -z "$expected_sha" ]]; then
+        echo -e "${YELLOW}⚠️  No SHA256 in release, skipping verification${NC}"
+        return 0
+    fi
+    
+    echo -e "${CYAN}🔐 Verifying SHA256...${NC}"
+    local actual_sha=$(sha256sum "$file" | awk '{print $1}')
+    
+    if [[ "$actual_sha" == "$expected_sha" ]]; then
+        echo -e "${GREEN}✓ SHA256 verified!${NC}"
+        return 0
+    else
+        echo -e "${RED}❌ SHA256 FAILED! Update aborted.${NC}"
+        return 1
+    fi
+}
+
+# 📥 Extract SHA256 from release body and assets
+extract_sha256_from_release() {
+    local release_json="$1"
+    local sha256=""
+    
+    # Method 1: Try to fetch SHA256 from release assets with SSL verification
+    local assets_url=$(echo "$release_json" | grep -o '"assets_url":"[^"]*"' | cut -d'"' -f4)
+    if [[ -n "$assets_url" ]]; then
+        local assets_json=$(curl -sL --ssl-reqd --tlsv1.2 "$assets_url" -m 10 2>/dev/null)
+        
+        # Look for .sha256 or .checksum file
+        local sha256_url=$(echo "$assets_json" | grep -o '"browser_download_url":"[^"]*\\.sha256"' | cut -d'"' -f4 | head -1)
+        if [[ -z "$sha256_url" ]]; then
+            sha256_url=$(echo "$assets_json" | grep -o '"browser_download_url":"[^"]*convert\\.sh\\.sha256"' | cut -d'"' -f4 | head -1)
+        fi
+        if [[ -z "$sha256_url" ]]; then
+            sha256_url=$(echo "$assets_json" | grep -o '"browser_download_url":"[^"]*checksum"' | cut -d'"' -f4 | head -1)
+        fi
+        
+        if [[ -n "$sha256_url" ]]; then
+            sha256=$(curl -sL --ssl-reqd --tlsv1.2 "$sha256_url" -m 10 2>/dev/null | grep -oE '[a-f0-9]{64}' | head -1)
+            if [[ -n "$sha256" ]]; then
+                echo "$sha256"
+                return 0
+            fi
+        fi
+    fi
+    
+    # Method 2: Extract from release body
+    local release_body=$(echo "$release_json" | grep -o '"body":"[^"]*"' | cut -d'"' -f4 | sed 's/\\n/\n/g' | sed 's/\\r//g')
+    sha256=$(echo "$release_body" | grep -iE '(sha256|checksum)' | grep -oE '[a-f0-9]{64}' | head -1)
+    
+    if [[ -n "$sha256" ]]; then
+        echo "$sha256"
+        return 0
+    fi
+    
+    # No SHA256 found
+    return 1
+}
+
+# 🚀 Perform update with SHA256 verification
+perform_update() {
+    local new_version="$1"
+    local release_tag="$2"
+    local release_json="$3"
+    
+    echo -e "${CYAN}⬇️  Downloading v${new_version} from ${release_tag}...${NC}"
+    
+    # Extract SHA256 from release (tries assets first, then body)
+    local expected_sha256=$(extract_sha256_from_release "$release_json")
+    
+    if [[ -n "$expected_sha256" ]]; then
+        echo -e "${GREEN}✓ Found SHA256 checksum for verification${NC}"
+    else
+        echo -e "${YELLOW}⚠️  No SHA256 checksum found in release${NC}"
+    fi
+    
+    # Create backup
+    local backup_dir="$LOG_DIR/backups"
+    mkdir -p "$backup_dir"
+    local backup_file="$backup_dir/convert.sh.v${CURRENT_VERSION}-$(date +%Y%m%d-%H%M%S)"
+    cp "${BASH_SOURCE[0]}" "$backup_file" 2>/dev/null
+    echo -e "${GREEN}✓ Backup: $backup_file${NC}"
+    
+    # Download with HTTPS SSL verification
+    local download_url="https://raw.githubusercontent.com/${GITHUB_REPO}/${release_tag}/convert.sh"
+    local fallback_url="https://raw.githubusercontent.com/${GITHUB_REPO}/main/convert.sh"
+    
+    # Verify URLs are from trusted GitHub domains
+    if [[ ! "$download_url" =~ ^https://raw\.githubusercontent\.com/ ]] || [[ ! "$fallback_url" =~ ^https://raw\.githubusercontent\.com/ ]]; then
+        echo -e "${RED}❌ Security error: Invalid download URL (not from GitHub)${NC}"
+        return 1
+    fi
+    
+    echo -e "${BLUE}🔒 Downloading with SSL certificate verification...${NC}"
+    if ! curl -sL --ssl-reqd --tlsv1.2 "$download_url" -o convert.sh.new 2>/dev/null || [[ ! -s "convert.sh.new" ]]; then
+        echo -e "${YELLOW}⚠️  Tag download failed, trying main branch...${NC}"
+        if ! curl -sL --ssl-reqd --tlsv1.2 "$fallback_url" -o convert.sh.new 2>/dev/null; then
+            echo -e "${RED}❌ SSL verification failed or download error${NC}"
+            return 1
+        fi
+    fi
+    
+    if [[ ! -f "convert.sh.new" ]] || [[ ! -s "convert.sh.new" ]]; then
+        echo -e "${RED}❌ Download failed${NC}"
+        return 1
+    fi
+    
+    # Security Check 1: File size sanity check
+    local file_size=$(stat -c%s "convert.sh.new" 2>/dev/null || echo "0")
+    if [[ $file_size -lt $MIN_FILE_SIZE ]]; then
+        echo -e "${RED}❌ Downloaded file too small ($file_size bytes) - possibly corrupted or fake${NC}"
+        rm -f convert.sh.new
+        return 1
+    fi
+    echo -e "${GREEN}✓ File size check passed ($file_size bytes)${NC}"
+    
+    # Security Check 2: Verify file starts with shebang
+    local first_line=$(head -n1 "convert.sh.new" 2>/dev/null)
+    if [[ ! "$first_line" =~ ^#!/.*bash ]]; then
+        echo -e "${RED}❌ File doesn't appear to be a valid bash script${NC}"
+        rm -f convert.sh.new
+        return 1
+    fi
+    echo -e "${GREEN}✓ File format check passed${NC}"
+    
+    # Security Check 3: GPG signature verification (if available)
+    local sig_url=""
+    if [[ -n "$assets_url" ]]; then
+        local assets_json=$(curl -sL --ssl-reqd --tlsv1.2 "$(echo "$release_json" | grep -o '"assets_url":"[^"]*"' | cut -d'"' -f4)" -m 10 2>/dev/null)
+        sig_url=$(echo "$assets_json" | grep -o '"browser_download_url":"[^"]*\\.sig"' | cut -d'"' -f4 | head -1)
+    fi
+    
+    if ! verify_gpg_signature "convert.sh.new" "$sig_url"; then
+        rm -f convert.sh.new
+        return 1
+    fi
+    
+    # Security Check 4: SHA256 checksum
+    if ! verify_sha256 "convert.sh.new" "$expected_sha256"; then
+        rm -f convert.sh.new
+        return 1
+    fi
+    
+    # Security Check 5: Bash syntax validation
+    if ! bash -n convert.sh.new 2>/dev/null; then
+        echo -e "${RED}❌ Syntax error in download${NC}"
+        rm -f convert.sh.new
+        return 1
+    fi
+    
+    # Replace
+    mv convert.sh.new "${BASH_SOURCE[0]}"
+    chmod +x "${BASH_SOURCE[0]}"
+    
+    echo -e "${GREEN}${BOLD}✓ Updated to v${new_version}!${NC}"
+    echo -e "${YELLOW}🔄 Restart script to use new version${NC}"
+    exit 0
+}
+
+# 🔧 Manual update command
+manual_update() {
+    echo -e "${CYAN}🔄 Checking GitHub Releases...${NC}"
+    
+    local release_json=$(curl -s --ssl-reqd --tlsv1.2 "$GITHUB_API_URL" 2>/dev/null)
+    
+    if [[ -z "$release_json" ]] || [[ "$release_json" == *"Not Found"* ]]; then
+        echo -e "${RED}❌ Cannot fetch releases${NC}"
+        echo -e "${BLUE}Visit: ${GITHUB_RELEASES_URL}${NC}"
+        return 1
+    fi
+    
+    local remote_tag=$(echo "$release_json" | grep -o '"tag_name":"[^"]*"' | cut -d'"' -f4)
+    local remote_version=$(echo "$remote_tag" | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    local release_body=$(echo "$release_json" | grep -o '"body":"[^"]*"' | cut -d'"' -f4 | sed 's/\\n/\n/g' | sed 's/\\r//g')
+    
+    if [[ -z "$remote_version" ]]; then
+        echo -e "${RED}❌ Cannot parse version${NC}"
+        return 1
+    fi
+    
+    if [[ "$remote_version" == "$CURRENT_VERSION" ]]; then
+        echo -e "${GREEN}✓ Already latest (v${CURRENT_VERSION})${NC}"
+        return 0
+    fi
+    
+    echo ""
+    echo -e "${YELLOW}Current: v${CURRENT_VERSION}${NC} → ${GREEN}Available: v${remote_version}${NC}"
+    echo -e "${BLUE}📝 Release notes (first 10 lines):${NC}"
+    echo "$release_body" | head -10 | sed 's/^/  /'
+    echo ""
+    echo -e "${YELLOW}Update now? [y/N]: ${NC}"
+    read -r response
+    
+    if [[ "$response" =~ ^[Yy]$ ]]; then
+        perform_update "$remote_version" "$remote_tag" "$release_body"
+    fi
+}
+
+# 📝 Show version info
+show_version_info() {
+    echo -e "${CYAN}${BOLD}Smart GIF Converter v${CURRENT_VERSION}${NC}"
+    echo -e "${BLUE}Repository: ${CYAN}https://github.com/${GITHUB_REPO}${NC}"
+    echo -e "${BLUE}Releases: ${CYAN}${GITHUB_RELEASES_URL}${NC}"
+}
+
+# 🆕 First-run auto-update preference prompt
+prompt_auto_update_preference() {
+    # Skip if already asked or if settings exist with preference
+    if [[ "$UPDATE_FIRST_RUN_PROMPT_DONE" == "true" ]] || grep -q "AUTO_UPDATE_ENABLED=" "$SETTINGS_FILE" 2>/dev/null; then
+        return 0
+    fi
+    
+    echo ""
+    echo -e "${CYAN}${BOLD}╔═══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}${BOLD}║               🔄 AUTOMATIC UPDATE CHECKS                       ║${NC}"
+    echo -e "${CYAN}${BOLD}╚═══════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${BLUE}This script can automatically check for updates from GitHub.${NC}"
+    echo -e "${GRAY}Updates include bug fixes, new features, and improvements.${NC}"
+    echo ""
+    echo -e "${YELLOW}How it works:${NC}"
+    echo -e "  ${GREEN}•${NC} Checks GitHub once per day (non-intrusive)"
+    echo -e "  ${GREEN}•${NC} Shows a notification when updates are available"
+    echo -e "  ${GREEN}•${NC} You choose when to install updates"
+    echo -e "  ${GREEN}•${NC} Updates include SHA256 verification for security"
+    echo ""
+    echo -e "${CYAN}Would you like to enable automatic update checks?${NC}"
+    echo -e "${GRAY}(You can change this anytime in settings)${NC}"
+    echo ""
+    echo -e "  ${GREEN}[Y]${NC} Yes - Check for updates automatically (recommended)"
+    echo -e "  ${YELLOW}[N]${NC} No - I'll check manually with ${GREEN}./convert.sh --check-update${NC}"
+    echo ""
+    echo -ne "${YELLOW}Your choice [Y/n]: ${NC}"
+    read -r auto_update_choice
+    
+    case "$auto_update_choice" in
+        [Nn]*)
+            AUTO_UPDATE_ENABLED=false
+            echo -e "\n${BLUE}ℹ️  Auto-update disabled. You can manually check with: ${GREEN}./convert.sh --check-update${NC}"
+            ;;
+        *)
+            AUTO_UPDATE_ENABLED=true
+            echo -e "\n${GREEN}✓ Auto-update enabled! Checking for updates once per day.${NC}"
+            ;;
+    esac
+    
+    UPDATE_FIRST_RUN_PROMPT_DONE=true
+    
+    # Save preference to settings
+    if [[ -n "$SETTINGS_FILE" ]]; then
+        save_settings --silent
+    fi
+    
+    echo -e "${BLUE}💡 Current version: ${BOLD}v${CURRENT_VERSION}${NC}"
+    echo -e "${GRAY}Press Enter to continue...${NC}"
+    read -r
+    
+    return 0
 }
 
 # 🗄️ AI Smart Cache Management System (Corruption-Proof)
@@ -8546,13 +9000,16 @@ detect_distro() {
     # Check /etc/os-release first (most reliable)
     if [[ -f /etc/os-release ]]; then
         source /etc/os-release
-        case "$ID" in
-            ubuntu|debian|linuxmint|pop|elementary)
+        local distro_id="${ID,,}"  # Lowercase for comparison
+        local distro_id_like="${ID_LIKE,,}"
+        
+        case "$distro_id" in
+            ubuntu|debian|linuxmint|pop|elementary|neon|zorin|mx|raspbian|kali)
                 distro="debian-based"
                 package_manager="apt"
                 install_cmd="sudo apt update && sudo apt install -y"
                 ;;
-            fedora|rhel|centos|rocky|almalinux)
+            fedora|rhel|centos|rocky|almalinux|oraclelinux)
                 distro="redhat-based"
                 package_manager="dnf"
                 install_cmd="sudo dnf install -y"
@@ -8562,7 +9019,7 @@ detect_distro() {
                 package_manager="pacman"
                 install_cmd="sudo pacman -S --needed"
                 ;;
-            opensuse*|sles)
+            opensuse*|sles|suse)
                 distro="suse-based"
                 package_manager="zypper"
                 install_cmd="sudo zypper install -y"
@@ -8572,8 +9029,37 @@ detect_distro() {
                 package_manager="apk"
                 install_cmd="sudo apk add"
                 ;;
+            gentoo)
+                distro="gentoo"
+                package_manager="emerge"
+                install_cmd="sudo emerge -av"
+                ;;
+            void)
+                distro="void"
+                package_manager="xbps"
+                install_cmd="sudo xbps-install -y"
+                ;;
             *)
-                distro="$ID"
+                # Check ID_LIKE for derivative distributions
+                if [[ "$distro_id_like" == *"debian"* ]] || [[ "$distro_id_like" == *"ubuntu"* ]]; then
+                    distro="debian-based"
+                    package_manager="apt"
+                    install_cmd="sudo apt update && sudo apt install -y"
+                elif [[ "$distro_id_like" == *"fedora"* ]] || [[ "$distro_id_like" == *"rhel"* ]]; then
+                    distro="redhat-based"
+                    package_manager="dnf"
+                    install_cmd="sudo dnf install -y"
+                elif [[ "$distro_id_like" == *"arch"* ]]; then
+                    distro="arch-based"
+                    package_manager="pacman"
+                    install_cmd="sudo pacman -S --needed"
+                elif [[ "$distro_id_like" == *"suse"* ]]; then
+                    distro="suse-based"
+                    package_manager="zypper"
+                    install_cmd="sudo zypper install -y"
+                else
+                    distro="$ID"
+                fi
                 ;;
         esac
     fi
@@ -8623,6 +9109,8 @@ get_package_names() {
                 "arch-based") echo "ffmpeg" ;;
                 "suse-based") echo "ffmpeg-4" ;;
                 "alpine") echo "ffmpeg" ;;
+                "gentoo") echo "media-video/ffmpeg" ;;
+                "void") echo "ffmpeg" ;;
                 *) echo "ffmpeg" ;;
             esac
             ;;
@@ -8633,6 +9121,8 @@ get_package_names() {
                 "arch-based") echo "gifsicle" ;;
                 "suse-based") echo "gifsicle" ;;
                 "alpine") echo "gifsicle" ;;
+                "gentoo") echo "media-gfx/gifsicle" ;;
+                "void") echo "gifsicle" ;;
                 *) echo "gifsicle" ;;
             esac
             ;;
@@ -8643,6 +9133,8 @@ get_package_names() {
                 "arch-based") echo "jq" ;;
                 "suse-based") echo "jq" ;;
                 "alpine") echo "jq" ;;
+                "gentoo") echo "app-misc/jq" ;;
+                "void") echo "jq" ;;
                 *) echo "jq" ;;
             esac
             ;;
@@ -8654,10 +9146,191 @@ get_package_names() {
                 "arch-based") echo "imagemagick" ;;
                 "suse-based") echo "ImageMagick" ;;
                 "alpine") echo "imagemagick" ;;
+                "gentoo") echo "media-gfx/imagemagick" ;;
+                "void") echo "ImageMagick" ;;
                 *) echo "imagemagick" ;;
             esac
             ;;
+        "git")
+            case "$distro" in
+                "debian-based") echo "git" ;;
+                "redhat-based") echo "git" ;;
+                "arch-based") echo "git" ;;
+                "suse-based") echo "git" ;;
+                "alpine") echo "git" ;;
+                "gentoo") echo "dev-vcs/git" ;;
+                "void") echo "git" ;;
+                *) echo "git" ;;
+            esac
+            ;;
+        "curl")
+            case "$distro" in
+                "debian-based") echo "curl" ;;
+                "redhat-based") echo "curl" ;;
+                "arch-based") echo "curl" ;;
+                "suse-based") echo "curl" ;;
+                "alpine") echo "curl" ;;
+                "gentoo") echo "net-misc/curl" ;;
+                "void") echo "curl" ;;
+                *) echo "curl" ;;
+            esac
+            ;;
     esac
+}
+
+# 📝 Show manual installation instructions
+show_manual_install_instructions() {
+    local missing_tools=("$@")
+    
+    echo -e "${YELLOW}${BOLD}╔═══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}${BOLD}║          📝 MANUAL INSTALLATION REQUIRED                   ║${NC}"
+    echo -e "${YELLOW}${BOLD}╚═══════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${RED}Missing dependencies:${NC}"
+    for tool in "${missing_tools[@]}"; do
+        echo -e "  ${RED}• $tool${NC}"
+    done
+    echo ""
+    echo -e "${CYAN}${BOLD}Installation commands by distribution:${NC}"
+    echo ""
+    
+    # Debian/Ubuntu
+    echo -e "${GREEN}Debian/Ubuntu/Linux Mint/Pop!_OS:${NC}"
+    echo -e "  ${CYAN}sudo apt update && sudo apt install -y"
+    for tool in "${missing_tools[@]}"; do
+        case "$tool" in
+            "ffmpeg") echo -n " ffmpeg" ;;
+            "git") echo -n " git" ;;
+            "curl") echo -n " curl" ;;
+            "gifsicle") echo -n " gifsicle" ;;
+            "jq") echo -n " jq" ;;
+            "convert") echo -n " imagemagick" ;;
+        esac
+    done
+    echo -e "${NC}"
+    echo ""
+    
+    # Fedora/RHEL/CentOS
+    echo -e "${GREEN}Fedora/RHEL/CentOS/Rocky/AlmaLinux:${NC}"
+    echo -e "  ${CYAN}sudo dnf install -y"
+    for tool in "${missing_tools[@]}"; do
+        case "$tool" in
+            "ffmpeg") echo -n " ffmpeg" ;;
+            "git") echo -n " git" ;;
+            "curl") echo -n " curl" ;;
+            "gifsicle") echo -n " gifsicle" ;;
+            "jq") echo -n " jq" ;;
+            "convert") echo -n " ImageMagick" ;;
+        esac
+    done
+    echo -e "${NC}"
+    echo ""
+    
+    # Arch Linux
+    echo -e "${GREEN}Arch Linux/Manjaro/EndeavourOS:${NC}"
+    echo -e "  ${CYAN}sudo pacman -S --needed"
+    for tool in "${missing_tools[@]}"; do
+        case "$tool" in
+            "ffmpeg") echo -n " ffmpeg" ;;
+            "git") echo -n " git" ;;
+            "curl") echo -n " curl" ;;
+            "gifsicle") echo -n " gifsicle" ;;
+            "jq") echo -n " jq" ;;
+            "convert") echo -n " imagemagick" ;;
+        esac
+    done
+    echo -e "${NC}"
+    echo ""
+    
+    # openSUSE
+    echo -e "${GREEN}openSUSE Tumbleweed/Leap:${NC}"
+    echo -e "  ${CYAN}sudo zypper install -y"
+    for tool in "${missing_tools[@]}"; do
+        case "$tool" in
+            "ffmpeg") echo -n " ffmpeg-4" ;;
+            "git") echo -n " git" ;;
+            "curl") echo -n " curl" ;;
+            "gifsicle") echo -n " gifsicle" ;;
+            "jq") echo -n " jq" ;;
+            "convert") echo -n " ImageMagick" ;;
+        esac
+    done
+    echo -e "${NC}"
+    echo ""
+    
+    # Alpine
+    echo -e "${GREEN}Alpine Linux:${NC}"
+    echo -e "  ${CYAN}sudo apk add"
+    for tool in "${missing_tools[@]}"; do
+        case "$tool" in
+            "ffmpeg") echo -n " ffmpeg" ;;
+            "git") echo -n " git" ;;
+            "curl") echo -n " curl" ;;
+            "gifsicle") echo -n " gifsicle" ;;
+            "jq") echo -n " jq" ;;
+            "convert") echo -n " imagemagick" ;;
+        esac
+    done
+    echo -e "${NC}"
+    echo ""
+    
+    # Gentoo
+    echo -e "${GREEN}Gentoo:${NC}"
+    echo -e "  ${CYAN}sudo emerge -av"
+    for tool in "${missing_tools[@]}"; do
+        case "$tool" in
+            "ffmpeg") echo -n " media-video/ffmpeg" ;;
+            "git") echo -n " dev-vcs/git" ;;
+            "curl") echo -n " net-misc/curl" ;;
+            "gifsicle") echo -n " media-gfx/gifsicle" ;;
+            "jq") echo -n " app-misc/jq" ;;
+            "convert") echo -n " media-gfx/imagemagick" ;;
+        esac
+    done
+    echo -e "${NC}"
+    echo ""
+    
+    # Void Linux
+    echo -e "${GREEN}Void Linux:${NC}"
+    echo -e "  ${CYAN}sudo xbps-install -y"
+    for tool in "${missing_tools[@]}"; do
+        case "$tool" in
+            "ffmpeg") echo -n " ffmpeg" ;;
+            "git") echo -n " git" ;;
+            "curl") echo -n " curl" ;;
+            "gifsicle") echo -n " gifsicle" ;;
+            "jq") echo -n " jq" ;;
+            "convert") echo -n " ImageMagick" ;;
+        esac
+    done
+    echo -e "${NC}"
+    echo ""
+    
+    # NixOS (special case)
+    echo -e "${GREEN}NixOS:${NC}"
+    echo -e "  ${CYAN}nix-env -iA nixos."
+    for tool in "${missing_tools[@]}"; do
+        case "$tool" in
+            "ffmpeg") echo -n "ffmpeg " ;;
+            "git") echo -n "git " ;;
+            "curl") echo -n "curl " ;;
+            "gifsicle") echo -n "gifsicle " ;;
+            "jq") echo -n "jq " ;;
+            "convert") echo -n "imagemagick " ;;
+        esac
+    done
+    echo -e "${NC}"
+    echo -e "  ${GRAY}Or add to configuration.nix: environment.systemPackages${NC}"
+    echo ""
+    
+    echo -e "${GRAY}───────────────────────────────────────────────────────────────${NC}"
+    echo -e "${BLUE}💡 After installing, restart your terminal or run: ${CYAN}hash -r${NC}"
+    echo -e "${BLUE}🔗 Official package search:${NC}"
+    echo -e "  ${GRAY}- Debian/Ubuntu: ${CYAN}https://packages.debian.org/ or https://packages.ubuntu.com/${NC}"
+    echo -e "  ${GRAY}- Arch: ${CYAN}https://archlinux.org/packages/${NC}"
+    echo -e "  ${GRAY}- Fedora: ${CYAN}https://packages.fedoraproject.org/${NC}"
+    echo -e "  ${GRAY}- openSUSE: ${CYAN}https://software.opensuse.org/${NC}"
+    echo ""
 }
 
 # 🚀 Auto-install dependencies with user confirmation
@@ -8670,10 +9343,7 @@ auto_install_dependencies() {
     
     if [[ "$package_manager" == "unknown" ]]; then
         echo -e "${RED}❌ Cannot detect package manager for auto-installation${NC}"
-        echo -e "${YELLOW}Please install the missing dependencies manually:${NC}"
-        for tool in "${missing_tools[@]}"; do
-            echo -e "  ${RED}• $tool${NC}"
-        done
+        show_manual_install_instructions "${missing_tools[@]}"
         return 1
     fi
     
@@ -8742,7 +9412,14 @@ auto_install_dependencies() {
             return 0
         fi
     else
-        echo -e "\n${RED}❌ Installation failed. Please install dependencies manually.${NC}"
+        echo -e "\n${RED}❌ Installation failed!${NC}"
+        echo -e "${YELLOW}⚠️  This could be due to:${NC}"
+        echo -e "  ${GRAY}• Insufficient permissions (try with sudo)${NC}"
+        echo -e "  ${GRAY}• Network issues${NC}"
+        echo -e "  ${GRAY}• Package not available in your repositories${NC}"
+        echo -e "  ${GRAY}• Repository needs to be updated first${NC}"
+        echo ""
+        show_manual_install_instructions "${missing_tools[@]}"
         return 1
     fi
 }
@@ -9039,7 +9716,7 @@ check_dependencies() {
     # Perform full check if needed
     echo -e "${CYAN}🔍 Checking system dependencies...${NC}"
     
-    local required_tools=("ffmpeg")
+    local required_tools=("ffmpeg" "git" "curl")
     local optional_tools=("gifsicle" "jq" "convert")  # convert is from ImageMagick
     local missing_required=()
     local missing_optional=()
@@ -15316,6 +15993,9 @@ main() {
     
     print_header
     
+    # Automatic update check (silent, runs in background)
+    check_for_updates &
+    
     # System checks
     echo -e "${BLUE}🔍 Performing system checks...${NC}"
     check_dependencies
@@ -16026,6 +16706,18 @@ main() {
                 ;;
             --help|-h)
                 show_help
+                exit 0
+                ;;
+            --version|-v)
+                show_version_info
+                exit 0
+                ;;
+            --check-update)
+                check_for_updates
+                exit 0
+                ;;
+            --update)
+                manual_update
                 exit 0
                 ;;
             --save-config)
