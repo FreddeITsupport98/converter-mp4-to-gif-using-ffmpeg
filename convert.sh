@@ -1165,6 +1165,16 @@ manual_update() {
     fi
     
     local remote_tag=$(echo "$release_json" | grep -o '"tag_name":"[^"]*"' | cut -d'"' -f4)
+    
+    # Debug: show what tag we got
+    if [[ -z "$remote_tag" ]]; then
+        echo -e "${RED}❌ No releases found in repository${NC}"
+        echo -e "${YELLOW}📊 This appears to be the first version (v${CURRENT_VERSION})${NC}"
+        echo -e "${BLUE}📝 GitHub Releases: ${CYAN}${GITHUB_RELEASES_URL}${NC}"
+        echo -e "${GRAY}💡 Tip: Create a release on GitHub to enable version checking${NC}"
+        return 0
+    fi
+    
     local remote_version=$(echo "$remote_tag" | grep -oE '[0-9]+\.[0-9]+' | head -1)
     local release_body=$(echo "$release_json" | grep -o '"body":"[^"]*"' | cut -d'"' -f4 | sed 's/\\n/\n/g' | sed 's/\\r//g')
     
@@ -1183,7 +1193,9 @@ manual_update() {
     fi
     
     if [[ -z "$remote_version" ]]; then
-        echo -e "${RED}❌ Cannot parse version${NC}"
+        echo -e "${RED}❌ Cannot parse version from tag: ${remote_tag}${NC}"
+        echo -e "${YELLOW}💡 Expected format: v6.0 or 6.0${NC}"
+        echo -e "${BLUE}📝 GitHub Releases: ${CYAN}${GITHUB_RELEASES_URL}${NC}"
         return 1
     fi
     
@@ -16360,10 +16372,9 @@ execute_menu_option() {
             echo -e "${CYAN}${BOLD}🔄 CHECKING FOR UPDATES${NC}\n"
             echo -e "${BLUE}💻 Repository: ${CYAN}https://github.com/${GITHUB_REPO}${NC}"
             echo -e "${BLUE}📅 Current Version: ${YELLOW}v${CURRENT_VERSION}${NC}\n"
-            echo -e "${CYAN}🔍 Contacting GitHub...${NC}\n"
             
-            # Run the update check with full output
-            check_for_updates_interactive
+            # Run manual update check
+            manual_update
             
             echo -e "\n${YELLOW}Press any key to return to main menu...${NC}"
             read -rsn1
