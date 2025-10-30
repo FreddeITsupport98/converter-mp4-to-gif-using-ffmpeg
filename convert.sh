@@ -8160,6 +8160,71 @@ detect_duplicate_videos() {
         local total_possible_pairs=$(( total_files * (total_files - 1) / 2 ))
         local pairs_evaluated=0
         
+        # ═══════════════════════════════════════════════════════════════
+        # 🧠 AI-POWERED ADAPTIVE THRESHOLD CALCULATION
+        # Dynamically adjusts filtering aggressiveness based on collection characteristics
+        # ═══════════════════════════════════════════════════════════════
+        
+        local ai_threshold=200  # Default base threshold (75.5% of 265)
+        local collection_size=$total_files
+        
+        # AI Factor 1: Collection size penalty (larger = stricter)
+        if [[ $collection_size -ge 500 ]]; then
+            ai_threshold=240  # EXTREME: 90.5% threshold for huge collections
+            echo -e "  ${YELLOW}🧠 AI Decision: EXTREME filtering (500+ videos)${NC}"
+        elif [[ $collection_size -ge 300 ]]; then
+            ai_threshold=230  # VERY STRICT: 86.7% for very large collections
+            echo -e "  ${YELLOW}🧠 AI Decision: VERY STRICT filtering (300-499 videos)${NC}"
+        elif [[ $collection_size -ge 150 ]]; then
+            ai_threshold=215  # STRICT: 81% for large collections
+            echo -e "  ${CYAN}🧠 AI Decision: STRICT filtering (150-299 videos)${NC}"
+        elif [[ $collection_size -ge 50 ]]; then
+            ai_threshold=200  # MODERATE: 75.5% for medium collections
+            echo -e "  ${CYAN}🧠 AI Decision: MODERATE filtering (50-149 videos)${NC}"
+        else
+            ai_threshold=180  # RELAXED: 67.9% for small collections
+            echo -e "  ${GREEN}🧠 AI Decision: RELAXED filtering (<50 videos)${NC}"
+        fi
+        
+        # AI Factor 2: Analyze collection diversity (similar names = less strict)
+        local unique_prefixes=0
+        local sample_size=$((collection_size < 20 ? collection_size : 20))
+        declare -A prefix_tracker
+        for ((sample_idx=0; sample_idx<sample_size; sample_idx++)); do
+            local sample_file="${video_files_array[$sample_idx]}"
+            local sample_name="$(basename -- "$sample_file")"
+            local prefix="${sample_name:0:10}"
+            prefix_tracker["$prefix"]=1
+        done
+        unique_prefixes=${#prefix_tracker[@]}
+        
+        # High diversity (unique names) = be more aggressive
+        local diversity_pct=$((unique_prefixes * 100 / sample_size))
+        if [[ $diversity_pct -ge 80 ]]; then
+            ai_threshold=$((ai_threshold + 15))  # More aggressive - files are diverse
+            echo -e "  ${CYAN}🎯 AI Adjustment: +15 points (high diversity: ${diversity_pct}%)${NC}"
+        elif [[ $diversity_pct -le 30 ]]; then
+            ai_threshold=$((ai_threshold - 20))  # Less aggressive - many similar names
+            echo -e "  ${YELLOW}🎯 AI Adjustment: -20 points (low diversity: ${diversity_pct}%)${NC}"
+        fi
+        
+        # AI Factor 3: Detected duplicates from Levels 1-5
+        if [[ $duplicate_count -gt 0 ]]; then
+            local dup_rate=$((duplicate_count * 100 / total_possible_pairs))
+            if [[ $dup_rate -ge 5 ]]; then
+                ai_threshold=$((ai_threshold - 25))  # Many duplicates = be less strict
+                echo -e "  ${GREEN}📊 AI Adjustment: -25 points (high duplicate rate: ${dup_rate}%)${NC}"
+            fi
+        fi
+        
+        # Ensure threshold stays within bounds
+        [[ $ai_threshold -lt 150 ]] && ai_threshold=150  # Minimum 56.6%
+        [[ $ai_threshold -gt 250 ]] && ai_threshold=250  # Maximum 94.3%
+        
+        local threshold_pct=$((ai_threshold * 100 / 265))
+        echo -e "  ${MAGENTA}🧠 Final AI Threshold: ${BOLD}${ai_threshold}/265${NC}${MAGENTA} (${threshold_pct}%)${NC}"
+        echo -e "  ${GRAY}💡 Only pairs scoring ≥${ai_threshold} will be analyzed with Level 6${NC}\n"
+        
         # Enable Ctrl+C handling with exit flag
         local interrupted=false
         trap 'interrupted=true' INT
@@ -8306,11 +8371,10 @@ detect_duplicate_videos() {
                 # Factors 9-10: SKIPPED for performance (timestamp/directory checks too slow)
                 
                 # ═══════════════════════════════════════════════════════════════
-                # DECISION: Add to candidate list if similarity score >= 200
-                # (Out of max 265 points, 200 = 75.5% threshold)
-                # VERY AGGRESSIVE: Only analyze pairs with strong similarity indicators
+                # DECISION: Add to candidate list if similarity score >= AI threshold
+                # AI dynamically adjusted threshold based on collection characteristics
                 # ═══════════════════════════════════════════════════════════════
-                if [[ $similarity_score -ge 200 ]]; then
+                if [[ $similarity_score -ge $ai_threshold ]]; then
                     video_candidate_pairs+=("$file1|$file2|$similarity_score")
                 fi
             done
@@ -10041,6 +10105,71 @@ detect_duplicate_gifs() {
         local total_possible_pairs=$(( total_gifs * (total_gifs - 1) / 2 ))
         local pairs_evaluated=0
         
+        # ═══════════════════════════════════════════════════════════════
+        # 🧠 AI-POWERED ADAPTIVE THRESHOLD CALCULATION
+        # Dynamically adjusts filtering aggressiveness based on collection characteristics
+        # ═══════════════════════════════════════════════════════════════
+        
+        local ai_threshold=150  # Default base threshold (75% of 200)
+        local collection_size=$total_gifs
+        
+        # AI Factor 1: Collection size penalty (larger = stricter)
+        if [[ $collection_size -ge 500 ]]; then
+            ai_threshold=185  # EXTREME: 92.5% threshold for huge collections
+            echo -e "  ${YELLOW}🧠 AI Decision: EXTREME filtering (500+ GIFs)${NC}"
+        elif [[ $collection_size -ge 300 ]]; then
+            ai_threshold=175  # VERY STRICT: 87.5% for very large collections
+            echo -e "  ${YELLOW}🧠 AI Decision: VERY STRICT filtering (300-499 GIFs)${NC}"
+        elif [[ $collection_size -ge 150 ]]; then
+            ai_threshold=165  # STRICT: 82.5% for large collections
+            echo -e "  ${CYAN}🧠 AI Decision: STRICT filtering (150-299 GIFs)${NC}"
+        elif [[ $collection_size -ge 50 ]]; then
+            ai_threshold=150  # MODERATE: 75% for medium collections
+            echo -e "  ${CYAN}🧠 AI Decision: MODERATE filtering (50-149 GIFs)${NC}"
+        else
+            ai_threshold=130  # RELAXED: 65% for small collections
+            echo -e "  ${GREEN}🧠 AI Decision: RELAXED filtering (<50 GIFs)${NC}"
+        fi
+        
+        # AI Factor 2: Analyze collection diversity (similar names = less strict)
+        local unique_prefixes=0
+        local sample_size=$((collection_size < 20 ? collection_size : 20))
+        declare -A prefix_tracker
+        for ((sample_idx=0; sample_idx<sample_size; sample_idx++)); do
+            local sample_file="${gif_files[$sample_idx]}"
+            local sample_name="$(basename -- "$sample_file" .gif)"
+            local prefix="${sample_name:0:10}"
+            prefix_tracker["$prefix"]=1
+        done
+        unique_prefixes=${#prefix_tracker[@]}
+        
+        # High diversity (unique names) = be more aggressive
+        local diversity_pct=$((unique_prefixes * 100 / sample_size))
+        if [[ $diversity_pct -ge 80 ]]; then
+            ai_threshold=$((ai_threshold + 15))  # More aggressive - files are diverse
+            echo -e "  ${CYAN}🎯 AI Adjustment: +15 points (high diversity: ${diversity_pct}%)${NC}"
+        elif [[ $diversity_pct -le 30 ]]; then
+            ai_threshold=$((ai_threshold - 20))  # Less aggressive - many similar names
+            echo -e "  ${YELLOW}🎯 AI Adjustment: -20 points (low diversity: ${diversity_pct}%)${NC}"
+        fi
+        
+        # AI Factor 3: Detected duplicates from Levels 1-3
+        if [[ $duplicate_count -gt 0 ]]; then
+            local dup_rate=$((duplicate_count * 100 / total_possible_pairs))
+            if [[ $dup_rate -ge 5 ]]; then
+                ai_threshold=$((ai_threshold - 25))  # Many duplicates = be less strict
+                echo -e "  ${GREEN}📊 AI Adjustment: -25 points (high duplicate rate: ${dup_rate}%)${NC}"
+            fi
+        fi
+        
+        # Ensure threshold stays within bounds
+        [[ $ai_threshold -lt 100 ]] && ai_threshold=100  # Minimum 50%
+        [[ $ai_threshold -gt 190 ]] && ai_threshold=190  # Maximum 95%
+        
+        local threshold_pct=$((ai_threshold * 100 / 200))
+        echo -e "  ${MAGENTA}🧠 Final AI Threshold: ${BOLD}${ai_threshold}/200${NC}${MAGENTA} (${threshold_pct}%)${NC}"
+        echo -e "  ${GRAY}💡 Only pairs scoring ≥${ai_threshold} will be analyzed with Level 6${NC}\n"
+        
         # Enable Ctrl+C handling
         local interrupted=false
         trap 'interrupted=true' INT
@@ -10160,11 +10289,10 @@ detect_duplicate_gifs() {
                 fi
                 
                 # ═══════════════════════════════════════════════════════════════
-                # DECISION: Add to candidate list if similarity score >= 150
-                # (Out of max 200 points, 150 = 75% threshold)
-                # VERY AGGRESSIVE: Only analyze pairs with strong similarity
+                # DECISION: Add to candidate list if similarity score >= AI threshold
+                # AI dynamically adjusted threshold based on collection characteristics
                 # ═══════════════════════════════════════════════════════════════
-                if [[ $similarity_score -ge 150 ]]; then
+                if [[ $similarity_score -ge $ai_threshold ]]; then
                     gif_candidate_pairs+=("$file1|$file2|$similarity_score")
                 fi
             done
@@ -15865,7 +15993,8 @@ show_main_menu() {
         "🔧 System Information"
         "🔫 Kill FFmpeg Processes"
         "❓ Help & Documentation"
-        "🔄 Reset All Settings"
+        "🔄 Check for Updates"
+        "🛠️  Reset All Settings"
         "🚺 Exit"
     )
     
@@ -16225,10 +16354,24 @@ execute_menu_option() {
         9) # Help
             show_interactive_help
             ;;
-        10) # Reset All Settings
+        10) # Check for Updates
+            clear
+            print_header
+            echo -e "${CYAN}${BOLD}🔄 CHECKING FOR UPDATES${NC}\n"
+            echo -e "${BLUE}💻 Repository: ${CYAN}https://github.com/${GITHUB_REPO}${NC}"
+            echo -e "${BLUE}📅 Current Version: ${YELLOW}v${CURRENT_VERSION}${NC}\n"
+            echo -e "${CYAN}🔍 Contacting GitHub...${NC}\n"
+            
+            # Run the update check with full output
+            check_for_updates_interactive
+            
+            echo -e "\n${YELLOW}Press any key to return to main menu...${NC}"
+            read -rsn1
+            ;;
+        11) # Reset All Settings
             reset_all_settings
             ;;
-        11) # Exit
+        12) # Exit
             echo -e "\n${YELLOW}👋 Goodbye!${NC}"
             exit 0
             ;;
