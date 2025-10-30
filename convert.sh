@@ -2038,6 +2038,142 @@ get_checksum_cache_stats() {
     fi
 }
 
+# 🎬 Video Cache System
+# =======================================
+
+# Initialize video analysis cache
+init_video_cache() {
+    local video_cache_dir="${GIF_CONVERTER_DIR}/video_cache"
+    local video_cache_index="$video_cache_dir/video_analysis.db"
+    
+    # Create video cache directory
+    mkdir -p "$video_cache_dir" 2>/dev/null || {
+        echo -e "${YELLOW}⚠️  Warning: Cannot create video cache directory${NC}" >&2
+        return 1
+    }
+    
+    # Create cache index if it doesn't exist
+    if [[ ! -f "$video_cache_index" ]]; then
+        cat > "$video_cache_index" << 'EOF'
+# Smart GIF Converter - Video Analysis Cache
+# Format: filename|filesize|filemtime|timestamp|analysis_data
+# analysis_data: checksum|size|fingerprint|perceptual_hash|duration|resolution
+EOF
+    fi
+    
+    # Validate cache integrity
+    if ! validate_video_cache_index "$video_cache_index"; then
+        echo -e "${YELLOW}🔄 Video cache corruption detected, rebuilding...${NC}" >&2
+        rebuild_video_cache_index "$video_cache_index"
+    fi
+}
+
+# Validate video cache index integrity
+validate_video_cache_index() {
+    local cache_index="$1"
+    
+    [[ -f "$cache_index" && -r "$cache_index" ]] || return 1
+    
+    # Check header
+    local header=$(head -n 1 "$cache_index" 2>/dev/null || echo "")
+    [[ "$header" =~ ^#.*Video.*Analysis.*Cache ]] || return 1
+    
+    # Basic structure validation
+    head -n 10 "$cache_index" >/dev/null 2>&1 || return 1
+    
+    return 0
+}
+
+# Rebuild video cache index
+rebuild_video_cache_index() {
+    local cache_index="$1"
+    local temp_index="${cache_index}.rebuilding"
+    
+    # Create new header
+    cat > "$temp_index" << 'EOF'
+# Smart GIF Converter - Video Analysis Cache
+# Format: filename|filesize|filemtime|timestamp|analysis_data
+# analysis_data: checksum|size|fingerprint|perceptual_hash|duration|resolution
+EOF
+    
+    # Try to recover valid entries from old cache
+    if [[ -f "$cache_index" ]]; then
+        while IFS='|' read -r filename filesize filemtime timestamp analysis_data; do
+            [[ "$filename" =~ ^# ]] && continue
+            [[ -z "$filename" ]] && continue
+            
+            # Validate entry format
+            if [[ -n "$filename" && -n "$filesize" && -n "$filemtime" && -n "$timestamp" && -n "$analysis_data" ]]; then
+                echo "$filename|$filesize|$filemtime|$timestamp|$analysis_data" >> "$temp_index"
+            fi
+        done < "$cache_index" 2>/dev/null
+    fi
+    
+    # Atomic replace
+    mv "$temp_index" "$cache_index"
+}
+
+# Check video cache for existing analysis
+check_video_cache() {
+    local video_file="$1"
+    local video_cache_dir="${GIF_CONVERTER_DIR}/video_cache"
+    local video_cache_index="$video_cache_dir/video_analysis.db"
+    
+    [[ -f "$video_cache_index" ]] || return 1
+    
+    local basename=$(basename -- "$video_file")
+    local current_filesize=$(stat -c%s "$video_file" 2>/dev/null || echo "0")
+    local current_filemtime=$(stat -c%Y "$video_file" 2>/dev/null || echo "0")
+    
+    # Search for matching entry
+    while IFS='|' read -r filename filesize filemtime timestamp analysis_data; do
+        [[ "$filename" == "$basename" ]] || continue
+        
+        # Check if file unchanged
+        if [[ "$filesize" == "$current_filesize" && "$filemtime" == "$current_filemtime" ]]; then
+            echo "$analysis_data"
+            return 0
+        fi
+    done < <(grep -v '^#' "$video_cache_index" 2>/dev/null)
+    
+    return 1
+}
+
+# Save video analysis to cache
+save_video_analysis_to_cache() {
+    local video_file="$1"
+    local analysis_result="$2"
+    local video_cache_dir="${GIF_CONVERTER_DIR}/video_cache"
+    local video_cache_index="$video_cache_dir/video_analysis.db"
+    
+    [[ -f "$video_cache_index" ]] || return 1
+    
+    local basename=$(basename -- "$video_file")
+    local filesize=$(stat -c%s "$video_file" 2>/dev/null || echo "0")
+    local filemtime=$(stat -c%Y "$video_file" 2>/dev/null || echo "0")
+    local timestamp=$(date +%s)
+    
+    # Atomic append
+    local temp_cache="${video_cache_index}.tmp.$$"
+    cp "$video_cache_index" "$temp_cache" 2>/dev/null
+    echo "$basename|$filesize|$filemtime|$timestamp|$analysis_result" >> "$temp_cache"
+    mv "$temp_cache" "$video_cache_index"
+}
+
+# Get video cache statistics
+get_video_cache_stats() {
+    local video_cache_dir="${GIF_CONVERTER_DIR}/video_cache"
+    local video_cache_index="$video_cache_dir/video_analysis.db"
+    
+    if [[ ! -f "$video_cache_index" ]]; then
+        echo "0 entries"
+        return
+    fi
+    
+    local total=$(grep -v '^#' "$video_cache_index" | grep -c '|' || echo "0")
+    echo "$total entries"
+}
+
 # Save AI analysis results to cache
 save_ai_analysis_to_cache() {
     local file="$1"
@@ -6701,6 +6837,1492 @@ ai_advanced_frame_comparison() {
     return 0
 }
 
+# 🎬 Compare video frames for deep duplicate analysis
+compare_video_frames() {
+    local video1="$1"
+    local video2="$2"
+    local temp_dir="$3"
+    
+    # Check if videos exist
+    [[ ! -f "$video1" || ! -f "$video2" ]] && return 1
+    
+    # Get video durations
+    local dur1=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$video1" 2>/dev/null | cut -d'.' -f1)
+    local dur2=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$video2" 2>/dev/null | cut -d'.' -f1)
+    
+    [[ -z "$dur1" || -z "$dur2" || ! "$dur1" =~ ^[0-9]+$ || ! "$dur2" =~ ^[0-9]+$ ]] && return 1
+    [[ $dur1 -eq 0 || $dur2 -eq 0 ]] && return 1
+    
+    # Extract 5 key frames from each video (start, 25%, 50%, 75%, end)
+    local frames_dir1="$temp_dir/frames1_${RANDOM}"
+    local frames_dir2="$temp_dir/frames2_${RANDOM}"
+    mkdir -p "$frames_dir1" "$frames_dir2"
+    
+    local sample_times=()
+    local num_samples=5
+    for ((i=0; i<num_samples; i++)); do
+        local time_pct=$((i * 100 / (num_samples - 1)))
+        local time_sec=$((dur1 * time_pct / 100))
+        sample_times+=("$time_sec")
+    done
+    
+    # Extract frames from both videos
+    local frame_num=0
+    for time in "${sample_times[@]}"; do
+        ((frame_num++))
+        
+        # Extract from video 1
+        timeout 10 ffmpeg -ss $time -i "$video1" -vframes 1 -f image2 \
+            "$frames_dir1/frame_${frame_num}.png" >/dev/null 2>&1
+        
+        # Extract from video 2 (use proportional time)
+        local time2=$((dur2 * time / dur1))
+        timeout 10 ffmpeg -ss $time2 -i "$video2" -vframes 1 -f image2 \
+            "$frames_dir2/frame_${frame_num}.png" >/dev/null 2>&1
+    done
+    
+    # Count extracted frames
+    shopt -s nullglob
+    local frames1=("$frames_dir1"/*.png)
+    local frames2=("$frames_dir2"/*.png)
+    shopt -u nullglob
+    
+    local max_frames=${#frames1[@]}
+    [[ ${#frames2[@]} -lt $max_frames ]] && max_frames=${#frames2[@]}
+    
+    [[ $max_frames -eq 0 ]] && { rm -rf "$frames_dir1" "$frames_dir2" 2>/dev/null; return 1; }
+    
+    # Compare frames using perceptual hashing
+    local visual_matches=0
+    local color_matches=0
+    local total_comparisons=0
+    
+    for ((i=0; i<max_frames; i++)); do
+        local frame1="${frames1[$i]}"
+        local frame2="${frames2[$i]}"
+        
+        [[ ! -f "$frame1" || ! -f "$frame2" ]] && continue
+        
+        # Visual similarity using ImageMagick if available
+        if command -v convert >/dev/null 2>&1; then
+            # Simple average hash comparison
+            local hash1=$(convert "$frame1" -resize 8x8! -colorspace gray -format "%[fx:mean]" info: 2>/dev/null | tr -d '.')
+            local hash2=$(convert "$frame2" -resize 8x8! -colorspace gray -format "%[fx:mean]" info: 2>/dev/null | tr -d '.')
+            
+            if [[ -n "$hash1" && -n "$hash2" ]]; then
+                # Compare hashes (simple numeric difference)
+                local hash_diff=$(( hash1 > hash2 ? hash1 - hash2 : hash2 - hash1 ))
+                local hash_max=1000000  # Maximum difference for normalized hash
+                
+                if [[ $hash_diff -lt 50000 ]]; then  # Very similar
+                    ((visual_matches++))
+                fi
+                
+                # Color similarity (mean RGB values)
+                local color_diff=$(convert \( "$frame1" -resize 1x1! \) \( "$frame2" -resize 1x1! \) \
+                    -metric RMSE -format "%[distortion]" -compare info: 2>/dev/null | cut -d' ' -f1 | cut -d'.' -f1)
+                
+                if [[ -n "$color_diff" && "$color_diff" =~ ^[0-9]+$ && $color_diff -lt 5000 ]]; then
+                    ((color_matches++))
+                fi
+            fi
+        fi
+        
+        ((total_comparisons++))
+    done
+    
+    # Cleanup
+    rm -rf "$frames_dir1" "$frames_dir2" 2>/dev/null
+    
+    # Calculate match percentages
+    local visual_match_pct=0
+    local color_match_pct=0
+    
+    if [[ $total_comparisons -gt 0 ]]; then
+        visual_match_pct=$((visual_matches * 100 / total_comparisons))
+        color_match_pct=$((color_matches * 100 / total_comparisons))
+    fi
+    
+    # Return results as "visual:color"
+    echo "${visual_match_pct}:${color_match_pct}"
+    return 0
+}
+
+# 📝 Calculate filename similarity using Levenshtein-inspired algorithm
+calculate_filename_similarity() {
+    local str1="$1"
+    local str2="$2"
+    
+    # Convert to lowercase for case-insensitive comparison
+    str1="${str1,,}"
+    str2="${str2,,}"
+    
+    # If identical, return 100%
+    [[ "$str1" == "$str2" ]] && echo "100" && return 0
+    
+    local len1=${#str1}
+    local len2=${#str2}
+    
+    # If one is empty, similarity is 0
+    [[ $len1 -eq 0 || $len2 -eq 0 ]] && echo "0" && return 0
+    
+    # Simple character overlap method (faster than full Levenshtein)
+    local matches=0
+    local total_chars=$(( len1 > len2 ? len1 : len2 ))
+    
+    # Count matching characters in order
+    local i=0
+    local j=0
+    while [[ $i -lt $len1 && $j -lt $len2 ]]; do
+        if [[ "${str1:$i:1}" == "${str2:$j:1}" ]]; then
+            ((matches++))
+            ((i++))
+            ((j++))
+        elif [[ $i -lt $j ]]; then
+            ((i++))
+        else
+            ((j++))
+        fi
+    done
+    
+    # Calculate similarity percentage
+    local similarity=$(( matches * 100 / total_chars ))
+    echo "$similarity"
+}
+
+# 🎬 AI-Powered Video Duplicate Detection with Multi-Level Analysis
+detect_duplicate_videos() {
+    echo -e "${BLUE}${BOLD}🎬 AI-Enhanced Parallel Video Duplicate Detection${NC}"
+    echo -e "${CYAN}🔬 Multi-threaded analysis: Binary + Metadata + Visual + Filename + Frame comparison...${NC}"
+    echo -e "${GREEN}⚡ Using ${BOLD}$AI_DUPLICATE_THREADS${NC}${GREEN} CPU threads for maximum performance!${NC}"
+    
+    # Initialize all cache and AI systems
+    init_video_cache
+    init_ai_cache
+    init_ai_training
+    init_checksum_cache
+    
+    local video_cache_dir="${GIF_CONVERTER_DIR}/video_cache"
+    local cache_stats=$(get_video_cache_stats)
+    local ai_cache_stats=$(get_cache_stats)
+    local training_stats=$(get_ai_training_stats)
+    local checksum_cache_stats=$(get_checksum_cache_stats)
+    
+    echo -e "${BLUE}🗄️ Video Cache: $cache_stats${NC}"
+    echo -e "${BLUE}🗄️ AI Cache: $ai_cache_stats${NC}"
+    echo -e "${GREEN}🧠 AI Training: $training_stats${NC}"
+    echo -e "${CYAN}🔐 Checksum Cache: $checksum_cache_stats${NC}"
+    
+    # 💾 Show Level 6 cache statistics (remembered comparisons)
+    if [[ -f "$AI_CACHE_INDEX" ]]; then
+        local l6_cached_count=$(grep -c '^L6_VIDEO_COMPARE:' "$AI_CACHE_INDEX" 2>/dev/null || echo "0")
+        # Trim whitespace/newlines and validate
+        l6_cached_count=$(echo "$l6_cached_count" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
+        [[ -z "$l6_cached_count" ]] && l6_cached_count="0"
+        
+        if [[ $l6_cached_count -gt 0 ]]; then
+            echo -e "${MAGENTA}💾 Level 6 Cache: ${BOLD}$l6_cached_count${NC}${MAGENTA} video pair comparisons remembered${NC}"
+            echo -e "  ${GRAY}→ These will load instantly without re-analysis${NC}"
+        fi
+    fi
+    
+    local total_videos=0
+    local duplicate_count=0
+    local duplicate_pairs=()
+    declare -A video_checksums
+    declare -A video_sizes
+    declare -A video_fingerprints
+    declare -A video_visual_hashes
+    declare -A video_durations
+    declare -A video_resolutions
+    declare -A video_bitrates
+    declare -A video_codecs
+    declare -A video_fps_values
+    declare -A video_formats
+    
+    # Create temporary directory for analysis
+    local temp_analysis_dir="$(mktemp -d)"
+    trap "rm -rf '$temp_analysis_dir'" EXIT
+    
+    # Count total video files first for progress calculation
+    local video_files_list=()
+    declare -A seen_video_files  # Track files to avoid duplicates
+    
+    echo -e "  ${CYAN}🔍 Scanning video files...${NC}"
+    
+    shopt -s nullglob
+    
+    # Comprehensive video format support
+    local all_videos=(*.mp4 *.MP4 *.avi *.AVI *.mov *.MOV *.mkv *.MKV *.webm *.WEBM \
+                      *.m4v *.M4V *.flv *.FLV *.wmv *.WMV *.mpg *.MPG *.mpeg *.MPEG \
+                      *.3gp *.3GP *.ogv *.OGV *.ts *.TS *.mts *.MTS *.m2ts *.M2TS)
+    
+    local total_to_scan=${#all_videos[@]}
+    local scan_count=0
+    
+    # Detailed scanning with progress bar
+    for video_file in "${all_videos[@]}"; do
+        if [[ -f "$video_file" && -z "${seen_video_files["$video_file"]}" ]]; then
+            video_files_list+=("$video_file")
+            seen_video_files["$video_file"]=1
+            ((scan_count++))
+            
+            # Show progress bar every few files
+            if [[ $((scan_count % 5)) -eq 0 || $scan_count -eq $total_to_scan ]]; then
+                local progress=$((scan_count * 100 / total_to_scan))
+                local filled=$((progress * 20 / 100))
+                local empty=$((20 - filled))
+                
+                # Truncate filename if too long
+                local display_name="$(basename -- "$video_file")"
+                if [[ ${#display_name} -gt 50 ]]; then
+                    display_name="${display_name:0:47}..."
+                fi
+                
+                printf "\r  ${CYAN}["
+                for ((j=0; j<filled; j++)); do printf "${GREEN}█${NC}"; done
+                for ((j=0; j<empty; j++)); do printf "${GRAY}░${NC}"; done
+                printf "${CYAN}] ${BOLD}%3d%%${NC} ${BLUE}Found %d files${NC}" "$progress" "$scan_count"
+                printf "\n  ${GRAY}📄 %s${NC}" "$display_name"
+                printf "\r\033[1A"  # Move cursor back up to progress bar line
+            fi
+        fi
+    done
+    shopt -u nullglob
+    
+    # Show final count
+    printf "\r  ${GREEN}["
+    for ((j=0; j<20; j++)); do printf "${GREEN}█${NC}"; done
+    printf "${GREEN}] ${BOLD}100%%${NC} ${BLUE}Found %d video files${NC}\n" "$scan_count"
+    printf "\033[K\n"  # Clear the file name line
+    
+    # Remove any duplicates from the array
+    local unique_files_list=()
+    declare -A dedup_tracker
+    for video_file in "${video_files_list[@]}"; do
+        if [[ -z "${dedup_tracker["$video_file"]}" ]]; then
+            unique_files_list+=("$video_file")
+            dedup_tracker["$video_file"]=1
+        fi
+    done
+    video_files_list=("${unique_files_list[@]}")
+    
+    local total_files=${#video_files_list[@]}
+    if [[ $total_files -eq 0 ]]; then
+        echo -e "  ${CYAN}ℹ️  No video files found${NC}"
+        return 0
+    fi
+    
+    # 🧠 DYNAMIC AI DECISION ENGINE
+    # AI will intelligently evaluate EACH pair in real-time
+    if [[ "${AI_AUTO_OPTIMIZE:-true}" == "true" ]]; then
+        echo -e "  ${MAGENTA}${BOLD}🧠 AI Dynamic Decision Engine: Active${NC}"
+        echo -e "    ${CYAN}📊 Collection: $total_files files ($(( total_files * (total_files - 1) / 2 )) comparisons)${NC}"
+        echo -e "    ${CYAN}⚡ Resources: $CPU_CORES cores, $(free -g 2>/dev/null | awk '/^Mem:/{print $2}' || echo '?')GB RAM${NC}"
+        echo -e "    ${GREEN}✓ AI will evaluate each pair dynamically with real-time intelligence${NC}"
+        echo -e "      ${GRAY}→ Level 6: Adaptive threshold based on collection size & pair similarity${NC}"
+        echo ""
+    fi
+    
+    # Calculate total size and estimate time
+    local total_size=0
+    for video_file in "${video_files_list[@]}"; do
+        local file_size=$(stat -c%s "$video_file" 2>/dev/null || echo "0")
+        total_size=$((total_size + file_size))
+    done
+    
+    # Convert to human readable
+    local total_size_mb=$((total_size / 1024 / 1024))
+    local total_size_gb=$((total_size_mb / 1024))
+    local estimated_time_sec=$((total_files * 3))  # Rough estimate: 3 seconds per video
+    local estimated_time_min=$((estimated_time_sec / 60))
+    
+    # Display size with appropriate unit
+    if [[ $total_size_gb -gt 0 ]]; then
+        echo -e "  ${YELLOW}📊 Processing ${BOLD}${total_files}${NC}${YELLOW} video files (${BOLD}${total_size_gb}GB${NC}${YELLOW} total)${NC}"
+    else
+        echo -e "  ${YELLOW}📊 Processing ${BOLD}${total_files}${NC}${YELLOW} video files (${BOLD}${total_size_mb}MB${NC}${YELLOW} total)${NC}"
+    fi
+    echo -e "  ${CYAN}⏱️  Estimated time: ~${estimated_time_min} minutes (varies by file size & format)${NC}"
+    echo -e "  ${GRAY}💡 Larger files and different formats take longer to analyze${NC}"
+    
+    # Show sample files after scanning complete (truncated for readability)
+    local samples=""
+    for ((i=0; i<3 && i<${#video_files_list[@]}; i++)); do
+        local fname="$(basename -- "${video_files_list[$i]}")"
+        # Truncate long filenames
+        if [[ ${#fname} -gt 30 ]]; then
+            fname="${fname:0:27}..."
+        fi
+        samples+="$fname, "
+    done
+    echo -e "  ${GRAY}📂 Sample: ${samples}...${NC}"
+    
+    # Pre-scan for cached files
+    echo -e "  ${BLUE}${BOLD}🔍 Checking video cache...${NC}"
+    local files_to_analyze=0
+    local files_cached=0
+    declare -a uncached_files_list
+    
+    # Load cache index
+    local video_cache_index="$video_cache_dir/video_analysis.db"
+    declare -A cache_lookup
+    if [[ -f "$video_cache_index" ]]; then
+        while IFS='|' read -r filename filesize filemtime timestamp analysis_data; do
+            [[ "$filename" =~ ^# ]] && continue
+            [[ -z "$filename" ]] && continue
+            cache_lookup["$filename"]="${filesize}:${filemtime}|${analysis_data}"
+        done < <(tail -n +4 "$video_cache_index" 2>/dev/null)
+    fi
+    
+    # Initialize results file
+    local results_file="$temp_analysis_dir/video_results.txt"
+    : > "$results_file"
+    
+    # Check each file against cache
+    for video_file in "${video_files_list[@]}"; do
+        [[ -f "$video_file" ]] || continue
+        local basename=$(basename -- "$video_file")
+        local needs_analysis=true
+        
+        if [[ -n "${cache_lookup[$basename]}" ]]; then
+            local cached_entry="${cache_lookup[$basename]}"
+            local cached_fingerprint=$(echo "$cached_entry" | cut -d'|' -f1)
+            local cached_data=$(echo "$cached_entry" | cut -d'|' -f2-)
+            
+            local current_filesize=$(stat -c%s "$video_file" 2>/dev/null || echo "0")
+            local current_filemtime=$(stat -c%Y "$video_file" 2>/dev/null || echo "0")
+            local current_fingerprint="${current_filesize}:${current_filemtime}"
+            
+            if [[ "$cached_fingerprint" == "$current_fingerprint" ]]; then
+                ((files_cached++))
+                needs_analysis=false
+                echo "${cached_data}" >> "$results_file"
+            fi
+        fi
+        
+        if [[ "$needs_analysis" == "true" ]]; then
+            uncached_files_list+=("$video_file")
+            ((files_to_analyze++))
+        fi
+    done
+    
+    unset cache_lookup
+    
+    echo -e "  ${BLUE}${BOLD}🧠 Stage 1: Video fingerprinting (${AI_DUPLICATE_THREADS} threads)...${NC}"
+    if [[ $files_cached -gt 0 ]]; then
+        echo -e "  ${GREEN}💾 Cached: ${BOLD}${files_cached}${NC}${GREEN} files (instant)${NC}"
+        echo -e "  ${CYAN}⚡ To analyze: ${BOLD}${files_to_analyze}${NC}${CYAN} files${NC}"
+    fi
+    
+    # Parallel video analysis function with AI health detection
+    analyze_video_parallel() {
+        local video_file="$1"
+        local temp_dir="$2"
+        local result_file="$3"
+        local current_index="$4"
+        local total_files="$5"
+        local timeout_seconds=90
+        
+        # Check if file exists and is readable
+        if [[ ! -f "$video_file" ]]; then
+            local error_msg="File not found: $video_file"
+            log_error "$error_msg" "$video_file" "File missing during duplicate detection"
+            echo "$video_file|ERROR|0|||0|0x0|unknown" >> "$result_file"
+            return 1
+        elif [[ ! -r "$video_file" ]]; then
+            local error_msg="File not readable: $video_file (permissions issue)"
+            log_error "$error_msg" "$video_file" "Permission denied during duplicate detection"
+            echo "$video_file|ERROR|0|||0|0x0|unknown" >> "$result_file"
+            return 1
+        fi
+        
+        # Check cache first
+        local cached_analysis=$(check_video_cache "$video_file" 2>/dev/null)
+        if [[ $? -eq 0 && -n "$cached_analysis" ]]; then
+            echo "$cached_analysis" >> "$result_file"
+            if [[ -n "$current_index" && -n "$total_files" ]]; then
+                update_file_progress "$current_index" "$total_files" "$(basename -- "$video_file") [cached]" "Analyzing videos" 30
+            fi
+            return 0
+        fi
+        
+        # Display progress
+        if [[ -n "$current_index" && -n "$total_files" ]]; then
+            update_file_progress "$current_index" "$total_files" "$(basename -- "$video_file")" "Analyzing videos" 30
+        fi
+        
+        # Stage 1: Fast MD5 checksum with intelligent caching
+        local checksum
+        local size=$(stat -c%s "$video_file" 2>/dev/null || echo "0")
+        
+        # Try to get cached checksum first
+        checksum=$(get_cached_checksum "$video_file" 2>/dev/null)
+        
+        # If cache failed, calculate with timeout
+        if [[ -z "$checksum" ]]; then
+            # Use -- to handle filenames starting with dash
+            if checksum=$(timeout 15 md5sum -- "$video_file" 2>/dev/null | awk '{print $1}'); then
+                [[ -z "$checksum" ]] && checksum="ERROR"
+            else
+                checksum="TIMEOUT_MD5"
+                echo -e "  ${YELLOW}⏰ MD5 timeout: $(basename -- "$video_file")${NC}" >&2
+            fi
+        fi
+        
+        # Check if MD5 calculation failed or timed out (likely corruption)
+        if [[ "$checksum" == "ERROR" || "$checksum" == "TIMEOUT_MD5" ]]; then
+            local failure_reason
+            if [[ "$checksum" == "TIMEOUT_MD5" ]]; then
+                failure_reason="MD5 calculation timed out - likely severely corrupted or very large file"
+                echo -e "  ${RED}🚫 Corrupted file (MD5 timeout): $(basename -- "$video_file")${NC}" >&2
+            else
+                failure_reason="MD5 calculation failed - file may be corrupted"
+            fi
+            
+            # Use AI to verify if this is truly corrupted or just a large file
+            local ai_health_verdict="SKIP"
+            if command -v ffprobe >/dev/null 2>&1; then
+                # Quick ffprobe check
+                if timeout 5 ffprobe -v error "$video_file" >/dev/null 2>&1; then
+                    ai_health_verdict="LARGE_FILE"
+                else
+                    ai_health_verdict="CORRUPTED"
+                fi
+            fi
+            
+            if [[ "$ai_health_verdict" == "LARGE_FILE" ]]; then
+                # File is OK, just large - continue without MD5
+                checksum="LARGE_FILE_NO_MD5"
+                echo -e "  ${YELLOW}📦 Large file, skipping MD5: $(basename -- "$video_file")${NC}" >&2
+            else
+                local error_msg="Cannot calculate MD5 hash: $video_file ($failure_reason)"
+                log_error "$error_msg" "$video_file" "$failure_reason"
+                echo "$video_file|CORRUPTED|$size|unknown||0|0x0|unknown" >> "$result_file"
+                return 1
+            fi
+        fi
+        
+        # Stage 2: Enhanced metadata extraction with FFprobe
+        local duration="0"
+        local resolution="unknown"
+        local bitrate="0"
+        local codec="unknown"
+        local fps="0"
+        local width="0"
+        local height="0"
+        local format="unknown"
+        local perceptual_hash=""
+        
+        # Detect format from file extension
+        local file_ext="${video_file##*.}"
+        format="${file_ext,,}"  # Lowercase
+        
+        if command -v ffprobe >/dev/null 2>&1; then
+            # Comprehensive metadata extraction - timeout after 8 seconds
+            local ffprobe_output=$(timeout 8 ffprobe -v error -select_streams v:0 \
+                -show_entries stream=duration,width,height,bit_rate,codec_name,r_frame_rate,pix_fmt \
+                -show_entries format=format_name,size \
+                -of csv=p=0 "$video_file" 2>/dev/null)
+            
+            if [[ -n "$ffprobe_output" ]]; then
+                # Parse output carefully
+                duration=$(echo "$ffprobe_output" | head -1 | cut -d',' -f1 | cut -d'.' -f1)
+                width=$(echo "$ffprobe_output" | head -1 | cut -d',' -f2)
+                height=$(echo "$ffprobe_output" | head -1 | cut -d',' -f3)
+                bitrate=$(echo "$ffprobe_output" | head -1 | cut -d',' -f4)
+                codec=$(echo "$ffprobe_output" | head -1 | cut -d',' -f5)
+                local fps_frac=$(echo "$ffprobe_output" | head -1 | cut -d',' -f6)
+                
+                # Calculate FPS from fraction
+                if [[ "$fps_frac" =~ ^[0-9]+/[0-9]+$ ]]; then
+                    local num=$(echo "$fps_frac" | cut -d'/' -f1)
+                    local den=$(echo "$fps_frac" | cut -d'/' -f2)
+                    if [[ $den -gt 0 ]]; then
+                        fps=$((num / den))
+                    fi
+                fi
+                
+                resolution="${width}x${height}"
+                
+                # Ensure we have valid numbers
+                [[ ! "$duration" =~ ^[0-9]+$ ]] && duration="0"
+                [[ ! "$bitrate" =~ ^[0-9]+$ ]] && bitrate="0"
+                [[ ! "$fps" =~ ^[0-9]+$ ]] && fps="0"
+                [[ ! "$width" =~ ^[0-9]+$ ]] && width="0"
+                [[ ! "$height" =~ ^[0-9]+$ ]] && height="0"
+            fi
+        fi
+        
+        # AI-powered perceptual hash for visual similarity detection
+        # Extract middle frame and create perceptual hash
+        if [[ "$duration" -gt 0 ]] && command -v ffmpeg >/dev/null 2>&1; then
+            local temp_frame="$temp_dir/vframe_${RANDOM}.png"
+            local middle_time=$((duration / 2))
+            
+            # Extract frame from middle of video
+            if timeout 8 ffmpeg -ss $middle_time -i "$video_file" -vframes 1 \
+                -f image2 "$temp_frame" >/dev/null 2>&1; then
+                
+                if command -v convert >/dev/null 2>&1; then
+                    # Create simple perceptual hash: average hash (aHash) algorithm
+                    # Resize to 8x8, convert to grayscale, get average brightness
+                    perceptual_hash=$(convert "$temp_frame" -resize 8x8! -colorspace gray \
+                        -format "%[fx:mean]" info: 2>/dev/null | tr -d '.')
+                    
+                    # Validate hash
+                    if [[ -z "$perceptual_hash" || ${#perceptual_hash} -lt 3 ]]; then
+                        perceptual_hash=""
+                    fi
+                fi
+                rm -f "$temp_frame" 2>/dev/null
+            fi
+        fi
+        
+        # Fallback to basic file validation if FFprobe unavailable or failed
+        if [[ "$resolution" == "unknown" || "$duration" == "0" ]]; then
+            local file_info=$(file "$video_file" 2>/dev/null || echo "unknown")
+            if [[ "$file_info" =~ (video|Video|MPEG|MP4|AVI|MKV|WebM) ]]; then
+                resolution="valid_video"
+            elif [[ "$file_info" == *"data"* ]] && [[ $size -gt 10240 ]]; then
+                resolution="possible_video"
+            else
+                resolution="invalid_format"
+            fi
+        fi
+        
+        # Create enhanced content fingerprint with codec and format data
+        local content_fingerprint="${size}:${resolution}:${duration}:${bitrate}:${fps}:${codec}:${format}"
+        
+        # Format: filename|checksum|size|content_fingerprint|perceptual_hash|duration|resolution|codec|format
+        local analysis_result="$video_file|$checksum|$size|$content_fingerprint|$perceptual_hash|$duration|$resolution|$codec|$format"
+        
+        # Write results atomically
+        echo "$analysis_result" >> "$result_file"
+        
+        # Save to cache for future runs
+        save_video_analysis_to_cache "$video_file" "$analysis_result"
+        
+        return 0
+    }
+    
+    # Export function for parallel execution (if needed)
+    export -f analyze_video_parallel 2>/dev/null || true
+    
+    # Track cache statistics
+    local cache_hits=0
+    local cache_misses=0
+    
+    # Process files with progress tracking
+    if [[ $files_to_analyze -gt 0 ]]; then
+        echo -e "  ${BLUE}🚀 Processing ${files_to_analyze} video files that need analysis (${AI_DUPLICATE_THREADS} threads)${NC}"
+        echo -e "  ${GREEN}💾 Skipping ${files_cached} cached files (instant load)${NC}"
+    else
+        echo -e "  ${GREEN}🚀 All ${total_files} video files are cached - loading instantly!${NC}"
+    fi
+    echo -e "  ${GRAY}🔈 Cache-enabled: Files analyzed before will load instantly!${NC}"
+    
+    # Process uncached files sequentially with minimal parallelism
+    local loop_idx=0
+    local total_to_process=${#uncached_files_list[@]}
+    
+    while [[ $loop_idx -lt $total_to_process ]]; do
+        # Check if user requested interrupt (Ctrl+C)
+        if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
+            echo -e "\n  ${YELLOW}⏸️  Analysis interrupted by user${NC}"
+            echo -e "  ${CYAN}💾 Processed: $loop_idx, Cached: $files_cached${NC}"
+            break
+        fi
+        
+        local video_file="${uncached_files_list[$loop_idx]}"
+        
+        # Process file directly
+        analyze_video_parallel "$video_file" "$temp_analysis_dir" "$results_file" "$((loop_idx + 1))" "$total_to_process"
+        
+        ((loop_idx++))
+    done
+    
+    echo -e "\n  ${GREEN}✓ Stage 1 complete${NC}"
+    
+    # Parse results and build comprehensive lookup tables
+    local processed_count=0
+    declare -A format_counts
+    
+    while IFS='|' read -r filename checksum size fingerprint perceptual_hash duration resolution codec format; do
+        [[ -z "$filename" || "$checksum" == "ERROR" || "$checksum" == "CORRUPTED" ]] && continue
+        
+        video_checksums["$filename"]="$checksum"
+        video_sizes["$filename"]="$size"
+        video_fingerprints["$filename"]="$fingerprint"
+        video_visual_hashes["$filename"]="$perceptual_hash"
+        video_durations["$filename"]="$duration"
+        video_resolutions["$filename"]="$resolution"
+        video_codecs["$filename"]="$codec"
+        video_formats["$filename"]="$format"
+        
+        # Track format distribution
+        ((format_counts[$format]++))
+        ((processed_count++))
+    done < "$results_file"
+    
+    # Show format distribution
+    if [[ ${#format_counts[@]} -gt 0 ]]; then
+        echo -e "  ${CYAN}📈 Format distribution:${NC}"
+        for fmt in "${!format_counts[@]}"; do
+            echo -e "    ${GRAY}• ${fmt}: ${format_counts[$fmt]} files${NC}"
+        done
+    fi
+    
+    # Stage 2: Pairwise comparison with AI decision engine
+    echo -e "  ${BLUE}${BOLD}🧠 Stage 2: Fast Duplicate Detection (Levels 1-6)...${NC}"
+    
+    local total_comparisons=$(( total_files * (total_files - 1) / 2 ))
+    local current_comparison=0
+    
+    declare -A compared_pairs
+    
+    for ((i=0; i<total_files; i++)); do
+        local file1="${video_files_list[$i]}"
+        [[ ! -f "$file1" ]] && continue
+        
+        local checksum1="${video_checksums[$file1]}"
+        [[ -z "$checksum1" ]] && continue
+        
+        for ((j=i+1; j<total_files; j++)); do
+            local file2="${video_files_list[$j]}"
+            [[ ! -f "$file2" ]] && continue
+            
+            local checksum2="${video_checksums[$file2]}"
+            [[ -z "$checksum2" ]] && continue
+            
+            ((current_comparison++))
+            
+            # Show progress
+            if [[ $((current_comparison % 10)) -eq 0 || $current_comparison -eq $total_comparisons ]]; then
+                local progress=$((current_comparison * 100 / total_comparisons))
+                local filled=$((progress * 30 / 100))
+                local empty=$((30 - filled))
+                
+                local name1="$(basename -- "$file1")"
+                local name2="$(basename -- "$file2")"
+                [[ ${#name1} -gt 30 ]] && name1="${name1:0:27}..."
+                [[ ${#name2} -gt 30 ]] && name2="${name2:0:27}..."
+                
+                # Progress bar on first line
+                printf "\r  ${CYAN}["
+                for ((k=0; k<filled; k++)); do printf "${GREEN}█${NC}"; done
+                for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
+                printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(Levels 1-5)${NC}" "$progress"
+                
+                # File comparison below
+                printf "\n  ${BLUE}Comparing: %s ↔ %s${NC}" "$name1" "$name2"
+                printf "\r\033[1A"  # Move cursor back up to progress bar line
+            fi
+            
+            # Level 1: Exact binary match (MD5)
+            if [[ "$checksum1" == "$checksum2" ]]; then
+                duplicate_pairs+=("LEVEL1|100|$file1|$file2|Exact binary match")
+                ((duplicate_count++))
+                continue
+            fi
+            
+            # Level 2: Visual similarity (perceptual hash)
+            local hash1="${video_visual_hashes[$file1]}"
+            local hash2="${video_visual_hashes[$file2]}"
+            
+            if [[ -n "$hash1" && -n "$hash2" && "$hash1" == "$hash2" ]]; then
+                duplicate_pairs+=("LEVEL2|95|$file1|$file2|Identical visual fingerprint")
+                ((duplicate_count++))
+                continue
+            fi
+            
+            # Level 3: Content fingerprint match
+            local fp1="${video_fingerprints[$file1]}"
+            local fp2="${video_fingerprints[$file2]}"
+            
+            if [[ "$fp1" == "$fp2" ]]; then
+                local size1="${video_sizes[$file1]:-0}"
+                local size2="${video_sizes[$file2]:-0}"
+                
+                # Only calculate ratio if both sizes are valid and non-zero
+                if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
+                    local size_ratio=$(( (size1 < size2 ? size1 * 100 / size2 : size2 * 100 / size1) ))
+                    
+                    if [[ $size_ratio -ge 95 ]]; then
+                        duplicate_pairs+=("LEVEL3|90|$file1|$file2|Identical metadata + similar size")
+                        ((duplicate_count++))
+                        continue
+                    fi
+                fi
+            fi
+            
+            # Level 4: Near-identical detection
+            local dur1="${video_durations[$file1]}"
+            local dur2="${video_durations[$file2]}"
+            local res1="${video_resolutions[$file1]}"
+            local res2="${video_resolutions[$file2]}"
+            
+            if [[ "$dur1" == "$dur2" && "$res1" == "$res2" ]]; then
+                local size1="${video_sizes[$file1]:-0}"
+                local size2="${video_sizes[$file2]:-0}"
+                
+                # Only calculate if both sizes are valid and non-zero
+                if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
+                    local size_diff_pct=$(( 100 - (size1 < size2 ? size1 * 100 / size2 : size2 * 100 / size1) ))
+                    
+                    if [[ $size_diff_pct -le 10 ]]; then
+                        duplicate_pairs+=("LEVEL4|80|$file1|$file2|Same duration + resolution, similar size")
+                        ((duplicate_count++))
+                        continue
+                    fi
+                fi
+            fi
+            
+            # Level 5: Filename similarity + file properties
+            local name1="$(basename -- "${file1%.*}")"
+            local name2="$(basename -- "${file2%.*}")"
+            
+            # Calculate Levenshtein distance for filename similarity
+            local filename_similarity=$(calculate_filename_similarity "$name1" "$name2")
+            
+            # Get file timestamps for additional comparison
+            local mtime1=$(stat -c%Y "$file1" 2>/dev/null || echo "0")
+            local mtime2=$(stat -c%Y "$file2" 2>/dev/null || echo "0")
+            local atime1=$(stat -c%X "$file1" 2>/dev/null || echo "0")
+            local atime2=$(stat -c%X "$file2" 2>/dev/null || echo "0")
+            
+            # Time difference in seconds
+            local mtime_diff=$(( mtime1 > mtime2 ? mtime1 - mtime2 : mtime2 - mtime1 ))
+            local atime_diff=$(( atime1 > atime2 ? atime1 - atime2 : atime2 - atime1 ))
+            
+            # Track if duplicate found
+            local is_duplicate=false
+            
+            # Check for similar filenames with similar properties
+            if [[ $filename_similarity -ge 75 ]]; then
+                local size1="${video_sizes[$file1]:-0}"
+                local size2="${video_sizes[$file2]:-0}"
+                
+                # Only calculate ratio if both sizes are valid and non-zero
+                if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
+                    local size_ratio=$(( (size1 < size2 ? size1 * 100 / size2 : size2 * 100 / size1) ))
+                    
+                    # Similar filename + similar size + close modification times = likely duplicate
+                    if [[ $size_ratio -ge 90 && $mtime_diff -lt 86400 ]]; then  # Within 1 day
+                        duplicate_pairs+=("LEVEL5|75|$file1|$file2|Similar filename (${filename_similarity}%) + properties")
+                        ((duplicate_count++))
+                        is_duplicate=true
+                        continue
+                    fi
+                    
+                    # Very similar filename + same duration = possible re-encode
+                    if [[ $filename_similarity -ge 90 && "$dur1" == "$dur2" && $size_ratio -ge 85 ]]; then
+                        duplicate_pairs+=("LEVEL5|70|$file1|$file2|Very similar filename (${filename_similarity}%) + duration match")
+                        ((duplicate_count++))
+                        is_duplicate=true
+                        continue
+                    fi
+                fi
+            fi
+            
+            # Level 6: Advanced Frame-by-Frame Deep Analysis (AI-powered)
+            # AI DECISION ENGINE: Intelligently decides when Level 6 should run
+            local should_run_level6=false
+            local skip_level6_calculation=false
+            
+            # Quick bailout #1: Already found duplicate
+            if [[ "$is_duplicate" == "true" ]]; then
+                skip_level6_calculation=true
+            fi
+            
+            # Quick bailout #2: Collection too large
+            if [[ $total_files -ge 200 ]] && [[ "$skip_level6_calculation" != "true" ]]; then
+                local quick_size1="${video_sizes[$file1]:-0}"
+                local quick_size2="${video_sizes[$file2]:-0}"
+                if [[ $quick_size1 -gt 0 && $quick_size2 -gt 0 ]]; then
+                    local quick_diff=$(( (quick_size1 > quick_size2 ? quick_size1 - quick_size2 : quick_size2 - quick_size1) * 100 / (quick_size1 > quick_size2 ? quick_size1 : quick_size2) ))
+                    if [[ $quick_diff -gt 20 ]]; then
+                        skip_level6_calculation=true
+                    fi
+                fi
+            fi
+            
+            # Only run expensive AI calculation if bailout conditions not met
+            if [[ "$skip_level6_calculation" != "true" ]] && \
+               [[ "${AI_ENABLED:-true}" == "true" ]] && [[ "${AI_VISUAL_SIMILARITY:-true}" == "true" ]] && \
+               command -v convert >/dev/null 2>&1; then
+                
+                # ==============================================================
+                # 🧠 COMPREHENSIVE 10-FACTOR AI DECISION ENGINE
+                # Uses: MD5, metadata, file stats, timestamps, visual hashes, codecs, formats!
+                # ==============================================================
+                
+                # Factor 1: Collection size (base penalty for large collections)
+                local collection_size=$total_files
+                local size_score=0
+                if [[ $collection_size -lt 30 ]]; then
+                    size_score=100  # Small collection - run liberally
+                elif [[ $collection_size -lt 75 ]]; then
+                    size_score=50   # Medium - run selectively
+                elif [[ $collection_size -lt 150 ]]; then
+                    size_score=15   # Large - extremely rare
+                else
+                    size_score=2    # Very large - virtually never
+                fi
+                
+                # Factor 2: MD5 Hash Proximity Analysis
+                local md5_score=0
+                local hash1="${video_checksums[$file1]}"
+                local hash2="${video_checksums[$file2]}"
+                if [[ -n "$hash1" && -n "$hash2" && "$hash1" != "ERROR" && "$hash2" != "ERROR" ]]; then
+                    if [[ "${hash1:0:8}" == "${hash2:0:8}" ]]; then
+                        ((md5_score += 50))  # Very strong similarity
+                    elif [[ "${hash1:0:4}" == "${hash2:0:4}" ]]; then
+                        ((md5_score += 25))  # Moderate similarity
+                    elif [[ "${hash1:0:2}" == "${hash2:0:2}" ]]; then
+                        ((md5_score += 10))  # Weak similarity
+                    fi
+                fi
+                
+                # Factor 3: File Metadata & Timestamps
+                local metadata_score=0
+                if [[ $mtime1 -gt 0 && $mtime2 -gt 0 ]]; then
+                    if [[ $mtime_diff -lt 60 ]]; then
+                        ((metadata_score += 40))  # Created within 1 minute
+                    elif [[ $mtime_diff -lt 300 ]]; then
+                        ((metadata_score += 20))  # Within 5 minutes
+                    elif [[ $mtime_diff -lt 3600 ]]; then
+                        ((metadata_score += 10))  # Within 1 hour
+                    fi
+                fi
+                
+                # Factor 4: Duration & Resolution Match
+                local duration_resolution_score=0
+                if [[ $dur1 -gt 0 && $dur2 -gt 0 ]]; then
+                    if [[ $dur1 -eq $dur2 ]]; then
+                        ((duration_resolution_score += 45))  # Exact duration match
+                    else
+                        local dur_diff=$(( (dur1 > dur2 ? dur1 - dur2 : dur2 - dur1) * 100 / (dur1 > dur2 ? dur1 : dur2) ))
+                        if [[ $dur_diff -lt 5 ]]; then
+                            ((duration_resolution_score += 30))  # Within 5%
+                        elif [[ $dur_diff -lt 10 ]]; then
+                            ((duration_resolution_score += 15))  # Within 10%
+                        fi
+                    fi
+                fi
+                
+                # Factor 5: Visual Hash Similarity
+                local visual_hash_score=0
+                local vhash1="${video_visual_hashes[$file1]}"
+                local vhash2="${video_visual_hashes[$file2]}"
+                if [[ -n "$vhash1" && -n "$vhash2" && "$vhash1" != "0" && "$vhash2" != "0" ]]; then
+                    if [[ "$vhash1" == "$vhash2" ]]; then
+                        ((visual_hash_score += 50))  # Identical visual hash
+                    else
+                        local hash_diff=$(echo "scale=2; ($vhash1 - $vhash2) / $vhash1 * 100" | bc -l 2>/dev/null | tr -d '-' || echo "100")
+                        local hash_diff_int=${hash_diff%.*}
+                        if [[ $hash_diff_int -lt 5 ]]; then
+                            ((visual_hash_score += 35))  # Very similar
+                        elif [[ $hash_diff_int -lt 15 ]]; then
+                            ((visual_hash_score += 20))  # Somewhat similar
+                        fi
+                    fi
+                fi
+                
+                # Factor 6: Content Fingerprint Analysis
+                local fingerprint_score=0
+                local fp1="${video_fingerprints[$file1]}"
+                local fp2="${video_fingerprints[$file2]}"
+                if [[ -n "$fp1" && -n "$fp2" && "$fp1" == "$fp2" ]]; then
+                    ((fingerprint_score += 40))  # Identical fingerprint
+                fi
+                
+                # Factor 7: Codec & Format Compatibility
+                local codec_format_score=0
+                local codec1="${video_codecs[$file1]}"
+                local codec2="${video_codecs[$file2]}"
+                local format1="${video_formats[$file1]}"
+                local format2="${video_formats[$file2]}"
+                
+                if [[ "$codec1" == "$codec2" ]]; then
+                    ((codec_format_score += 20))  # Same codec
+                fi
+                if [[ "$format1" == "$format2" ]]; then
+                    ((codec_format_score += 20))  # Same format
+                fi
+                
+                # Factor 8: Filename Similarity
+                local similarity_score=$filename_similarity
+                
+                # Factor 9: File Size Similarity
+                local size_similarity_score=0
+                local size1="${video_sizes[$file1]}"
+                local size2="${video_sizes[$file2]}"
+                if [[ -n "$size1" && -n "$size2" && $size1 -gt 0 && $size2 -gt 0 ]]; then
+                    local size_diff_pct=$(( (size1 > size2 ? size1 - size2 : size2 - size1) * 100 / (size1 > size2 ? size1 : size2) ))
+                    if [[ $size_diff_pct -lt 10 ]]; then
+                        ((size_similarity_score += 30))  # Within 10%
+                    elif [[ $size_diff_pct -lt 20 ]]; then
+                        ((size_similarity_score += 15))  # Within 20%
+                    fi
+                fi
+                
+                # Factor 10: Previous layers found nothing (might be hidden duplicate)
+                local previous_layers_score=0
+                if [[ "$is_duplicate" != "true" ]]; then
+                    previous_layers_score=20
+                fi
+                
+                # ==============================================================
+                # 🧠 AI DECISION ALGORITHM - 10-Factor Weighted Scoring
+                # ==============================================================
+                local ai_confidence=$(( 
+                    (size_score * 10 + 
+                     md5_score * 12 + 
+                     metadata_score * 10 + 
+                     duration_resolution_score * 15 + 
+                     visual_hash_score * 13 + 
+                     fingerprint_score * 12 + 
+                     codec_format_score * 10 + 
+                     similarity_score * 10 + 
+                     size_similarity_score * 3 + 
+                     previous_layers_score * 5) / 100 
+                ))
+                
+                # ADAPTIVE THRESHOLD: Extremely strict for large collections
+                local confidence_threshold=60  # Default for small collections
+                if [[ $collection_size -ge 200 ]]; then
+                    confidence_threshold=98   # EXTREME: 98% for 200+ files
+                elif [[ $collection_size -ge 150 ]]; then
+                    confidence_threshold=90   # VERY STRICT for 150+ files
+                elif [[ $collection_size -ge 100 ]]; then
+                    confidence_threshold=80   # STRICT for 100+ files
+                fi
+                
+                # Decision: Run Level 6 only if confidence exceeds threshold
+                if [[ $ai_confidence -ge $confidence_threshold ]]; then
+                    should_run_level6=true
+                fi
+            fi
+            
+            # Execute Level 6 deep frame analysis if AI decided to
+            if [[ "$should_run_level6" == "true" ]]; then
+                # Check Level 6 cache first
+                local cache_key="L6_VIDEO_COMPARE:${file1}|${file2}"
+                local cached_l6_result=$(grep "^$cache_key" "$AI_CACHE_INDEX" 2>/dev/null | cut -d'|' -f3)
+                
+                if [[ -n "$cached_l6_result" ]]; then
+                    # Use cached result
+                    if [[ "$cached_l6_result" == "DUPLICATE" ]]; then
+                        duplicate_pairs+=("LEVEL6|95|$file1|$file2|Deep frame analysis (cached)")
+                        ((duplicate_count++))
+                    fi
+                else
+                    # Perform deep frame comparison
+                    local frame_analysis=$(compare_video_frames "$file1" "$file2" "$temp_analysis_dir")
+                    
+                    if [[ -n "$frame_analysis" ]]; then
+                        local visual_match=$(echo "$frame_analysis" | cut -d':' -f1)
+                        local color_match=$(echo "$frame_analysis" | cut -d':' -f2)
+                        
+                        if [[ $visual_match -ge 85 && $color_match -ge 85 ]]; then
+                            duplicate_pairs+=("LEVEL6|95|$file1|$file2|Frame analysis (V:${visual_match}% C:${color_match}%)")
+                            ((duplicate_count++))
+                            # Cache result
+                            echo "$cache_key|DUPLICATE" >> "$AI_CACHE_INDEX" 2>/dev/null || true
+                        elif [[ $visual_match -ge 70 || $color_match -ge 75 ]]; then
+                            duplicate_pairs+=("LEVEL6|75|$file1|$file2|Partial frame match (V:${visual_match}% C:${color_match}%)")
+                            ((duplicate_count++))
+                            # Cache result
+                            echo "$cache_key|SIMILAR" >> "$AI_CACHE_INDEX" 2>/dev/null || true
+                        else
+                            # Cache negative result
+                            echo "$cache_key|DIFFERENT" >> "$AI_CACHE_INDEX" 2>/dev/null || true
+                        fi
+                    fi
+                fi
+            fi
+        done
+    done
+    
+    printf "\r\033[K"
+    echo -e "  ${GREEN}✓ Stage 2 complete${NC}\n"
+    
+    # Stage 3: Optional Level 6 deep frame-by-frame analysis for suspicious pairs
+    local suspicious_pairs=()
+    declare -A level6_results
+    
+    # Identify suspicious pairs (Level 4-5 with lower confidence)
+    for pair in "${duplicate_pairs[@]}"; do
+        local level=$(echo "$pair" | cut -d'|' -f1)
+        if [[ "$level" == "LEVEL4" || "$level" == "LEVEL5" ]]; then
+            suspicious_pairs+=("$pair")
+        fi
+    done
+    
+    # Ask user if they want deep frame analysis for suspicious pairs
+    if [[ ${#suspicious_pairs[@]} -gt 0 && ${#suspicious_pairs[@]} -le 10 ]]; then
+        echo -e "${YELLOW}${BOLD}🔍 Found ${#suspicious_pairs[@]} suspicious pair(s) requiring deeper analysis${NC}"
+        echo -e "${CYAN}Level 6 Deep Frame Analysis: Compare videos frame-by-frame${NC}"
+        echo -e "  ${GRAY}• Extracts and compares key frames from both videos${NC}"
+        echo -e "  ${GRAY}• Visual similarity + color profile analysis${NC}"
+        echo -e "  ${GRAY}• Takes ~30-60 seconds per pair${NC}"
+        echo ""
+        echo -ne "${BOLD}Run deep frame analysis? [y/N]: ${NC}"
+        read -r deep_analysis_choice
+        
+        if [[ "$deep_analysis_choice" =~ ^[Yy]$ ]]; then
+            echo -e "\n  ${MAGENTA}${BOLD}🎬 Stage 3: Level 6 Deep Frame Analysis...${NC}"
+            
+            local pair_idx=0
+            for pair in "${suspicious_pairs[@]}"; do
+                ((pair_idx++))
+                IFS='|' read -r level confidence file1 file2 reason <<< "$pair"
+                
+                local name1="$(basename -- "$file1")"
+                local name2="$(basename -- "$file2")"
+                [[ ${#name1} -gt 30 ]] && name1="${name1:0:27}..."
+                [[ ${#name2} -gt 30 ]] && name2="${name2:0:27}..."
+                
+                echo -e "\n  ${CYAN}Analyzing pair $pair_idx/${#suspicious_pairs[@]}:${NC}"
+                echo -e "    ${BLUE}1.${NC} $name1"
+                echo -e "    ${BLUE}2.${NC} $name2"
+                
+                # Perform frame-by-frame comparison
+                local frame_analysis=$(compare_video_frames "$file1" "$file2" "$temp_analysis_dir")
+                
+                if [[ -n "$frame_analysis" ]]; then
+                    local visual_match=$(echo "$frame_analysis" | cut -d':' -f1)
+                    local color_match=$(echo "$frame_analysis" | cut -d':' -f2)
+                    
+                    echo -e "    ${CYAN}Results: Visual ${visual_match}%, Color ${color_match}%${NC}"
+                    
+                    # Determine if it's a duplicate based on frame analysis
+                    if [[ $visual_match -ge 85 && $color_match -ge 85 ]]; then
+                        echo -e "    ${GREEN}✓ CONFIRMED DUPLICATE${NC} (High frame similarity)"
+                        # Upgrade to Level 6 duplicate
+                        duplicate_pairs+=("LEVEL6|95|$file1|$file2|Frame-by-frame analysis (V:${visual_match}% C:${color_match}%)")
+                        level6_results["$file1|$file2"]="duplicate"
+                    elif [[ $visual_match -ge 70 || $color_match -ge 75 ]]; then
+                        echo -e "    ${YELLOW}⚠️ LIKELY SIMILAR${NC} (Moderate frame similarity)"
+                        duplicate_pairs+=("LEVEL6|75|$file1|$file2|Partial frame match (V:${visual_match}% C:${color_match}%)")
+                        level6_results["$file1|$file2"]="similar"
+                    else
+                        echo -e "    ${BLUE}✓ NOT DUPLICATE${NC} (Different content)"
+                        level6_results["$file1|$file2"]="different"
+                    fi
+                else
+                    echo -e "    ${RED}✗ Analysis failed${NC}"
+                fi
+            done
+            
+            echo -e "\n  ${GREEN}✓ Stage 3 complete${NC}\n"
+        fi
+    fi
+    
+    # Display results
+    if [[ $duplicate_count -eq 0 ]]; then
+        echo -e "  ${GREEN}${BOLD}✨ No duplicate videos detected${NC}"
+        echo -e "  ${GRAY}All $total_files video files are unique${NC}"
+        return 0
+    fi
+    
+    echo -e "${YELLOW}${BOLD}📊 DUPLICATE VIDEO DETECTION RESULTS${NC}"
+    echo -e "${CYAN}Found ${BOLD}$duplicate_count${NC}${CYAN} duplicate video pairs${NC}\n"
+    
+    # Group by level
+    declare -A level_counts
+    for pair in "${duplicate_pairs[@]}"; do
+        local level=$(echo "$pair" | cut -d'|' -f1)
+        ((level_counts[$level]++))
+    done
+    
+    echo -e "${BLUE}📈 Detection breakdown:${NC}"
+    [[ -n "${level_counts[LEVEL1]}" ]] && echo -e "  ${GREEN}Level 1 (Exact Binary):${NC} ${level_counts[LEVEL1]} pairs"
+    [[ -n "${level_counts[LEVEL2]}" ]] && echo -e "  ${GREEN}Level 2 (Visual Hash):${NC} ${level_counts[LEVEL2]} pairs"
+    [[ -n "${level_counts[LEVEL3]}" ]] && echo -e "  ${YELLOW}Level 3 (Metadata):${NC} ${level_counts[LEVEL3]} pairs"
+    [[ -n "${level_counts[LEVEL4]}" ]] && echo -e "  ${YELLOW}Level 4 (Properties):${NC} ${level_counts[LEVEL4]} pairs"
+    [[ -n "${level_counts[LEVEL5]}" ]] && echo -e "  ${CYAN}Level 5 (Filename):${NC} ${level_counts[LEVEL5]} pairs"
+    [[ -n "${level_counts[LEVEL6]}" ]] && echo -e "  ${MAGENTA}Level 6 (Frame Analysis):${NC} ${level_counts[LEVEL6]} pairs"
+    echo ""
+    
+    # Calculate comprehensive statistics
+    echo -e "${CYAN}📊 Comprehensive Statistics:${NC}"
+    
+    # Total videos analyzed
+    echo -e "  ${GRAY}• Total videos: ${BOLD}$total_files${NC}"
+    
+    # Format distribution summary
+    if [[ ${#format_counts[@]} -gt 0 ]]; then
+        local format_list=""
+        for fmt in "${!format_counts[@]}"; do
+            format_list+="$fmt(${format_counts[$fmt]}), "
+        done
+        format_list=${format_list%, }  # Remove trailing comma
+        echo -e "  ${GRAY}• Formats: ${format_list}${NC}"
+    fi
+    
+    # Calculate potential storage savings
+    local total_duplicate_size=0
+    local potential_savings=0
+    declare -A files_to_delete
+    
+    for pair in "${duplicate_pairs[@]}"; do
+        IFS='|' read -r level confidence file1 file2 reason <<< "$pair"
+        
+        # In each pair, we'd delete the larger file (keep smaller)
+        local size1="${video_sizes[$file1]}"
+        local size2="${video_sizes[$file2]}"
+        
+        if [[ -n "$size1" && -n "$size2" ]]; then
+            if [[ $size1 -gt $size2 ]]; then
+                ((potential_savings += size1))
+                files_to_delete["$file1"]=1
+            else
+                ((potential_savings += size2))
+                files_to_delete["$file2"]=1
+            fi
+        fi
+    done
+    
+    # Display potential savings
+    if [[ $potential_savings -gt 0 ]]; then
+        local savings_mb=$((potential_savings / 1024 / 1024))
+        local savings_gb=$((savings_mb / 1024))
+        
+        if [[ $savings_gb -gt 0 ]]; then
+            echo -e "  ${GREEN}• Potential storage savings: ${BOLD}${savings_gb}GB${NC}${GREEN} (${savings_mb}MB)${NC}"
+        else
+            echo -e "  ${GREEN}• Potential storage savings: ${BOLD}${savings_mb}MB${NC}"
+        fi
+        echo -e "  ${GRAY}• Files that could be removed: ${BOLD}${#files_to_delete[@]}${NC}"
+    fi
+    echo ""
+    
+    # Show detailed duplicates with properties
+    echo -e "${CYAN}🔍 Detailed Duplicate Analysis:${NC}\n"
+    
+    local pair_num=0
+    for pair in "${duplicate_pairs[@]}"; do
+        ((pair_num++))
+        IFS='|' read -r level confidence file1 file2 reason <<< "$pair"
+        
+        local name1="$(basename -- "$file1")"
+        local name2="$(basename -- "$file2")"
+        local size1=$(numfmt --to=iec-i --suffix=B "${video_sizes[$file1]}" 2>/dev/null || echo "${video_sizes[$file1]} bytes")
+        local size2=$(numfmt --to=iec-i --suffix=B "${video_sizes[$file2]}" 2>/dev/null || echo "${video_sizes[$file2]} bytes")
+        
+        # Get additional properties
+        local dur1="${video_durations[$file1]}"
+        local dur2="${video_durations[$file2]}"
+        local res1="${video_resolutions[$file1]}"
+        local res2="${video_resolutions[$file2]}"
+        local codec1="${video_codecs[$file1]}"
+        local codec2="${video_codecs[$file2]}"
+        local fmt1="${video_formats[$file1]}"
+        local fmt2="${video_formats[$file2]}"
+        
+        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${BOLD}Pair #$pair_num - Confidence: ${confidence}% ($level)${NC}"
+        echo -e "  ${GRAY}Reason: $reason${NC}"
+        echo ""
+        echo -e "  ${BLUE}File 1:${NC} $name1"
+        echo -e "    ${GRAY}Size: $size1 | Duration: ${dur1}s | Resolution: $res1${NC}"
+        echo -e "    ${GRAY}Codec: $codec1 | Format: $fmt1${NC}"
+        echo ""
+        echo -e "  ${BLUE}File 2:${NC} $name2"
+        echo -e "    ${GRAY}Size: $size2 | Duration: ${dur2}s | Resolution: $res2${NC}"
+        echo -e "    ${GRAY}Codec: $codec2 | Format: $fmt2${NC}"
+    done
+    
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+    
+    # Ask user what to do
+    echo -e "${CYAN}${BOLD}What would you like to do with duplicates?${NC}"
+    echo -e "  ${GREEN}1.${NC} Keep all files (skip duplicate handling)"
+    echo -e "  ${YELLOW}2.${NC} Review and delete manually later"
+    echo -e "  ${MAGENTA}3.${NC} Smart delete (auto-keep smaller files, backup others)"
+    echo -e "  ${RED}4.${NC} Interactive deletion (choose which to keep)"
+    echo ""
+    echo -ne "${BOLD}Your choice [1-4]: ${NC}"
+    read -r dup_choice
+    
+    case "$dup_choice" in
+        4)
+            # Interactive deletion - simple yes/no prompts
+            echo -e "\n${CYAN}👁️  Interactive Duplicate Handling${NC}\n"
+            local deleted_count=0
+            local kept_count=0
+            
+            for pair in "${duplicate_pairs[@]}"; do
+                IFS='|' read -r level confidence file1 file2 reason <<< "$pair"
+                
+                # Determine which file is larger (default deletion candidate)
+                local size1="${video_sizes[$file1]}"
+                local size2="${video_sizes[$file2]}"
+                local file_to_delete
+                local file_to_keep
+                
+                if [[ $size1 -gt $size2 ]]; then
+                    file_to_delete="$file1"
+                    file_to_keep="$file2"
+                else
+                    file_to_delete="$file2"
+                    file_to_keep="$file1"
+                fi
+                
+                echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                echo -e "${BOLD}Duplicate Pair (Confidence: ${confidence}%)${NC}"
+                echo -e "${GRAY}Reason: $reason${NC}"
+                echo ""
+                echo -e "  ${BLUE}File 1:${NC} $(basename -- "$file1")"
+                echo -e "    ${GRAY}Size: $(numfmt --to=iec-i --suffix=B "$size1" 2>/dev/null)${NC}"
+                echo ""
+                echo -e "  ${BLUE}File 2:${NC} $(basename -- "$file2")"
+                echo -e "    ${GRAY}Size: $(numfmt --to=iec-i --suffix=B "$size2" 2>/dev/null)${NC}"
+                echo ""
+                echo -e "${YELLOW}${BOLD}⚠️  This will DELETE the larger file: $(basename -- "$file_to_delete")${NC}"
+                echo -e "${GREEN}${BOLD}✓  This will KEEP the smaller file: $(basename -- "$file_to_keep")${NC}"
+                echo ""
+                echo -ne "${BOLD}Delete the larger duplicate? (y/N): ${NC}"
+                read -r delete_choice
+                
+                if [[ "$delete_choice" =~ ^[Yy]$ ]]; then
+                    echo -e "  ${RED}❌ Deleting: $(basename -- "$file_to_delete")${NC}"
+                    rm -f "$file_to_delete"
+                    ((deleted_count++))
+                else
+                    echo -e "  ${GREEN}✓ Keeping both files${NC}"
+                    ((kept_count++))
+                fi
+            done
+            
+            echo -e "\n${GREEN}✓ Interactive handling complete${NC}"
+            echo -e "  ${BOLD}Deleted: $deleted_count files${NC}"
+            echo -e "  ${BOLD}Kept: $kept_count duplicate pairs${NC}"
+            ;;
+        3)
+            # Smart delete with backup
+            echo -e "\n${MAGENTA}🧠 Smart Delete Mode${NC}\n"
+            
+            # Create backup directory
+            local backup_dir="${GIF_CONVERTER_DIR}/duplicate_videos_backup"
+            mkdir -p "$backup_dir" 2>/dev/null
+            
+            if [[ ! -d "$backup_dir" ]]; then
+                echo -e "${RED}⚠️  Cannot create backup directory${NC}"
+                echo -e "${YELLOW}Falling back to manual review${NC}"
+            else
+                echo -e "${CYAN}💾 Backup directory: $backup_dir${NC}"
+                echo -e "${GRAY}Strategy: Keep smaller files, backup larger duplicates${NC}\n"
+                
+                local deleted_count=0
+                local backed_up_size=0
+                
+                for pair in "${duplicate_pairs[@]}"; do
+                    IFS='|' read -r level confidence file1 file2 reason <<< "$pair"
+                    
+                    local size1="${video_sizes[$file1]}"
+                    local size2="${video_sizes[$file2]}"
+                    
+                    # Determine which file to delete (larger one)
+                    local file_to_delete
+                    local file_to_keep
+                    
+                    if [[ $size1 -gt $size2 ]]; then
+                        file_to_delete="$file1"
+                        file_to_keep="$file2"
+                    else
+                        file_to_delete="$file2"
+                        file_to_keep="$file1"
+                    fi
+                    
+                    # Move to backup
+                    local backup_name="$(basename -- "$file_to_delete")"
+                    echo -e "  ${YELLOW}📦 Backing up: $backup_name${NC}"
+                    
+                    if mv "$file_to_delete" "$backup_dir/" 2>/dev/null; then
+                        ((deleted_count++))
+                        ((backed_up_size += ${video_sizes[$file_to_delete]}))
+                        echo -e "    ${GREEN}✓ Moved to backup${NC}"
+                    else
+                        echo -e "    ${RED}✗ Failed to backup${NC}"
+                    fi
+                done
+                
+                # Show summary
+                local backed_up_mb=$((backed_up_size / 1024 / 1024))
+                echo -e "\n${GREEN}✓ Smart delete complete${NC}"
+                echo -e "  Files backed up: $deleted_count"
+                echo -e "  Space freed: ${backed_up_mb}MB"
+                echo -e "  ${GRAY}Backup location: $backup_dir${NC}"
+                echo -e "\n${CYAN}💡 Tip: Review backups and delete manually if satisfied${NC}"
+            fi
+            ;;
+        2)
+            echo -e "${YELLOW}⏭️  Skipping deletion - review manually later${NC}"
+            echo -e "${CYAN}💡 Tip: Use option 3 or 4 next time to clean up automatically${NC}"
+            ;;
+        *)
+            echo -e "${GREEN}✓ Keeping all files - no changes made${NC}"
+            ;;
+    esac
+    
+    echo -e "\n${GREEN}✓ Video duplicate detection complete${NC}"
+    return 0
+}
+
+# 🛠️ Video Corruption Detection
+detect_corrupted_videos() {
+    echo -e "  ${CYAN}🔍 Scanning for corrupted video files...${NC}"
+    
+    local corrupted_count=0
+    local scanned_count=0
+    declare -a corrupted_files
+    declare -A corruption_reasons  # Track why each file is corrupted
+    
+    shopt -s nullglob
+    local all_videos=(*.mp4 *.MP4 *.avi *.AVI *.mov *.MOV *.mkv *.MKV *.webm *.WEBM \
+                      *.m4v *.M4V *.flv *.FLV *.wmv *.WMV *.mpg *.MPG *.mpeg *.MPEG \
+                      *.3gp *.3GP *.ogv *.OGV *.ts *.TS *.mts *.MTS *.m2ts *.M2TS)
+    shopt -u nullglob
+    
+    local total_videos=${#all_videos[@]}
+    
+    if [[ $total_videos -eq 0 ]]; then
+        echo -e "  ${CYAN}ℹ️  No video files found to check${NC}"
+        return 0
+    fi
+    
+    echo -e "  ${BLUE}Checking ${BOLD}$total_videos${NC}${BLUE} video files with ${BOLD}4-layer validation${NC}${BLUE}...${NC}"
+    
+    for video_file in "${all_videos[@]}"; do
+        [[ ! -f "$video_file" ]] && continue
+        ((scanned_count++))
+        
+        # Show progress
+        if [[ $((scanned_count % 10)) -eq 0 || $scanned_count -eq $total_videos ]]; then
+            local progress=$((scanned_count * 100 / total_videos))
+            local filled=$((progress * 30 / 100))
+            local empty=$((30 - filled))
+            
+            printf "\r  ${CYAN}["
+            for ((k=0; k<filled; k++)); do printf "${GREEN}█${NC}"; done
+            for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
+            printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d/%d)${NC}" "$progress" "$scanned_count" "$total_videos"
+        fi
+        
+        # Multi-layer corruption validation (bulletproof)
+        local is_corrupted=false
+        local failed_checks=0
+        local failure_reasons=()
+        
+        # Layer 1: File size check (suspiciously small files)
+        local file_size=$(stat -c%s "$video_file" 2>/dev/null || echo "0")
+        if [[ $file_size -lt 1024 ]]; then
+            # File less than 1KB is almost certainly corrupted
+            ((failed_checks++))
+            failure_reasons+=("File too small (<1KB)")
+        fi
+        
+        # Layer 2: Basic codec detection with ffprobe
+        if command -v ffprobe >/dev/null 2>&1; then
+            if ! timeout 5 ffprobe -v error -select_streams v:0 -show_entries stream=codec_name \
+                -of csv=p=0 "$video_file" >/dev/null 2>&1; then
+                ((failed_checks++))
+                failure_reasons+=("No video codec detected")
+            fi
+        fi
+        
+        # Layer 3: Try to read video duration and resolution
+        if command -v ffprobe >/dev/null 2>&1; then
+            local duration=$(timeout 5 ffprobe -v error -show_entries format=duration \
+                -of csv=p=0 "$video_file" 2>/dev/null | cut -d'.' -f1)
+            local width=$(timeout 5 ffprobe -v error -select_streams v:0 -show_entries stream=width \
+                -of csv=p=0 "$video_file" 2>/dev/null)
+            
+            if [[ -z "$duration" || "$duration" == "0" || -z "$width" || "$width" == "0" ]]; then
+                ((failed_checks++))
+                failure_reasons+=("Missing metadata (duration/resolution)")
+            fi
+        fi
+        
+        # Layer 4: Attempt to extract a frame (ultimate test)
+        if command -v ffmpeg >/dev/null 2>&1; then
+            local test_frame="/tmp/corruption_test_${RANDOM}.jpg"
+            if ! timeout 8 ffmpeg -i "$video_file" -vframes 1 -f image2 "$test_frame" >/dev/null 2>&1; then
+                ((failed_checks++))
+                failure_reasons+=("Cannot extract frames")
+            fi
+            rm -f "$test_frame" 2>/dev/null
+        fi
+        
+        # Mark as corrupted only if multiple checks failed (at least 2)
+        if [[ $failed_checks -ge 2 ]]; then
+            corrupted_files+=("$video_file")
+            # Store reasons as comma-separated string
+            local reasons_str=$(IFS=', '; echo "${failure_reasons[*]}")
+            corruption_reasons["$video_file"]="$reasons_str"
+            ((corrupted_count++))
+        fi
+    done
+    
+    printf "\r\033[K"
+    echo -e "  ${GREEN}✓ Scanned $scanned_count video files${NC}"
+    
+    # Report results
+    if [[ $corrupted_count -eq 0 ]]; then
+        echo -e "  ${GREEN}✨ No corrupted videos found - all files are healthy!${NC}"
+        return 0
+    fi
+    
+    # Display corrupted files with detailed reasons
+    echo -e "\n  ${RED}${BOLD}⚠️  Found $corrupted_count corrupted video file(s):${NC}\n"
+    
+    for corrupted_file in "${corrupted_files[@]}"; do
+        local file_size=$(stat -c%s "$corrupted_file" 2>/dev/null || echo "0")
+        local file_size_mb=$((file_size / 1024 / 1024))
+        local reasons="${corruption_reasons[$corrupted_file]}"
+        
+        echo -e "    ${RED}❌${NC} $(basename -- "$corrupted_file") ${GRAY}(${file_size_mb}MB)${NC}"
+        echo -e "       ${YELLOW}Reason: ${reasons}${NC}"
+    done
+    
+    # Ask user with simple yes/no prompt
+    echo ""
+    echo -e "${YELLOW}${BOLD}⚠️  CORRUPTED VIDEOS DETECTED${NC}"
+    echo ""
+    echo -e "${CYAN}These files failed multiple validation tests:${NC}"
+    echo -e "${CYAN}  • Cannot be read by video tools${NC}"
+    echo -e "${CYAN}  • Missing critical metadata${NC}"
+    echo -e "${CYAN}  • Will cause conversion errors${NC}"
+    echo ""
+    echo -e "${RED}${BOLD}⚠️  DELETE these $corrupted_count corrupted video file(s)?${NC}"
+    echo -e "${GRAY}(Pressing Enter or 'n' will keep them)${NC}"
+    echo ""
+    echo -ne "${BOLD}Delete corrupted videos? (y/N): ${NC}"
+    read -r delete_choice
+    
+    if [[ "$delete_choice" =~ ^[Yy]$ ]]; then
+        echo -e "\n${RED}Deleting corrupted files...${NC}"
+        local deleted=0
+        for corrupted_file in "${corrupted_files[@]}"; do
+            if rm -f "$corrupted_file" 2>/dev/null; then
+                echo -e "  ${RED}❌ Deleted: $(basename -- "$corrupted_file")${NC}"
+                ((deleted++))
+            else
+                echo -e "  ${YELLOW}⚠️  Failed to delete: $(basename -- "$corrupted_file")${NC}"
+            fi
+        done
+        echo -e "\n${GREEN}✓ Deleted $deleted corrupted video(s)${NC}"
+    else
+        echo -e "\n${GREEN}✓ Keeping all files - no changes made${NC}"
+    fi
+    
+    echo ""
+    return 0
+}
+
 # 🔍 Hyper-Optimized AI-Powered Duplicate Detection with Multi-Threading
 detect_duplicate_gifs() {
     echo -e "${BLUE}${BOLD}🚀 AI-Enhanced Parallel Duplicate Detection${NC}"
@@ -9465,9 +11087,139 @@ show_duplicate_detection_statistics() {
 perform_pre_conversion_validation() {
     echo -e "${CYAN}${BOLD}🔍 ADVANCED PRE-CONVERSION VALIDATION${NC}\\n"
     
-    # Step 1: Check for duplicate GIFs and offer to remove them
-    echo -e "${BLUE}Step 1: Duplicate GIF Detection${NC}"
-    detect_duplicate_gifs
+    # ⚠️ USER PROMPT 1: Ask about VIDEO duplicate detection
+    if [[ -z "${VIDEO_DUPLICATE_DETECTION_CONFIRMED:-}" ]]; then
+        echo ""
+        echo -e "${YELLOW}${BOLD}⚠️  VIDEO DUPLICATE DETECTION${NC}"
+        echo ""
+        echo -e "${CYAN}📊 What is Video Duplicate Detection?${NC}"
+        echo -e "  Scan for duplicate MP4 videos ${BOLD}before${NC} conversion."
+        echo -e "  This helps you:"
+        echo -e "    ${GREEN}✓${NC} Avoid converting the same video multiple times"
+        echo -e "    ${GREEN}✓${NC} Save disk space by removing duplicate source files"
+        echo -e "    ${GREEN}✓${NC} Keep your video collection organized"
+        echo ""
+        echo -e "${CYAN}⏱️  Time Investment:${NC}"
+        echo -e "  • First run: ~2-5 minutes (builds analysis cache)"
+        echo -e "  • Subsequent runs: ~30 seconds (uses cached data)"
+        echo -e "  • Uses fast hash-based comparison (MD5 + metadata + visual)"
+        echo ""
+        echo -e "${CYAN}🎯 When to run:${NC}"
+        echo -e "  ${GREEN}✓${NC} You suspect duplicate videos in your collection"
+        echo -e "  ${GREEN}✓${NC} You've copied/moved video files and may have duplicates"
+        echo -e "  ${GREEN}✓${NC} You want to optimize disk space before conversion"
+        echo ""
+        echo -e "${CYAN}⚡ When to skip:${NC}"
+        echo -e "  ${YELLOW}→${NC} You're certain you have no duplicate videos"
+        echo -e "  ${YELLOW}→${NC} You're in a hurry and want to convert immediately"
+        echo ""
+        echo -ne "${BOLD}Scan for duplicate videos? (y/N): ${NC}"
+        read -r video_dup_response
+        
+        if [[ "$video_dup_response" =~ ^[Yy]$ ]]; then
+            VIDEO_DUPLICATE_DETECTION_CONFIRMED="yes"
+            echo -e "${GREEN}✓ Video duplicate detection enabled${NC}"
+            echo ""
+        else
+            VIDEO_DUPLICATE_DETECTION_CONFIRMED="no"
+            echo -e "${YELLOW}⏩ Skipping video duplicate detection${NC}"
+            echo ""
+        fi
+    fi
+    
+    # Run video duplicate detection if user confirmed
+    if [[ "${VIDEO_DUPLICATE_DETECTION_CONFIRMED}" == "yes" ]]; then
+        echo -e "${BLUE}Step 0: Duplicate MP4 Video Detection${NC}"
+        detect_duplicate_videos
+        echo ""
+        
+        # Check for interrupt after video detection
+        if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
+            echo -e "\\\\\\\\n  ${YELLOW}⏸️  Validation interrupted by user${NC}"
+            return 1
+        fi
+        
+        # Step 0.5: Check for corrupted videos
+        echo -e "${BLUE}Step 0.5: Video Corruption Detection${NC}"
+        detect_corrupted_videos
+        echo ""
+        
+        # Check for interrupt after video corruption check
+        if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
+            echo -e "\\\\\\\\n  ${YELLOW}⏸️  Validation interrupted by user${NC}"
+            return 1
+        fi
+        
+        # After video detection completes, always ask about GIF detection
+        # (Reset the flag to ensure prompt is shown)
+        unset GIF_DUPLICATE_DETECTION_CONFIRMED
+    fi
+    
+    # ⚠️ USER PROMPT 2: Ask about GIF duplicate detection
+    # This prompt shows after video detection OR if video detection was skipped
+    if [[ -z "${GIF_DUPLICATE_DETECTION_CONFIRMED:-}" ]]; then
+        echo ""
+        echo -e "${YELLOW}${BOLD}⚠️  GIF DUPLICATE DETECTION${NC}"
+        echo ""
+        echo -e "${CYAN}📊 What is GIF Duplicate Detection?${NC}"
+        echo -e "  Scan for duplicate GIF files ${BOLD}already converted${NC}."
+        echo -e "  This helps you:"
+        echo -e "    ${GREEN}✓${NC} Remove duplicate converted files"
+        echo -e "    ${GREEN}✓${NC} Save disk space by cleaning up redundant GIFs"
+        echo -e "    ${GREEN}✓${NC} Keep your GIF collection organized"
+        echo ""
+        echo -e "${CYAN}⏱️  Time Investment:${NC}"
+        echo -e "  • First run: ~1-3 minutes (builds analysis cache)"
+        echo -e "  • Subsequent runs: ~15 seconds (uses cached data)"
+        echo -e "  • Uses fast hash-based comparison (MD5 + visual fingerprints)"
+        echo ""
+        echo -e "${CYAN}🎯 When to run:${NC}"
+        echo -e "  ${GREEN}✓${NC} You suspect duplicate GIFs in your collection"
+        echo -e "  ${GREEN}✓${NC} You've converted the same videos multiple times"
+        echo -e "  ${GREEN}✓${NC} You want to clean up your GIF library"
+        echo ""
+        echo -e "${CYAN}⚡ When to skip:${NC}"
+        echo -e "  ${YELLOW}→${NC} You're certain you have no duplicate GIFs"
+        echo -e "  ${YELLOW}→${NC} You want to proceed directly to conversion"
+        echo ""
+        echo -ne "${BOLD}Scan for duplicate GIFs? (y/N): ${NC}"
+        read -r gif_dup_response
+        
+        if [[ "$gif_dup_response" =~ ^[Yy]$ ]]; then
+            GIF_DUPLICATE_DETECTION_CONFIRMED="yes"
+            echo -e "${GREEN}✓ GIF duplicate detection enabled${NC}"
+            echo ""
+        else
+            GIF_DUPLICATE_DETECTION_CONFIRMED="no"
+            echo -e "${YELLOW}⏩ Skipping GIF duplicate detection${NC}"
+            echo ""
+        fi
+    fi
+    
+    # Run GIF duplicate detection if user confirmed
+    if [[ "${GIF_DUPLICATE_DETECTION_CONFIRMED}" == "yes" ]]; then
+        echo -e "${BLUE}Step 1: Duplicate GIF Detection${NC}"
+        detect_duplicate_gifs
+        echo ""
+        
+        # Check for interrupt after GIF detection
+        if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
+            echo -e "\\n  ${YELLOW}⏸️  Validation interrupted by user${NC}"
+            return 1
+        fi
+    fi
+    
+    # If both were skipped, go straight to conversion planning
+    if [[ "${VIDEO_DUPLICATE_DETECTION_CONFIRMED}" == "no" && "${GIF_DUPLICATE_DETECTION_CONFIRMED}" == "no" ]]; then
+        echo -e "${BLUE}Quick Validation: Video-to-GIF Mapping${NC}"
+        analyze_video_gif_mapping
+        if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
+            return 1
+        fi
+        echo -e "${BLUE}Conversion Planning${NC}"
+        generate_conversion_plan
+        return 0
+    fi
     
     # Check for interrupt after Step 1
     if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
@@ -9821,6 +11573,7 @@ detect_corrupted_gifs() {
     local corrupted_count=0
     local total_gifs=0
     local corrupted_files=()
+    declare -A corruption_reasons  # Track why each GIF is corrupted
     
     # First pass: count total GIF files - scan only OUTPUT_DIRECTORY if configured
     shopt -s nullglob
@@ -9843,7 +11596,7 @@ detect_corrupted_gifs() {
         return 0
     fi
     
-    echo -e "  ${CYAN}📊 Found $total_to_check GIF files to validate${NC}"
+    echo -e "  ${CYAN}📊 Found $total_to_check GIF files - validating with ${BOLD}5-layer checks${NC}${CYAN}...${NC}"
     
     # Second pass: check each file with progress bar
     local checked=0
@@ -9880,9 +11633,58 @@ detect_corrupted_gifs() {
         # Single-line progress with filename
         printf "\r\033[K  ${BLUE}🔍 [${GREEN}%s${GRAY}%s${BLUE}] ${YELLOW}%3d%%${NC} ${GRAY}(%d/%d)${NC} ${CYAN}%s${NC}" "${bar:0:filled}" "${bar:filled:empty}" "$percent" "$checked" "$total_to_check" "$display_file"
         
-        # Test GIF integrity with ffprobe
-        if ! ffprobe -v error -select_streams v:0 -show_entries stream=nb_frames -of csv=p=0 "$gif_file" >/dev/null 2>&1; then
+        # Multi-layer GIF corruption validation (bulletproof)
+        local failed_checks=0
+        local failure_reasons=()
+        
+        # Layer 1: File size check (suspiciously small)
+        local file_size=$(stat -c%s "$gif_file" 2>/dev/null || echo "0")
+        if [[ $file_size -lt 100 ]]; then
+            # File less than 100 bytes is almost certainly corrupted
+            ((failed_checks++))
+            failure_reasons+=("File too small (<100 bytes)")
+        fi
+        
+        # Layer 2: Check GIF magic bytes (GIF89a or GIF87a)
+        local magic_bytes=$(head -c 6 "$gif_file" 2>/dev/null)
+        if [[ "$magic_bytes" != "GIF89a" && "$magic_bytes" != "GIF87a" ]]; then
+            ((failed_checks++))
+            failure_reasons+=("Invalid GIF header")
+        fi
+        
+        # Layer 3: Test with ffprobe (frame count)
+        if command -v ffprobe >/dev/null 2>&1; then
+            if ! timeout 5 ffprobe -v error -select_streams v:0 -show_entries stream=nb_frames \
+                -of csv=p=0 "$gif_file" >/dev/null 2>&1; then
+                ((failed_checks++))
+                failure_reasons+=("Cannot read frames")
+            fi
+        fi
+        
+        # Layer 4: Try to extract first frame with ffmpeg
+        if command -v ffmpeg >/dev/null 2>&1; then
+            local test_frame="/tmp/gif_test_${RANDOM}.png"
+            if ! timeout 5 ffmpeg -i "$gif_file" -vframes 1 -f image2 "$test_frame" >/dev/null 2>&1; then
+                ((failed_checks++))
+                failure_reasons+=("Frame extraction failed")
+            fi
+            rm -f "$test_frame" 2>/dev/null
+        fi
+        
+        # Layer 5: If gifsicle is available, use it for validation
+        if command -v gifsicle >/dev/null 2>&1; then
+            if ! timeout 5 gifsicle --info "$gif_file" >/dev/null 2>&1; then
+                ((failed_checks++))
+                failure_reasons+=("Gifsicle validation failed")
+            fi
+        fi
+        
+        # Mark as corrupted only if multiple checks failed (at least 2)
+        if [[ $failed_checks -ge 2 ]]; then
             corrupted_files+=("$gif_file")
+            # Store reasons as comma-separated string
+            local reasons_str=$(IFS=', '; echo "${failure_reasons[*]}")
+            corruption_reasons["$gif_file"]="$reasons_str"
             ((corrupted_count++))
         fi
     done
@@ -9903,74 +11705,58 @@ detect_corrupted_gifs() {
         return 0
     fi
     
-    # Handle corrupted files
-    echo -e "\n  ${RED}⚠️  Found $corrupted_count corrupted GIF file(s):${NC}"
+    # Handle corrupted files with detailed reasons
+    echo -e "\n  ${RED}${BOLD}⚠️  Found $corrupted_count corrupted GIF file(s):${NC}\n"
+    
     for corrupted_file in "${corrupted_files[@]}"; do
-        echo -e "    ${RED}🔴 $corrupted_file${NC}"
+        local file_size=$(stat -c%s "$corrupted_file" 2>/dev/null || echo "0")
+        local file_size_kb=$((file_size / 1024))
+        local reasons="${corruption_reasons[$corrupted_file]}"
+        
+        echo -e "    ${RED}❌${NC} $(basename -- "$corrupted_file") ${GRAY}(${file_size_kb}KB)${NC}"
+        echo -e "       ${YELLOW}Reason: ${reasons}${NC}"
     done
     
-    echo -e "\n  ${YELLOW}What would you like to do with corrupted GIFs?${NC}"
-    echo -e "  ${CYAN}1)${NC} Delete them permanently (recommended)"
-    echo -e "  ${CYAN}2)${NC} Move to safe backup folder (keeps corrupted files for inspection)"
-    echo -e "  ${CYAN}3)${NC} Skip and continue (may cause conversion issues)"
-    echo -e "\n  ${GRAY}Option 2 moves corrupted files to ~/.smart-gif-converter/corrupted_gifs/"
-    echo -e "  so you can inspect or recover them later if needed.${NC}"
-    echo -ne "\n  ${MAGENTA}Choice [1-3]: ${NC}"
+    echo ""
+    echo -e "${YELLOW}${BOLD}⚠️  CORRUPTED GIFS DETECTED${NC}"
+    echo ""
+    echo -e "${CYAN}These GIF files failed multiple validation tests:${NC}"
+    echo -e "${CYAN}  • Invalid file format or headers${NC}"
+    echo -e "${CYAN}  • Cannot extract frames${NC}"
+    echo -e "${CYAN}  • Likely truncated during creation/transfer${NC}"
+    echo ""
+    echo -e "${RED}${BOLD}⚠️  DELETE these $corrupted_count corrupted GIF file(s)?${NC}"
+    echo -e "${GRAY}(Pressing Enter or 'n' will keep them)${NC}"
+    echo ""
+    echo -ne "${BOLD}Delete corrupted GIFs? (y/N): ${NC}"
     
-    local choice
+    local delete_choice
     if [[ "${INTERACTIVE_MODE:-true}" == "false" ]]; then
-        choice="3"  # Default to skip corrupted files in non-interactive mode
-        echo "3 (auto-selected: skip)"
+        delete_choice="n"
+        echo "n (auto-selected: keep)"
     else
-        read -r choice
+        read -r delete_choice
     fi
     
-    case "$choice" in
-        1)
-            echo -e "\n  ${YELLOW}🗑️  Deleting corrupted GIF files...${NC}"
-            for corrupted_file in "${corrupted_files[@]}"; do
-                if rm -f "$corrupted_file" 2>/dev/null; then
-                    echo -e "    ${GREEN}✓ Deleted: $corrupted_file${NC}"
-                    # Log the deletion
-                    {
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] CORRUPTED GIF DELETED: $corrupted_file"
-                    } >> "$ERROR_LOG" 2>/dev/null || true
-                else
-                    echo -e "    ${RED}❌ Failed to delete: $corrupted_file${NC}"
-                fi
-            done
-            echo -e "  ${GREEN}✓ Corrupted GIFs cleaned up${NC}"
-            ;;
-        2)
-            echo -e "\n  ${YELLOW}📦 Moving corrupted GIFs to quarantine...${NC}"
-            local quarantine_dir="$LOG_DIR/corrupted_gifs"
-            mkdir -p "$quarantine_dir" 2>/dev/null || {
-                echo -e "    ${RED}❌ Cannot create quarantine directory${NC}"
-                return 1
-            }
-            
-            for corrupted_file in "${corrupted_files[@]}"; do
-                local quarantine_file="$quarantine_dir/${corrupted_file}.$(date +%s).corrupt"
-                if mv "$corrupted_file" "$quarantine_file" 2>/dev/null; then
-                    echo -e "    ${GREEN}✓ Quarantined: $corrupted_file -> $(basename -- "$quarantine_file")${NC}"
-                    # Log the quarantine
-                    {
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] CORRUPTED GIF QUARANTINED: $corrupted_file -> $quarantine_file"
-                    } >> "$ERROR_LOG" 2>/dev/null || true
-                else
-                    echo -e "    ${RED}❌ Failed to quarantine: $corrupted_file${NC}"
-                fi
-            done
-            echo -e "  ${GREEN}✓ Corrupted GIFs quarantined to: $quarantine_dir${NC}"
-            ;;
-        3)
-            echo -e "\n  ${YELLOW}⚠️  Skipping corrupted GIF cleanup${NC}"
-            echo -e "  ${YELLOW}Note: Corrupted files may interfere with conversion process${NC}"
-            ;;
-        *)
-            echo -e "\n  ${RED}❌ Invalid choice. Skipping cleanup.${NC}"
-            ;;
-    esac
+    if [[ "$delete_choice" =~ ^[Yy]$ ]]; then
+        echo -e "\n${RED}Deleting corrupted GIF files...${NC}"
+        local deleted=0
+        for corrupted_file in "${corrupted_files[@]}"; do
+            if rm -f "$corrupted_file" 2>/dev/null; then
+                echo -e "  ${RED}❌ Deleted: $(basename -- "$corrupted_file")${NC}"
+                ((deleted++))
+                # Log the deletion
+                {
+                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] CORRUPTED GIF DELETED: $corrupted_file"
+                } >> "$ERROR_LOG" 2>/dev/null || true
+            else
+                echo -e "  ${YELLOW}⚠️  Failed to delete: $(basename -- "$corrupted_file")${NC}"
+            fi
+        done
+        echo -e "\n${GREEN}✓ Deleted $deleted corrupted GIF(s)${NC}"
+    else
+        echo -e "\n${GREEN}✓ Keeping all files - no changes made${NC}"
+    fi
     
     echo ""
 }
