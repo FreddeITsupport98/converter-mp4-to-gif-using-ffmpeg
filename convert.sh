@@ -8314,10 +8314,11 @@ detect_duplicate_videos() {
                 fi
                 
                 # ═══════════════════════════════════════════════════════════════
-                # DECISION: Add to candidate list if similarity score >= 60
-                # (Out of max 400 points, 60 = 15% threshold)
+                # DECISION: Add to candidate list if similarity score >= 120
+                # (Out of max 400 points, 120 = 30% threshold)
+                # Higher threshold for videos to avoid analyzing entire batches from same source
                 # ═══════════════════════════════════════════════════════════════
-                if [[ $similarity_score -ge 60 ]]; then
+                if [[ $similarity_score -ge 120 ]]; then
                     video_candidate_pairs+=("$file1|$file2|$similarity_score")
                 fi
             done
@@ -8328,8 +8329,9 @@ detect_duplicate_videos() {
         # Check if interrupted during pre-filtering
         if [[ "$interrupted" == "true" ]]; then
             trap - INT
+            INTERRUPT_REQUESTED="true"
             echo -e "  ${GREEN}✓ Pre-filtering interrupted${NC}"
-            return 0
+            return 1
         fi
         
         echo -e "  ${GREEN}✓ Pre-filtering complete${NC}"
@@ -8358,6 +8360,7 @@ detect_duplicate_videos() {
             # Check for interruption
             if [[ "$interrupted" == "true" ]]; then
                 echo -e "\n\n  ${YELLOW}⏸️  Level 6 analysis interrupted by user${NC}"
+                INTERRUPT_REQUESTED="true"
                 break
             fi
             
@@ -8410,6 +8413,12 @@ detect_duplicate_videos() {
         # Clear progress lines and restore trap
         printf "\r\033[K\n\033[K\n\033[K"
         trap - INT
+        
+        # Check if interrupted during frame analysis
+        if [[ "$interrupted" == "true" ]]; then
+            INTERRUPT_REQUESTED="true"
+            return 1
+        fi
         
         echo -e "  ${GREEN}✓ Level 6 analysis complete${NC}"
         echo -e "  ${MAGENTA}Found ${BOLD}$level6_found${NC}${MAGENTA} duplicates via frame analysis${NC}\n"
@@ -8566,8 +8575,18 @@ detect_corrupted_videos() {
     fi
     
     echo -e "  ${BLUE}Checking ${BOLD}$total_videos${NC}${BLUE} video files with ${BOLD}4-layer validation${NC}${BLUE}...${NC}"
+    echo -e "  ${YELLOW}⚠️  Press Ctrl+C to cancel at any time${NC}"
+    
+    # Enable Ctrl+C handling
+    local interrupted=false
+    trap 'interrupted=true' INT
     
     for video_file in "${all_videos[@]}"; do
+        # Check for interruption
+        if [[ "$interrupted" == "true" ]]; then
+            echo -e "\n  ${YELLOW}⏸️  Corruption scan interrupted by user${NC}"
+            break
+        fi
         [[ ! -f "$video_file" ]] && continue
         ((scanned_count++))
         
@@ -8639,6 +8658,15 @@ detect_corrupted_videos() {
     done
     
     printf "\r\033[K"
+    trap - INT
+    
+    # Check if interrupted
+    if [[ "$interrupted" == "true" ]]; then
+        INTERRUPT_REQUESTED="true"
+        echo -e "  ${GREEN}✓ Corruption scan interrupted (scanned $scanned_count/$total_videos files)${NC}"
+        return 1
+    fi
+    
     echo -e "  ${GREEN}✓ Scanned $scanned_count video files${NC}"
     
     # Report results
