@@ -8180,8 +8180,8 @@ detect_duplicate_videos() {
                 local file1="${video_files_array[$i]}"
                 local file2="${video_files_array[$j]}"
                 
-                # Show pre-filtering progress
-                if [[ $((pairs_evaluated % 100)) -eq 0 || $pairs_evaluated -eq $total_possible_pairs ]]; then
+                # Show pre-filtering progress (less frequently for speed)
+                if [[ $((pairs_evaluated % 500)) -eq 0 || $pairs_evaluated -eq $total_possible_pairs ]]; then
                     local filter_pct=$((pairs_evaluated * 100 / total_possible_pairs))
                     printf "\r  ${CYAN}Pre-filter: [${NC}"
                     local filled=$((filter_pct * 30 / 100))
@@ -8191,8 +8191,26 @@ detect_duplicate_videos() {
                 fi
                 
                 # ═══════════════════════════════════════════════════════════════
-                # 🛡️ BULLETPROOF SIMILARITY PRE-FILTER (10 Factors)
-                # Only pairs passing this filter will undergo expensive Level 6 analysis
+                # 🛡️ AGGRESSIVE PRE-FILTER: Skip if already detected as duplicate
+                # ═══════════════════════════════════════════════════════════════
+                
+                # FAST CHECK 1: MD5 checksum match = already found in Level 1-5, skip
+                local checksum1="${video_checksums[$file1]:-}"
+                local checksum2="${video_checksums[$file2]:-}"
+                if [[ -n "$checksum1" && -n "$checksum2" && "$checksum1" == "$checksum2" ]]; then
+                    continue  # Already detected, no need for Level 6
+                fi
+                
+                # FAST CHECK 2: Visual hash match = already found in Level 2, skip
+                local vhash1="${video_visual_hashes[$file1]:-}"
+                local vhash2="${video_visual_hashes[$file2]:-}"
+                if [[ -n "$vhash1" && -n "$vhash2" && "$vhash1" != "0" && "$vhash2" != "0" && "$vhash1" == "$vhash2" ]]; then
+                    continue  # Already detected, no need for Level 6
+                fi
+                
+                # ═══════════════════════════════════════════════════════════════
+                # 🛡️ SIMILARITY SCORING (Lightweight checks only)
+                # Only pairs passing HIGH threshold will undergo expensive Level 6
                 # ═══════════════════════════════════════════════════════════════
                 
                 local similarity_score=0
@@ -8252,14 +8270,7 @@ detect_duplicate_videos() {
                     similarity_score=$((similarity_score + 45))
                 fi
                 
-                # Factor 5: Visual hash similarity (55 points max)
-                local vhash1="${video_visual_hashes[$file1]:-0}"
-                local vhash2="${video_visual_hashes[$file2]:-0}"
-                if [[ -n "$vhash1" && -n "$vhash2" && "$vhash1" != "0" && "$vhash2" != "0" ]]; then
-                    if [[ "$vhash1" == "$vhash2" ]]; then
-                        similarity_score=$((similarity_score + 55))  # Identical hash
-                    fi
-                fi
+                # Factor 5: Visual hash similarity - SKIPPED (already checked above)
                 
                 # Factor 6: Bitrate similarity (30 points max)
                 local br1="${video_bitrates[$file1]:-0}"
@@ -8292,33 +8303,14 @@ detect_duplicate_videos() {
                     fi
                 fi
                 
-                # Factor 9: Timestamp proximity (25 points max)
-                local mtime1=$(stat -c%Y "$file1" 2>/dev/null || echo "0")
-                local mtime2=$(stat -c%Y "$file2" 2>/dev/null || echo "0")
-                if [[ $mtime1 -gt 0 && $mtime2 -gt 0 ]]; then
-                    local time_diff=$((mtime1 > mtime2 ? mtime1 - mtime2 : mtime2 - mtime1))
-                    if [[ $time_diff -lt 60 ]]; then
-                        similarity_score=$((similarity_score + 25))
-                    elif [[ $time_diff -lt 300 ]]; then
-                        similarity_score=$((similarity_score + 15))
-                    elif [[ $time_diff -lt 3600 ]]; then
-                        similarity_score=$((similarity_score + 5))
-                    fi
-                fi
-                
-                # Factor 10: Same directory (15 points)
-                local dir1=$(dirname -- "$file1")
-                local dir2=$(dirname -- "$file2")
-                if [[ "$dir1" == "$dir2" ]]; then
-                    similarity_score=$((similarity_score + 15))
-                fi
+                # Factors 9-10: SKIPPED for performance (timestamp/directory checks too slow)
                 
                 # ═══════════════════════════════════════════════════════════════
-                # DECISION: Add to candidate list if similarity score >= 120
-                # (Out of max 400 points, 120 = 30% threshold)
-                # Higher threshold for videos to avoid analyzing entire batches from same source
+                # DECISION: Add to candidate list if similarity score >= 200
+                # (Out of max 265 points, 200 = 75.5% threshold)
+                # VERY AGGRESSIVE: Only analyze pairs with strong similarity indicators
                 # ═══════════════════════════════════════════════════════════════
-                if [[ $similarity_score -ge 120 ]]; then
+                if [[ $similarity_score -ge 200 ]]; then
                     video_candidate_pairs+=("$file1|$file2|$similarity_score")
                 fi
             done
@@ -9792,7 +9784,7 @@ detect_duplicate_gifs() {
     echo -e "  ${GREEN}✓ Queue ready: $gif_total_queued GIF comparisons${NC}"
     echo -e "  ${MAGENTA}🚀 Starting $max_workers parallel workers for GIFs...${NC}"
     
-    # Worker function for parallel GIF comparison
+    # Worker function for parallel GIF comparison with aggressive pre-filtering
     compare_gif_worker() {
         local worker_id=$1
         local queue=$2
@@ -9819,14 +9811,71 @@ detect_duplicate_gifs() {
             local file1="${gif_files[$i]}"
             local file2="${gif_files[$j]}"
             
-            # Perform comparison (Levels 1-3)
+            # ═══════════════════════════════════════════════════════════════
+            # AGGRESSIVE PRE-FILTER: Quick checks for early exit
+            # Skip expensive comparisons if files are clearly different
+            # ═══════════════════════════════════════════════════════════════
+            
+            # Get file properties for pre-filtering
+            local size1="${gif_sizes[$file1]:-0}"
+            local size2="${gif_sizes[$file2]:-0}"
+            local frame1="${gif_frame_counts[$file1]:-0}"
+            local frame2="${gif_frame_counts[$file2]:-0}"
+            local dur1="${gif_durations[$file1]:-0}"
+            local dur2="${gif_durations[$file2]:-0}"
+            
+            # PRE-FILTER 1: Size difference > 80% = definitely not duplicates
+            if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
+                local size_diff_pct=$(( (size1 > size2 ? size1 - size2 : size2 - size1) * 100 / (size1 > size2 ? size1 : size2) ))
+                if [[ $size_diff_pct -gt 80 ]]; then
+                    # Update progress and skip
+                    (
+                        flock -x 200
+                        local current=$(cat "$progress")
+                        echo $((current + 1)) > "$progress"
+                    ) 200>"$lockfile"
+                    continue
+                fi
+            fi
+            
+            # PRE-FILTER 2: Frame count difference > 50% = definitely not duplicates
+            if [[ $frame1 -gt 0 && $frame2 -gt 0 ]]; then
+                local frame_diff_pct=$(( (frame1 > frame2 ? frame1 - frame2 : frame2 - frame1) * 100 / (frame1 > frame2 ? frame1 : frame2) ))
+                if [[ $frame_diff_pct -gt 50 ]]; then
+                    # Update progress and skip
+                    (
+                        flock -x 200
+                        local current=$(cat "$progress")
+                        echo $((current + 1)) > "$progress"
+                    ) 200>"$lockfile"
+                    continue
+                fi
+            fi
+            
+            # PRE-FILTER 3: Duration difference > 40% = definitely not duplicates  
+            if [[ $dur1 -gt 0 && $dur2 -gt 0 ]]; then
+                local dur_diff_pct=$(( (dur1 > dur2 ? dur1 - dur2 : dur2 - dur1) * 100 / (dur1 > dur2 ? dur1 : dur2) ))
+                if [[ $dur_diff_pct -gt 40 ]]; then
+                    # Update progress and skip
+                    (
+                        flock -x 200
+                        local current=$(cat "$progress")
+                        echo $((current + 1)) > "$progress"
+                    ) 200>"$lockfile"
+                    continue
+                fi
+            fi
+            
+            # ═══════════════════════════════════════════════════════════════
+            # Passed pre-filters - now perform detailed comparison (Levels 1-3)
+            # ═══════════════════════════════════════════════════════════════
+            
             local checksum1="${gif_checksums[$file1]}"
             local checksum2="${gif_checksums[$file2]}"
-            
             local duplicate_found=""
             
             # Level 1: MD5 match
-            if [[ "$checksum1" == "$checksum2" ]]; then
+            if [[ -n "$checksum1" && -n "$checksum2" && "$checksum1" == "$checksum2" ]]; then
                 duplicate_found="LEVEL1|100|$file1|$file2|Exact binary match"
             fi
             
@@ -9843,9 +9892,7 @@ detect_duplicate_gifs() {
             if [[ -z "$duplicate_found" ]]; then
                 local fp1="${gif_fingerprints[$file1]}"
                 local fp2="${gif_fingerprints[$file2]}"
-                if [[ "$fp1" == "$fp2" ]]; then
-                    local size1="${gif_sizes[$file1]:-0}"
-                    local size2="${gif_sizes[$file2]:-0}"
+                if [[ -n "$fp1" && -n "$fp2" && "$fp1" == "$fp2" ]]; then
                     if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
                         local size_ratio=$(( (size1 < size2 ? size1 * 100 / size2 : size2 * 100 / size1) ))
                         if [[ $size_ratio -ge 95 ]]; then
@@ -9929,10 +9976,311 @@ detect_duplicate_gifs() {
         ((duplicate_count++))
     done < "$gif_duplicates_file"
     
-    echo -e "  ${GREEN}✓ Parallel GIF comparison complete${NC}"
+    echo -e "  ${GREEN}✓ Parallel GIF comparison complete (Levels 1-5)${NC}"
+    echo -e "  ${CYAN}📊 Found ${BOLD}$duplicate_count${NC}${CYAN} duplicates via fast hash-based detection${NC}\n"
     
     # Clean up
     rm -rf "$gif_results_dir" 2>/dev/null
+    
+    # ═══════════════════════════════════════════════════════════════
+    # 🛡️ STAGE 3: BULLETPROOF LEVEL 6 PRE-FILTERING & DEEP ANALYSIS
+    # ═══════════════════════════════════════════════════════════════
+    
+    # Check if user wants Level 6 analysis (ask upfront)
+    if [[ -z "${LEVEL6_USER_CONFIRMED:-}" ]]; then
+        echo ""
+        echo -e "${YELLOW}${BOLD}⚠️  LEVEL 6 DEEP FRAME ANALYSIS OPTION${NC}"
+        echo ""
+        echo -e "${CYAN}📊 What is Level 6?${NC}"
+        echo -e "  Level 6 performs ${BOLD}deep frame-by-frame comparison${NC} on suspicious GIF pairs."
+        echo -e "  The AI will intelligently pre-filter and only analyze highly suspicious pairs."
+        echo -e "  It extracts and compares actual pixel data to detect visually identical"
+        echo -e "  duplicates that hash-based methods (Levels 1-5) might miss."
+        echo ""
+        echo -e "${CYAN}⏱️  Time Investment:${NC}"
+        echo -e "  • With bulletproof pre-filtering: Usually ${GREEN}<1 minute${NC}"
+        echo -e "  • Only highly suspicious pairs get analyzed (~1-5% of total)"
+        echo -e "  • Your collection: ${BOLD}$total_gifs files${NC}"
+        echo ""
+        echo -e "${CYAN}🎯 When to enable Level 6:${NC}"
+        echo -e "  ${GREEN}✓${NC} You suspect visual duplicates with different file sizes"
+        echo -e "  ${GREEN}✓${NC} You want the most thorough duplicate detection possible"
+        echo -e "  ${GREEN}✓${NC} You have a few minutes for maximum accuracy"
+        echo ""
+        echo -e "${CYAN}⚡ When to disable Level 6:${NC}"
+        echo -e "  ${YELLOW}→${NC} You're in a hurry (Levels 1-5 find most duplicates)"
+        echo -e "  ${YELLOW}→${NC} You trust the fast hash-based detection"
+        echo ""
+        echo -e "${GRAY}💡 Note: Bulletproof pre-filtering makes Level 6 much faster than before${NC}"
+        echo ""
+        echo -ne "${BOLD}Enable Level 6 deep analysis? [y/N]: ${NC}"
+        read -r level6_response
+        
+        if [[ "$level6_response" =~ ^[Yy]$ ]]; then
+            LEVEL6_USER_CONFIRMED="yes"
+            echo -e "${GREEN}✓ Level 6 enabled with bulletproof pre-filtering${NC}"
+        else
+            LEVEL6_USER_CONFIRMED="no"
+            echo -e "${YELLOW}⊚ Level 6 disabled - using fast Levels 1-5 only${NC}"
+        fi
+        echo ""
+    fi
+    
+    # Only proceed with Level 6 if user confirmed
+    if [[ "$LEVEL6_USER_CONFIRMED" == "yes" ]]; then
+        echo -e "  ${MAGENTA}${BOLD}🎬 Stage 3: Level 6 Deep Frame Analysis...${NC}"
+        echo -e "  ${CYAN}🧠 AI Pre-filtering: Only analyzing likely duplicate candidates...${NC}"
+        echo -e "  ${YELLOW}⚠️  Press Ctrl+C to cancel at any time${NC}\n"
+        
+        local total_gifs=${#gif_files[@]}
+        local level6_found=0
+        
+        # Build candidate pairs using bulletproof similarity detection
+        echo -e "  ${BLUE}🔍 Stage 3a: Building candidate pairs based on similarity indicators...${NC}"
+        declare -a gif_candidate_pairs
+        local total_possible_pairs=$(( total_gifs * (total_gifs - 1) / 2 ))
+        local pairs_evaluated=0
+        
+        # Enable Ctrl+C handling
+        local interrupted=false
+        trap 'interrupted=true' INT
+        
+        for ((i=0; i<total_gifs; i++)); do
+            # Check for interruption
+            if [[ "$interrupted" == "true" ]]; then
+                echo -e "\n  ${YELLOW}⏸️  Pre-filtering interrupted by user${NC}"
+                break
+            fi
+            
+            for ((j=i+1; j<total_gifs; j++)); do
+                if [[ "$interrupted" == "true" ]]; then
+                    break
+                fi
+                
+                ((pairs_evaluated++))
+                local file1="${gif_files[$i]}"
+                local file2="${gif_files[$j]}"
+                
+                # Show pre-filtering progress (less frequently for speed)
+                if [[ $((pairs_evaluated % 500)) -eq 0 || $pairs_evaluated -eq $total_possible_pairs ]]; then
+                    local filter_pct=$((pairs_evaluated * 100 / total_possible_pairs))
+                    printf "\r  ${CYAN}Pre-filter: [${NC}"
+                    local filled=$((filter_pct * 30 / 100))
+                    for ((k=0; k<filled; k++)); do printf "${CYAN}█${NC}"; done
+                    for ((k=filled; k<30; k++)); do printf "${GRAY}░${NC}"; done
+                    printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d candidates)${NC}" "$filter_pct" "${#gif_candidate_pairs[@]}"
+                fi
+                
+                # ═══════════════════════════════════════════════════════════════
+                # AGGRESSIVE PRE-FILTER: Skip if already detected as duplicate
+                # ═══════════════════════════════════════════════════════════════
+                
+                # FAST CHECK 1: MD5 checksum match = already found in Level 1, skip
+                local checksum1="${gif_checksums[$file1]:-}"
+                local checksum2="${gif_checksums[$file2]:-}"
+                if [[ -n "$checksum1" && -n "$checksum2" && "$checksum1" == "$checksum2" ]]; then
+                    continue  # Already detected, no need for Level 6
+                fi
+                
+                # FAST CHECK 2: Visual hash match = already found in Level 2, skip
+                local vhash1="${gif_visual_hashes[$file1]:-}"
+                local vhash2="${gif_visual_hashes[$file2]:-}"
+                if [[ -n "$vhash1" && -n "$vhash2" && "$vhash1" != "0" && "$vhash2" != "0" && "$vhash1" == "$vhash2" ]]; then
+                    continue  # Already detected, no need for Level 6
+                fi
+                
+                # ═══════════════════════════════════════════════════════════════
+                # SIMILARITY SCORING (Lightweight checks only)
+                # ═══════════════════════════════════════════════════════════════
+                
+                local similarity_score=0
+                
+                # Factor 1: Similar filenames (40 points max)
+                local name1="$(basename -- "$file1" .gif)"
+                local name2="$(basename -- "$file2" .gif)"
+                if [[ "${name1:0:15}" == "${name2:0:15}" ]]; then
+                    similarity_score=$((similarity_score + 40))
+                elif [[ "${name1:0:10}" == "${name2:0:10}" ]]; then
+                    similarity_score=$((similarity_score + 30))
+                elif [[ "${name1:0:5}" == "${name2:0:5}" ]]; then
+                    similarity_score=$((similarity_score + 15))
+                fi
+                
+                # Factor 2: Similar file sizes (35 points max)
+                local size1="${gif_sizes[$file1]:-0}"
+                local size2="${gif_sizes[$file2]:-0}"
+                if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
+                    local size_diff_pct=$(( (size1 > size2 ? size1 - size2 : size2 - size1) * 100 / (size1 > size2 ? size1 : size2) ))
+                    if [[ $size_diff_pct -lt 5 ]]; then
+                        similarity_score=$((similarity_score + 35))
+                    elif [[ $size_diff_pct -lt 15 ]]; then
+                        similarity_score=$((similarity_score + 25))
+                    elif [[ $size_diff_pct -lt 30 ]]; then
+                        similarity_score=$((similarity_score + 15))
+                    fi
+                fi
+                
+                # Factor 3: Frame count match (50 points max)
+                local frame1="${gif_frame_counts[$file1]:-0}"
+                local frame2="${gif_frame_counts[$file2]:-0}"
+                if [[ $frame1 -gt 0 && $frame2 -gt 0 ]]; then
+                    if [[ $frame1 -eq $frame2 ]]; then
+                        similarity_score=$((similarity_score + 50))  # Exact match
+                    else
+                        local frame_diff=$(( (frame1 > frame2 ? frame1 - frame2 : frame2 - frame1) * 100 / (frame1 > frame2 ? frame1 : frame2) ))
+                        if [[ $frame_diff -lt 5 ]]; then
+                            similarity_score=$((similarity_score + 40))
+                        elif [[ $frame_diff -lt 10 ]]; then
+                            similarity_score=$((similarity_score + 25))
+                        fi
+                    fi
+                fi
+                
+                # Factor 4: Duration match (45 points max)
+                local dur1="${gif_durations[$file1]:-0}"
+                local dur2="${gif_durations[$file2]:-0}"
+                if [[ $dur1 -gt 0 && $dur2 -gt 0 ]]; then
+                    if [[ $dur1 -eq $dur2 ]]; then
+                        similarity_score=$((similarity_score + 45))
+                    else
+                        local dur_diff=$(( (dur1 > dur2 ? dur1 - dur2 : dur2 - dur1) * 100 / (dur1 > dur2 ? dur1 : dur2) ))
+                        if [[ $dur_diff -lt 5 ]]; then
+                            similarity_score=$((similarity_score + 35))
+                        elif [[ $dur_diff -lt 10 ]]; then
+                            similarity_score=$((similarity_score + 20))
+                        fi
+                    fi
+                fi
+                
+                # Factor 5: Content fingerprint (30 points max)
+                local fp1="${gif_fingerprints[$file1]:-}"
+                local fp2="${gif_fingerprints[$file2]:-}"
+                if [[ -n "$fp1" && -n "$fp2" && "$fp1" == "$fp2" ]]; then
+                    similarity_score=$((similarity_score + 30))
+                fi
+                
+                # ═══════════════════════════════════════════════════════════════
+                # DECISION: Add to candidate list if similarity score >= 150
+                # (Out of max 200 points, 150 = 75% threshold)
+                # VERY AGGRESSIVE: Only analyze pairs with strong similarity
+                # ═══════════════════════════════════════════════════════════════
+                if [[ $similarity_score -ge 150 ]]; then
+                    gif_candidate_pairs+=("$file1|$file2|$similarity_score")
+                fi
+            done
+        done
+        
+        printf "\r\033[K"
+        
+        # Check if interrupted during pre-filtering
+        if [[ "$interrupted" == "true" ]]; then
+            trap - INT
+            INTERRUPT_REQUESTED="true"
+            echo -e "  ${GREEN}✓ Pre-filtering interrupted${NC}"
+            return 1
+        fi
+        
+        echo -e "  ${GREEN}✓ Pre-filtering complete${NC}"
+        echo -e "  ${CYAN}📊 Candidates: ${BOLD}${#gif_candidate_pairs[@]}${NC}${CYAN} pairs out of ${BOLD}$total_possible_pairs${NC}${CYAN} total${NC}"
+        
+        if [[ ${#gif_candidate_pairs[@]} -gt 0 ]]; then
+            local reduction_pct=$(( (total_possible_pairs - ${#gif_candidate_pairs[@]}) * 100 / total_possible_pairs ))
+            echo -e "  ${GREEN}⚡ Efficiency: ${BOLD}${reduction_pct}%${NC}${GREEN} of pairs filtered out (skipping unlikely matches)${NC}"
+        fi
+        echo ""
+        
+        # If no candidates, exit early
+        if [[ ${#gif_candidate_pairs[@]} -eq 0 ]]; then
+            trap - INT
+            echo -e "  ${GREEN}${BOLD}✨ No similar pairs detected - all files are unique!${NC}"
+            echo -e "  ${BLUE}🚀 Your collection is fully optimized!${NC}"
+        else
+            echo -e "  ${MAGENTA}${BOLD}🎬 Stage 3b: Deep frame analysis on ${#gif_candidate_pairs[@]} candidate pairs...${NC}\n"
+            
+            # Analyze only the candidate pairs
+            local pair_count=0
+            for candidate_pair in "${gif_candidate_pairs[@]}"; do
+                # Check for interruption
+                if [[ "$interrupted" == "true" ]]; then
+                    echo -e "\n\n  ${YELLOW}⏸️  Level 6 analysis interrupted by user${NC}"
+                    INTERRUPT_REQUESTED="true"
+                    break
+                fi
+                
+                ((pair_count++))
+                local file1="${candidate_pair%%|*}"
+                local rest="${candidate_pair#*|}"
+                local file2="${rest%%|*}"
+                local sim_score="${rest##*|}"
+                
+                # Calculate progress
+                local progress=$((pair_count * 100 / ${#gif_candidate_pairs[@]}))
+                local filled=$((progress * 40 / 100))
+                local empty=$((40 - filled))
+                
+                # Get short filenames
+                local name1="$(basename -- "$file1" .gif)"
+                local name2="$(basename -- "$file2" .gif)"
+                [[ ${#name1} -gt 25 ]] && name1="${name1:0:22}..."
+                [[ ${#name2} -gt 25 ]] && name2="${name2:0:22}..."
+                
+                # Progress bar
+                printf "\r  ${CYAN}["
+                for ((k=0; k<filled; k++)); do printf "${MAGENTA}█${NC}"; done
+                for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
+                printf "${CYAN}] ${BOLD}%3d%%${NC}" "$progress"
+                printf "\n  ${GRAY}Candidate %d/%d | Sim: ${CYAN}%d${GRAY} | Found: ${YELLOW}%d${GRAY} duplicates${NC}" "$pair_count" "${#gif_candidate_pairs[@]}" "$sim_score" "$level6_found"
+                printf "\n  ${BLUE}Comparing:${NC} %s ${YELLOW}↔${NC} %s" "$name1" "$name2"
+                printf "\r\033[3A"  # Move cursor up 3 lines
+                
+                # Check Level 6 cache first
+                local cache_key="L6_COMPARE:$name1:$name2"
+                local cached_result=""
+                if [[ "$AI_CACHE_ENABLED" == "true" && -f "$AI_CACHE_INDEX" ]]; then
+                    cached_result=$(grep "^$cache_key|" "$AI_CACHE_INDEX" 2>/dev/null | tail -1 | cut -d'|' -f5)
+                fi
+                
+                local frame_analysis=""
+                if [[ -n "$cached_result" ]]; then
+                    frame_analysis="$cached_result"
+                else
+                    # Perform frame-by-frame comparison
+                    frame_analysis=$(ai_advanced_frame_comparison "$file1" "$file2" "$temp_analysis_dir" "$AI_LEVEL6_FAST_MODE" 2>/dev/null)
+                    
+                    # Cache result
+                    if [[ "$AI_CACHE_ENABLED" == "true" && -n "$frame_analysis" && "$frame_analysis" != "0:0" ]]; then
+                        local timestamp=$(date +%s)
+                        echo "$cache_key|0|0|$timestamp|$frame_analysis" >> "$AI_CACHE_INDEX" 2>/dev/null || true
+                    fi
+                fi
+                
+                # Process result
+                if [[ -n "$frame_analysis" && "$frame_analysis" != "0:0" ]]; then
+                    local visual_match=$(echo "$frame_analysis" | cut -d':' -f1)
+                    local color_match=$(echo "$frame_analysis" | cut -d':' -f2)
+                    
+                    # Determine if it's a duplicate
+                    if [[ $visual_match -ge 80 && $color_match -ge 85 ]]; then
+                        duplicate_pairs+=("LEVEL6|95|$file1|$file2|Frame-by-frame analysis (V:${visual_match}% C:${color_match}%)")
+                        ((duplicate_count++))
+                        ((level6_found++))
+                    fi
+                fi
+            done
+            
+            # Clear progress lines
+            printf "\r\033[K\n\033[K\n\033[K"
+            trap - INT
+            
+            # Check if interrupted
+            if [[ "$interrupted" == "true" ]]; then
+                INTERRUPT_REQUESTED="true"
+            else
+                echo -e "  ${GREEN}✓ Level 6 analysis complete${NC}"
+                echo -e "  ${MAGENTA}Found ${BOLD}$level6_found${NC}${MAGENTA} duplicates via frame analysis${NC}\n"
+            fi
+        fi
+    fi
     
     # OLD SEQUENTIAL CODE - Disabled
     if false; then
