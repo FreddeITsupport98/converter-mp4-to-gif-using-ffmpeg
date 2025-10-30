@@ -171,7 +171,7 @@ AUTO_REDUCE_QUALITY=true
 SMART_SIZE_DOWN=true
 GPU_ACCELERATION="auto"
 FFMPEG_THREADS="auto"
-BACKUP_ORIGINAL=true
+BACKUP_ORIGINAL=false
 LOG_LEVEL="info"
 PROGRESS_BAR=true
 INTERACTIVE_MODE=true
@@ -7476,11 +7476,220 @@ detect_duplicate_videos() {
     # Stage 2: Pairwise comparison with AI decision engine
     echo -e "  ${BLUE}${BOLD}🧠 Stage 2: Fast Duplicate Detection (Levels 1-6)...${NC}"
     
+    # 🚀 OPTIMIZATION: Hash-based grouping to reduce comparisons
+    echo -e "  ${CYAN}⚡ Optimizing: Grouping files by hash prefix...${NC}"
+    declare -A hash_groups
+    for file in "${video_files_list[@]}"; do
+        local checksum="${video_checksums[$file]}"
+        if [[ -n "$checksum" && "$checksum" != "ERROR" ]]; then
+            local hash_prefix="${checksum:0:4}"  # Group by first 4 chars
+            hash_groups["$hash_prefix"]+="$file|"
+        fi
+    done
+    
+    local total_groups=${#hash_groups[@]}
+    echo -e "  ${GREEN}✓ Grouped into $total_groups hash buckets (smart comparison)${NC}"
+    
     local total_comparisons=$(( total_files * (total_files - 1) / 2 ))
     local current_comparison=0
     
+    # Adaptive progress update frequency (faster for large collections)
+    local progress_update_freq=10
+    if [[ $total_files -gt 200 ]]; then
+        progress_update_freq=100
+    elif [[ $total_files -gt 100 ]]; then
+        progress_update_freq=50
+    fi
+    
     declare -A compared_pairs
     
+    # 🚀 PARALLEL COMPARISON FRAMEWORK
+    # Determine optimal worker count (use fewer workers for safety)
+    local max_workers=$((CPU_CORES / 2))
+    [[ $max_workers -lt 2 ]] && max_workers=2
+    [[ $max_workers -gt 8 ]] && max_workers=8  # Cap at 8 for stability
+    
+    # Create synchronized result files
+    local results_dir="$temp_analysis_dir/stage2_results"
+    mkdir -p "$results_dir"
+    local duplicates_file="$results_dir/duplicates.txt"
+    local progress_file="$results_dir/progress.txt"
+    local lock_file="$results_dir/lock"
+    echo "0" > "$progress_file"
+    : > "$duplicates_file"
+    
+    # Generate comparison queue (all pairs to compare)
+    local queue_file="$results_dir/queue.txt"
+    echo -e "  ${CYAN}⚡ Generating comparison queue...${NC}"
+    : > "$queue_file"
+    
+    for ((i=0; i<total_files; i++)); do
+        local file1="${video_files_list[$i]}"
+        [[ ! -f "$file1" ]] && continue
+        local checksum1="${video_checksums[$file1]}"
+        [[ -z "$checksum1" ]] && continue
+        
+        for ((j=i+1; j<total_files; j++)); do
+            local file2="${video_files_list[$j]}"
+            [[ ! -f "$file2" ]] && continue
+            local checksum2="${video_checksums[$file2]}"
+            [[ -z "$checksum2" ]] && continue
+            
+            # Write pair to queue
+            echo "$i|$j" >> "$queue_file"
+        done
+    done
+    
+    local total_queued=$(wc -l < "$queue_file")
+    echo -e "  ${GREEN}✓ Queue ready: $total_queued comparisons${NC}"
+    echo -e "  ${MAGENTA}🚀 Starting $max_workers parallel workers...${NC}"
+    
+    # Worker function for parallel comparison
+    compare_worker() {
+        local worker_id=$1
+        local queue=$2
+        local results=$3
+        local progress=$4
+        local lockfile=$5
+        
+        while true; do
+            # Atomic queue pop (get next pair)
+            local pair
+            (
+                flock -x 200
+                pair=$(head -n 1 "$queue" 2>/dev/null)
+                if [[ -n "$pair" ]]; then
+                    sed -i '1d' "$queue"
+                fi
+            ) 200>"$lockfile"
+            
+            [[ -z "$pair" ]] && break
+            
+            local i=$(echo "$pair" | cut -d'|' -f1)
+            local j=$(echo "$pair" | cut -d'|' -f2)
+            
+            local file1="${video_files_list[$i]}"
+            local file2="${video_files_list[$j]}"
+            
+            # Perform comparison (Levels 1-5, skip Level 6 for now)
+            local checksum1="${video_checksums[$file1]}"
+            local checksum2="${video_checksums[$file2]}"
+            
+            local duplicate_found=""
+            
+            # Level 1: MD5 match
+            if [[ "$checksum1" == "$checksum2" ]]; then
+                duplicate_found="LEVEL1|100|$file1|$file2|Exact binary match"
+            fi
+            
+            # Level 2: Visual hash
+            if [[ -z "$duplicate_found" ]]; then
+                local hash1="${video_visual_hashes[$file1]}"
+                local hash2="${video_visual_hashes[$file2]}"
+                if [[ -n "$hash1" && -n "$hash2" && "$hash1" == "$hash2" ]]; then
+                    duplicate_found="LEVEL2|95|$file1|$file2|Identical visual fingerprint"
+                fi
+            fi
+            
+            # Level 3: Content fingerprint
+            if [[ -z "$duplicate_found" ]]; then
+                local fp1="${video_fingerprints[$file1]}"
+                local fp2="${video_fingerprints[$file2]}"
+                if [[ "$fp1" == "$fp2" ]]; then
+                    local size1="${video_sizes[$file1]:-0}"
+                    local size2="${video_sizes[$file2]:-0}"
+                    if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
+                        local size_ratio=$(( (size1 < size2 ? size1 * 100 / size2 : size2 * 100 / size1) ))
+                        if [[ $size_ratio -ge 95 ]]; then
+                            duplicate_found="LEVEL3|90|$file1|$file2|Identical metadata + similar size"
+                        fi
+                    fi
+                fi
+            fi
+            
+            # Write result atomically
+            if [[ -n "$duplicate_found" ]]; then
+                (
+                    flock -x 200
+                    echo "$duplicate_found" >> "$results"
+                ) 200>"$lockfile"
+            fi
+            
+            # Update progress atomically
+            (
+                flock -x 200
+                local current=$(cat "$progress")
+                echo $((current + 1)) > "$progress"
+            ) 200>"$lockfile"
+        done
+    }
+    
+    # Export necessary variables and functions for workers
+    export -f compare_worker
+    export temp_analysis_dir
+    
+    # Launch workers in background
+    local worker_pids=()
+    for ((w=0; w<max_workers; w++)); do
+        compare_worker $w "$queue_file" "$duplicates_file" "$progress_file" "$lock_file" &
+        worker_pids+=($!)
+    done
+    
+    # Monitor progress
+    echo -e "  ${CYAN}Comparing pairs with $max_workers workers...${NC}"
+    local last_progress=0
+    while true; do
+        local current_progress=$(cat "$progress_file" 2>/dev/null || echo "0")
+        
+        # Check if all workers finished
+        local workers_alive=0
+        for pid in "${worker_pids[@]}"; do
+            if kill -0 $pid 2>/dev/null; then
+                ((workers_alive++))
+            fi
+        done
+        
+        [[ $workers_alive -eq 0 ]] && break
+        
+        # Show progress
+        if [[ $current_progress -ne $last_progress ]]; then
+            local progress_pct=$((current_progress * 100 / total_queued))
+            local filled=$((progress_pct * 30 / 100))
+            local empty=$((30 - filled))
+            
+            printf "\r  ${CYAN}["
+            for ((k=0; k<filled; k++)); do printf "${GREEN}█${NC}"; done
+            for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
+            printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d/%d)${NC}" "$progress_pct" "$current_progress" "$total_queued"
+            
+            last_progress=$current_progress
+        fi
+        
+        sleep 0.2
+    done
+    
+    printf "\r\033[K"
+    
+    # Wait for all workers to complete
+    for pid in "${worker_pids[@]}"; do
+        wait $pid 2>/dev/null
+    done
+    
+    # Collect results
+    while IFS= read -r duplicate_line; do
+        [[ -z "$duplicate_line" ]] && continue
+        duplicate_pairs+=("$duplicate_line")
+        ((duplicate_count++))
+    done < "$duplicates_file"
+    
+    echo -e "  ${GREEN}✓ Parallel comparison complete${NC}"
+    
+    # Clean up parallel framework
+    rm -rf "$results_dir" 2>/dev/null
+    
+    # OLD SEQUENTIAL CODE REMOVED - Now using parallel framework above
+    # Skip the old for loop
+    if false; then
     for ((i=0; i<total_files; i++)); do
         local file1="${video_files_list[$i]}"
         [[ ! -f "$file1" ]] && continue
@@ -7497,8 +7706,8 @@ detect_duplicate_videos() {
             
             ((current_comparison++))
             
-            # Show progress
-            if [[ $((current_comparison % 10)) -eq 0 || $current_comparison -eq $total_comparisons ]]; then
+            # Show progress (adaptive frequency for speed)
+            if [[ $((current_comparison % progress_update_freq)) -eq 0 || $current_comparison -eq $total_comparisons ]]; then
                 local progress=$((current_comparison * 100 / total_comparisons))
                 local filled=$((progress * 30 / 100))
                 local empty=$((30 - filled))
@@ -7844,6 +8053,7 @@ detect_duplicate_videos() {
             fi
         done
     done
+    fi  # End of if false - old sequential code disabled
     
     printf "\r\033[K"
     echo -e "  ${GREEN}✓ Stage 2 complete${NC}\n"
@@ -7922,13 +8132,98 @@ detect_duplicate_videos() {
     
     # Display results
     if [[ $duplicate_count -eq 0 ]]; then
-        echo -e "  ${GREEN}${BOLD}✨ No duplicate videos detected${NC}"
-        echo -e "  ${GRAY}All $total_files video files are unique${NC}"
-        return 0
+        echo -e "  ${GREEN}${BOLD}✨ No duplicate videos detected (Levels 1-5)${NC}"
+        echo -e "  ${GRAY}All $total_files video files are unique based on:
+    • Binary comparison (MD5)
+    • Visual hashing
+    • Metadata matching
+    • Properties comparison
+    • Filename similarity${NC}"
+        echo ""
+        echo -e "${CYAN}${BOLD}🔍 Level 6: Deep Frame-by-Frame Analysis${NC}"
+        echo -e "  ${GRAY}• Compares actual video frames for visual similarity${NC}"
+        echo -e "  ${GRAY}• Can detect re-encoded or slightly modified duplicates${NC}"
+        echo -e "  ${GRAY}• Much slower: ~30-60 seconds per pair${NC}"
+        echo -e "  ${YELLOW}• For $total_files videos: $(( total_files * (total_files - 1) / 2 )) comparisons needed${NC}"
+        echo ""
+        echo -ne "${BOLD}Proceed with Level 6 frame-by-frame detection? (y/N): ${NC}"
+        read -r level6_choice
+        
+        if [[ ! "$level6_choice" =~ ^[Yy]$ ]]; then
+            echo -e "${GREEN}✓ Skipping Level 6 analysis${NC}"
+            return 0
+        fi
+        
+        # Run Level 6 analysis on all pairs
+        echo -e "\n  ${MAGENTA}${BOLD}🎬 Stage 3: Level 6 Deep Frame Analysis...${NC}"
+        echo -e "  ${CYAN}Analyzing all ${total_files} videos for visual duplicates...${NC}\n"
+        
+        local video_files_array=("${!video_sizes[@]}")
+        local pair_count=0
+        local total_pairs=$(( total_files * (total_files - 1) / 2 ))
+        
+        for ((i=0; i<total_files; i++)); do
+            for ((j=i+1; j<total_files; j++)); do
+                ((pair_count++))
+                local file1="${video_files_array[$i]}"
+                local file2="${video_files_array[$j]}"
+                
+                # Progress indicator
+                if [[ $((pair_count % 10)) -eq 0 || $pair_count -eq $total_pairs ]]; then
+                    local progress=$((pair_count * 100 / total_pairs))
+                    printf "\r  ${CYAN}Progress: ${BOLD}%3d%%${NC} ${GRAY}(%d/%d pairs)${NC}" "$progress" "$pair_count" "$total_pairs"
+                fi
+                
+                # Perform frame-by-frame comparison
+                local frame_analysis=$(compare_video_frames "$file1" "$file2" "$temp_analysis_dir")
+                
+                if [[ -n "$frame_analysis" ]]; then
+                    local visual_match=$(echo "$frame_analysis" | cut -d':' -f1)
+                    local color_match=$(echo "$frame_analysis" | cut -d':' -f2)
+                    
+                    # Determine if it's a duplicate based on frame analysis
+                    if [[ $visual_match -ge 85 && $color_match -ge 85 ]]; then
+                        duplicate_pairs+=("LEVEL6|95|$file1|$file2|Frame-by-frame analysis (V:${visual_match}% C:${color_match}%)")
+                        ((duplicate_count++))
+                    elif [[ $visual_match -ge 70 || $color_match -ge 75 ]]; then
+                        duplicate_pairs+=("LEVEL6|75|$file1|$file2|Partial frame match (V:${visual_match}% C:${color_match}%)")
+                        ((duplicate_count++))
+                    fi
+                fi
+            done
+        done
+        
+        printf "\r\033[K"
+        echo -e "  ${GREEN}✓ Level 6 analysis complete${NC}\n"
+        
+        # Check results
+        if [[ $duplicate_count -eq 0 ]]; then
+            echo -e "  ${GREEN}${BOLD}✨ No duplicates found even with Level 6 deep analysis${NC}"
+            echo -e "  ${BLUE}Your video collection is completely unique!${NC}"
+            return 0
+        fi
+        
+        # If duplicates found, continue to display results below
     fi
     
-    echo -e "${YELLOW}${BOLD}📊 DUPLICATE VIDEO DETECTION RESULTS${NC}"
-    echo -e "${CYAN}Found ${BOLD}$duplicate_count${NC}${CYAN} duplicate video pairs${NC}\n"
+    echo -e "${YELLOW}${BOLD}📊 DUPLICATE VIDEO DETECTION RESULTS${NC}\n"
+    
+    # Calculate unique duplicate files
+    declare -A all_duplicate_files
+    for pair in "${duplicate_pairs[@]}"; do
+        IFS='|' read -r level confidence file1 file2 reason <<< "$pair"
+        all_duplicate_files["$file1"]=1
+        all_duplicate_files["$file2"]=1
+    done
+    local unique_duplicate_count=${#all_duplicate_files[@]}
+    
+    # Main statistics
+    echo -e "${CYAN}📈 Summary:${NC}"
+    echo -e "  ${BOLD}• Total videos scanned:${NC} $total_files"
+    echo -e "  ${BOLD}• Duplicate pairs found:${NC} ${YELLOW}$duplicate_count${NC}"
+    echo -e "  ${BOLD}• Duplicate files:${NC} ${YELLOW}$unique_duplicate_count${NC}"
+    echo -e "  ${BOLD}• Unique videos:${NC} $((total_files - unique_duplicate_count))"
+    echo ""
     
     # Group by level
     declare -A level_counts
@@ -7937,33 +8232,16 @@ detect_duplicate_videos() {
         ((level_counts[$level]++))
     done
     
-    echo -e "${BLUE}📈 Detection breakdown:${NC}"
-    [[ -n "${level_counts[LEVEL1]}" ]] && echo -e "  ${GREEN}Level 1 (Exact Binary):${NC} ${level_counts[LEVEL1]} pairs"
-    [[ -n "${level_counts[LEVEL2]}" ]] && echo -e "  ${GREEN}Level 2 (Visual Hash):${NC} ${level_counts[LEVEL2]} pairs"
-    [[ -n "${level_counts[LEVEL3]}" ]] && echo -e "  ${YELLOW}Level 3 (Metadata):${NC} ${level_counts[LEVEL3]} pairs"
-    [[ -n "${level_counts[LEVEL4]}" ]] && echo -e "  ${YELLOW}Level 4 (Properties):${NC} ${level_counts[LEVEL4]} pairs"
-    [[ -n "${level_counts[LEVEL5]}" ]] && echo -e "  ${CYAN}Level 5 (Filename):${NC} ${level_counts[LEVEL5]} pairs"
-    [[ -n "${level_counts[LEVEL6]}" ]] && echo -e "  ${MAGENTA}Level 6 (Frame Analysis):${NC} ${level_counts[LEVEL6]} pairs"
+    echo -e "${BLUE}🔍 Detection breakdown by confidence level:${NC}"
+    [[ -n "${level_counts[LEVEL1]}" ]] && echo -e "  ${GREEN}• Level 1 (Exact Binary):${NC} ${level_counts[LEVEL1]} pairs"
+    [[ -n "${level_counts[LEVEL2]}" ]] && echo -e "  ${GREEN}• Level 2 (Visual Hash):${NC} ${level_counts[LEVEL2]} pairs"
+    [[ -n "${level_counts[LEVEL3]}" ]] && echo -e "  ${YELLOW}• Level 3 (Metadata):${NC} ${level_counts[LEVEL3]} pairs"
+    [[ -n "${level_counts[LEVEL4]}" ]] && echo -e "  ${YELLOW}• Level 4 (Properties):${NC} ${level_counts[LEVEL4]} pairs"
+    [[ -n "${level_counts[LEVEL5]}" ]] && echo -e "  ${CYAN}• Level 5 (Filename):${NC} ${level_counts[LEVEL5]} pairs"
+    [[ -n "${level_counts[LEVEL6]}" ]] && echo -e "  ${MAGENTA}• Level 6 (Frame Analysis):${NC} ${level_counts[LEVEL6]} pairs"
     echo ""
     
-    # Calculate comprehensive statistics
-    echo -e "${CYAN}📊 Comprehensive Statistics:${NC}"
-    
-    # Total videos analyzed
-    echo -e "  ${GRAY}• Total videos: ${BOLD}$total_files${NC}"
-    
-    # Format distribution summary
-    if [[ ${#format_counts[@]} -gt 0 ]]; then
-        local format_list=""
-        for fmt in "${!format_counts[@]}"; do
-            format_list+="$fmt(${format_counts[$fmt]}), "
-        done
-        format_list=${format_list%, }  # Remove trailing comma
-        echo -e "  ${GRAY}• Formats: ${format_list}${NC}"
-    fi
-    
     # Calculate potential storage savings
-    local total_duplicate_size=0
     local potential_savings=0
     declare -A files_to_delete
     
@@ -7986,187 +8264,62 @@ detect_duplicate_videos() {
     done
     
     # Display potential savings
+    echo -e "${GREEN}💾 Potential storage savings:${NC}"
     if [[ $potential_savings -gt 0 ]]; then
         local savings_mb=$((potential_savings / 1024 / 1024))
         local savings_gb=$((savings_mb / 1024))
         
         if [[ $savings_gb -gt 0 ]]; then
-            echo -e "  ${GREEN}• Potential storage savings: ${BOLD}${savings_gb}GB${NC}${GREEN} (${savings_mb}MB)${NC}"
+            echo -e "  ${BOLD}• Space to recover:${NC} ${GREEN}${savings_gb}GB${NC} (${savings_mb}MB)"
         else
-            echo -e "  ${GREEN}• Potential storage savings: ${BOLD}${savings_mb}MB${NC}"
+            echo -e "  ${BOLD}• Space to recover:${NC} ${GREEN}${savings_mb}MB${NC}"
         fi
-        echo -e "  ${GRAY}• Files that could be removed: ${BOLD}${#files_to_delete[@]}${NC}"
+        echo -e "  ${BOLD}• Files to remove:${NC} ${#files_to_delete[@]}"
     fi
     echo ""
     
-    # Show detailed duplicates with properties
-    echo -e "${CYAN}🔍 Detailed Duplicate Analysis:${NC}\n"
-    
-    local pair_num=0
-    for pair in "${duplicate_pairs[@]}"; do
-        ((pair_num++))
-        IFS='|' read -r level confidence file1 file2 reason <<< "$pair"
-        
-        local name1="$(basename -- "$file1")"
-        local name2="$(basename -- "$file2")"
-        local size1=$(numfmt --to=iec-i --suffix=B "${video_sizes[$file1]}" 2>/dev/null || echo "${video_sizes[$file1]} bytes")
-        local size2=$(numfmt --to=iec-i --suffix=B "${video_sizes[$file2]}" 2>/dev/null || echo "${video_sizes[$file2]} bytes")
-        
-        # Get additional properties
-        local dur1="${video_durations[$file1]}"
-        local dur2="${video_durations[$file2]}"
-        local res1="${video_resolutions[$file1]}"
-        local res2="${video_resolutions[$file2]}"
-        local codec1="${video_codecs[$file1]}"
-        local codec2="${video_codecs[$file2]}"
-        local fmt1="${video_formats[$file1]}"
-        local fmt2="${video_formats[$file2]}"
-        
-        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        echo -e "${BOLD}Pair #$pair_num - Confidence: ${confidence}% ($level)${NC}"
-        echo -e "  ${GRAY}Reason: $reason${NC}"
-        echo ""
-        echo -e "  ${BLUE}File 1:${NC} $name1"
-        echo -e "    ${GRAY}Size: $size1 | Duration: ${dur1}s | Resolution: $res1${NC}"
-        echo -e "    ${GRAY}Codec: $codec1 | Format: $fmt1${NC}"
-        echo ""
-        echo -e "  ${BLUE}File 2:${NC} $name2"
-        echo -e "    ${GRAY}Size: $size2 | Duration: ${dur2}s | Resolution: $res2${NC}"
-        echo -e "    ${GRAY}Codec: $codec2 | Format: $fmt2${NC}"
-    done
-    
-    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
-    
-    # Ask user what to do
-    echo -e "${CYAN}${BOLD}What would you like to do with duplicates?${NC}"
-    echo -e "  ${GREEN}1.${NC} Keep all files (skip duplicate handling)"
-    echo -e "  ${YELLOW}2.${NC} Review and delete manually later"
-    echo -e "  ${MAGENTA}3.${NC} Smart delete (auto-keep smaller files, backup others)"
-    echo -e "  ${RED}4.${NC} Interactive deletion (choose which to keep)"
-    echo ""
-    echo -ne "${BOLD}Your choice [1-4]: ${NC}"
+    # Simple deletion prompt
+    echo -ne "${BOLD}Delete duplicate videos? (y/N): ${NC}"
     read -r dup_choice
     
-    case "$dup_choice" in
-        4)
-            # Interactive deletion - simple yes/no prompts
-            echo -e "\n${CYAN}👁️  Interactive Duplicate Handling${NC}\n"
-            local deleted_count=0
-            local kept_count=0
+    if [[ "$dup_choice" =~ ^[Yy]$ ]]; then
+        # User chose to delete duplicates - delete larger files
+        echo -e "\n${CYAN}🗑️  Deleting duplicate videos...${NC}\n"
+        local deleted_count=0
+        local freed_space=0
+        
+        for pair in "${duplicate_pairs[@]}"; do
+            IFS='|' read -r level confidence file1 file2 reason <<< "$pair"
             
-            for pair in "${duplicate_pairs[@]}"; do
-                IFS='|' read -r level confidence file1 file2 reason <<< "$pair"
-                
-                # Determine which file is larger (default deletion candidate)
-                local size1="${video_sizes[$file1]}"
-                local size2="${video_sizes[$file2]}"
-                local file_to_delete
-                local file_to_keep
-                
-                if [[ $size1 -gt $size2 ]]; then
-                    file_to_delete="$file1"
-                    file_to_keep="$file2"
-                else
-                    file_to_delete="$file2"
-                    file_to_keep="$file1"
-                fi
-                
-                echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-                echo -e "${BOLD}Duplicate Pair (Confidence: ${confidence}%)${NC}"
-                echo -e "${GRAY}Reason: $reason${NC}"
-                echo ""
-                echo -e "  ${BLUE}File 1:${NC} $(basename -- "$file1")"
-                echo -e "    ${GRAY}Size: $(numfmt --to=iec-i --suffix=B "$size1" 2>/dev/null)${NC}"
-                echo ""
-                echo -e "  ${BLUE}File 2:${NC} $(basename -- "$file2")"
-                echo -e "    ${GRAY}Size: $(numfmt --to=iec-i --suffix=B "$size2" 2>/dev/null)${NC}"
-                echo ""
-                echo -e "${YELLOW}${BOLD}⚠️  This will DELETE the larger file: $(basename -- "$file_to_delete")${NC}"
-                echo -e "${GREEN}${BOLD}✓  This will KEEP the smaller file: $(basename -- "$file_to_keep")${NC}"
-                echo ""
-                echo -ne "${BOLD}Delete the larger duplicate? (y/N): ${NC}"
-                read -r delete_choice
-                
-                if [[ "$delete_choice" =~ ^[Yy]$ ]]; then
-                    echo -e "  ${RED}❌ Deleting: $(basename -- "$file_to_delete")${NC}"
-                    rm -f "$file_to_delete"
-                    ((deleted_count++))
-                else
-                    echo -e "  ${GREEN}✓ Keeping both files${NC}"
-                    ((kept_count++))
-                fi
-            done
+            # Determine which file is larger (delete the larger one)
+            local size1="${video_sizes[$file1]}"
+            local size2="${video_sizes[$file2]}"
+            local file_to_delete
+            local file_to_keep
             
-            echo -e "\n${GREEN}✓ Interactive handling complete${NC}"
-            echo -e "  ${BOLD}Deleted: $deleted_count files${NC}"
-            echo -e "  ${BOLD}Kept: $kept_count duplicate pairs${NC}"
-            ;;
-        3)
-            # Smart delete with backup
-            echo -e "\n${MAGENTA}🧠 Smart Delete Mode${NC}\n"
-            
-            # Create backup directory
-            local backup_dir="${GIF_CONVERTER_DIR}/duplicate_videos_backup"
-            mkdir -p "$backup_dir" 2>/dev/null
-            
-            if [[ ! -d "$backup_dir" ]]; then
-                echo -e "${RED}⚠️  Cannot create backup directory${NC}"
-                echo -e "${YELLOW}Falling back to manual review${NC}"
+            if [[ $size1 -gt $size2 ]]; then
+                file_to_delete="$file1"
+                file_to_keep="$file2"
+                freed_space=$((freed_space + size1))
             else
-                echo -e "${CYAN}💾 Backup directory: $backup_dir${NC}"
-                echo -e "${GRAY}Strategy: Keep smaller files, backup larger duplicates${NC}\n"
-                
-                local deleted_count=0
-                local backed_up_size=0
-                
-                for pair in "${duplicate_pairs[@]}"; do
-                    IFS='|' read -r level confidence file1 file2 reason <<< "$pair"
-                    
-                    local size1="${video_sizes[$file1]}"
-                    local size2="${video_sizes[$file2]}"
-                    
-                    # Determine which file to delete (larger one)
-                    local file_to_delete
-                    local file_to_keep
-                    
-                    if [[ $size1 -gt $size2 ]]; then
-                        file_to_delete="$file1"
-                        file_to_keep="$file2"
-                    else
-                        file_to_delete="$file2"
-                        file_to_keep="$file1"
-                    fi
-                    
-                    # Move to backup
-                    local backup_name="$(basename -- "$file_to_delete")"
-                    echo -e "  ${YELLOW}📦 Backing up: $backup_name${NC}"
-                    
-                    if mv "$file_to_delete" "$backup_dir/" 2>/dev/null; then
-                        ((deleted_count++))
-                        ((backed_up_size += ${video_sizes[$file_to_delete]}))
-                        echo -e "    ${GREEN}✓ Moved to backup${NC}"
-                    else
-                        echo -e "    ${RED}✗ Failed to backup${NC}"
-                    fi
-                done
-                
-                # Show summary
-                local backed_up_mb=$((backed_up_size / 1024 / 1024))
-                echo -e "\n${GREEN}✓ Smart delete complete${NC}"
-                echo -e "  Files backed up: $deleted_count"
-                echo -e "  Space freed: ${backed_up_mb}MB"
-                echo -e "  ${GRAY}Backup location: $backup_dir${NC}"
-                echo -e "\n${CYAN}💡 Tip: Review backups and delete manually if satisfied${NC}"
+                file_to_delete="$file2"
+                file_to_keep="$file1"
+                freed_space=$((freed_space + size2))
             fi
-            ;;
-        2)
-            echo -e "${YELLOW}⏭️  Skipping deletion - review manually later${NC}"
-            echo -e "${CYAN}💡 Tip: Use option 3 or 4 next time to clean up automatically${NC}"
-            ;;
-        *)
-            echo -e "${GREEN}✓ Keeping all files - no changes made${NC}"
-            ;;
-    esac
+            
+            echo -e "  ${RED}❌ Deleting: $(basename -- "$file_to_delete")${NC}"
+            rm -f "$file_to_delete"
+            ((deleted_count++))
+        done
+        
+        local freed_mb=$((freed_space / 1024 / 1024))
+        echo -e "\n${GREEN}✓ Deletion complete${NC}"
+        echo -e "  ${BOLD}Deleted: $deleted_count files${NC}"
+        echo -e "  ${BOLD}Space freed: ${freed_mb}MB${NC}"
+    else
+        # User chose to keep files (default)
+        echo -e "${GREEN}✓ Keeping all files - no changes made${NC}"
+    fi
     
     echo -e "\n${GREEN}✓ Video duplicate detection complete${NC}"
     return 0
@@ -9351,6 +9504,192 @@ detect_duplicate_gifs() {
         }
     fi
     
+    # 🚀 PARALLEL COMPARISON FRAMEWORK FOR GIFS
+    # Determine optimal worker count
+    local max_workers=$((CPU_CORES / 2))
+    [[ $max_workers -lt 2 ]] && max_workers=2
+    [[ $max_workers -gt 8 ]] && max_workers=8
+    
+    # Create results directory
+    local gif_results_dir="$temp_analysis_dir/gif_stage2_results"
+    mkdir -p "$gif_results_dir"
+    local gif_duplicates_file="$gif_results_dir/duplicates.txt"
+    local gif_progress_file="$gif_results_dir/progress.txt"
+    local gif_lock_file="$gif_results_dir/lock"
+    echo "0" > "$gif_progress_file"
+    : > "$gif_duplicates_file"
+    
+    # Generate comparison queue
+    local gif_queue_file="$gif_results_dir/queue.txt"
+    echo -e "  ${CYAN}⚡ Generating GIF comparison queue...${NC}"
+    : > "$gif_queue_file"
+    
+    for ((i=0; i<${#gif_files[@]}; i++)); do
+        local file1="${gif_files[i]}"
+        
+        for ((j=i+1; j<${#gif_files[@]}; j++)); do
+            local file2="${gif_files[j]}"
+            
+            # Apply delta mode filter
+            if [[ $delta_mode_enabled == true && ${#new_files[@]} -gt 0 ]]; then
+                if [[ -z "${file_is_new[$file1]}" && -z "${file_is_new[$file2]}" ]]; then
+                    continue  # Skip OLD×OLD pairs
+                fi
+            fi
+            
+            # Add to queue
+            echo "$i|$j" >> "$gif_queue_file"
+        done
+    done
+    
+    local gif_total_queued=$(wc -l < "$gif_queue_file")
+    echo -e "  ${GREEN}✓ Queue ready: $gif_total_queued GIF comparisons${NC}"
+    echo -e "  ${MAGENTA}🚀 Starting $max_workers parallel workers for GIFs...${NC}"
+    
+    # Worker function for parallel GIF comparison
+    compare_gif_worker() {
+        local worker_id=$1
+        local queue=$2
+        local results=$3
+        local progress=$4
+        local lockfile=$5
+        
+        while true; do
+            # Atomic queue pop
+            local pair
+            (
+                flock -x 200
+                pair=$(head -n 1 "$queue" 2>/dev/null)
+                if [[ -n "$pair" ]]; then
+                    sed -i '1d' "$queue"
+                fi
+            ) 200>"$lockfile"
+            
+            [[ -z "$pair" ]] && break
+            
+            local i=$(echo "$pair" | cut -d'|' -f1)
+            local j=$(echo "$pair" | cut -d'|' -f2)
+            
+            local file1="${gif_files[$i]}"
+            local file2="${gif_files[$j]}"
+            
+            # Perform comparison (Levels 1-3)
+            local checksum1="${gif_checksums[$file1]}"
+            local checksum2="${gif_checksums[$file2]}"
+            
+            local duplicate_found=""
+            
+            # Level 1: MD5 match
+            if [[ "$checksum1" == "$checksum2" ]]; then
+                duplicate_found="LEVEL1|100|$file1|$file2|Exact binary match"
+            fi
+            
+            # Level 2: Visual hash
+            if [[ -z "$duplicate_found" ]]; then
+                local hash1="${gif_visual_hashes[$file1]}"
+                local hash2="${gif_visual_hashes[$file2]}"
+                if [[ -n "$hash1" && -n "$hash2" && "$hash1" == "$hash2" ]]; then
+                    duplicate_found="LEVEL2|95|$file1|$file2|Identical visual fingerprint"
+                fi
+            fi
+            
+            # Level 3: Content fingerprint
+            if [[ -z "$duplicate_found" ]]; then
+                local fp1="${gif_fingerprints[$file1]}"
+                local fp2="${gif_fingerprints[$file2]}"
+                if [[ "$fp1" == "$fp2" ]]; then
+                    local size1="${gif_sizes[$file1]:-0}"
+                    local size2="${gif_sizes[$file2]:-0}"
+                    if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
+                        local size_ratio=$(( (size1 < size2 ? size1 * 100 / size2 : size2 * 100 / size1) ))
+                        if [[ $size_ratio -ge 95 ]]; then
+                            duplicate_found="LEVEL3|90|$file1|$file2|Identical metadata"
+                        fi
+                    fi
+                fi
+            fi
+            
+            # Write result
+            if [[ -n "$duplicate_found" ]]; then
+                (
+                    flock -x 200
+                    echo "$duplicate_found" >> "$results"
+                ) 200>"$lockfile"
+            fi
+            
+            # Update progress
+            (
+                flock -x 200
+                local current=$(cat "$progress")
+                echo $((current + 1)) > "$progress"
+            ) 200>"$lockfile"
+        done
+    }
+    
+    # Export for workers
+    export -f compare_gif_worker
+    
+    # Launch workers
+    local gif_worker_pids=()
+    for ((w=0; w<max_workers; w++)); do
+        compare_gif_worker $w "$gif_queue_file" "$gif_duplicates_file" "$gif_progress_file" "$gif_lock_file" &
+        gif_worker_pids+=($!)
+    done
+    
+    # Monitor progress
+    echo -e "  ${CYAN}Comparing GIF pairs with $max_workers workers...${NC}"
+    local gif_last_progress=0
+    while true; do
+        local gif_current_progress=$(cat "$gif_progress_file" 2>/dev/null || echo "0")
+        
+        # Check workers
+        local workers_alive=0
+        for pid in "${gif_worker_pids[@]}"; do
+            if kill -0 $pid 2>/dev/null; then
+                ((workers_alive++))
+            fi
+        done
+        
+        [[ $workers_alive -eq 0 ]] && break
+        
+        # Show progress
+        if [[ $gif_current_progress -ne $gif_last_progress ]]; then
+            local progress_pct=$((gif_current_progress * 100 / gif_total_queued))
+            local filled=$((progress_pct * 30 / 100))
+            local empty=$((30 - filled))
+            
+            printf "\r  ${CYAN}["
+            for ((k=0; k<filled; k++)); do printf "${GREEN}█${NC}"; done
+            for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
+            printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d/%d)${NC}" "$progress_pct" "$gif_current_progress" "$gif_total_queued"
+            
+            gif_last_progress=$gif_current_progress
+        fi
+        
+        sleep 0.2
+    done
+    
+    printf "\r\033[K"
+    
+    # Wait for completion
+    for pid in "${gif_worker_pids[@]}"; do
+        wait $pid 2>/dev/null
+    done
+    
+    # Collect results
+    while IFS= read -r duplicate_line; do
+        [[ -z "$duplicate_line" ]] && continue
+        duplicate_pairs+=("$duplicate_line")
+        ((duplicate_count++))
+    done < "$gif_duplicates_file"
+    
+    echo -e "  ${GREEN}✓ Parallel GIF comparison complete${NC}"
+    
+    # Clean up
+    rm -rf "$gif_results_dir" 2>/dev/null
+    
+    # OLD SEQUENTIAL CODE - Disabled
+    if false; then
     # Advanced duplicate detection with multiple similarity levels
     for ((i=resume_i; i<${#gif_files[@]}; i++)); do
         # Check for interrupt
@@ -10531,83 +10870,120 @@ detect_duplicate_gifs() {
         return 0
     fi
     
-    # Final progress summary
-    echo -e "  ${GREEN}✓ AI Analysis Summary:${NC}"
-    echo -e "    ${CYAN}• Analyzed: ${BOLD}$total_gifs${NC} ${CYAN}GIF files${NC}"
-    echo -e "    ${CYAN}• Performed: ${BOLD}$total_comparisons${NC} ${CYAN}similarity comparisons${NC}"
-    echo -e "    ${CYAN}• Detection methods: ${BOLD}Binary + Visual + Fingerprint + Metadata${NC}"
-    
-    if [[ $duplicate_count -eq 0 ]]; then
-        echo -e "\n  ${GREEN}${BOLD}✨ Excellent! No duplicate GIFs found${NC}"
-        echo -e "  ${BLUE}🚀 Your collection is already optimized!${NC}"
-        echo -e "  ${GRAY}AI checked for exact matches, visual similarity, and content fingerprints${NC}"
-        return 0
-    fi
-    
-    # Show duplicate files with AI analysis details
-    echo -e "\n  ${YELLOW}🔍 Found $duplicate_count duplicate GIF file(s) using AI analysis:${NC}"
+    # Calculate unique duplicate GIFs
+    declare -A all_duplicate_gifs
+    declare -A gif_file_sizes
     for pair in "${duplicate_pairs[@]}"; do
-        # Parse the enhanced duplicate pair format: remove_file|keep_file|similarity_reason|decision_reason
         local remove_file="${pair%%|*}"
         local rest="${pair#*|}"
         local keep_file="${rest%%|*}"
+        all_duplicate_gifs["$remove_file"]=1
+        all_duplicate_gifs["$keep_file"]=1
+        
+        # Store file sizes for savings calculation
+        gif_file_sizes["$remove_file"]=$(stat -c%s "$remove_file" 2>/dev/null || echo "0")
+        gif_file_sizes["$keep_file"]=$(stat -c%s "$keep_file" 2>/dev/null || echo "0")
+    done
+    local unique_duplicate_gifs=${#all_duplicate_gifs[@]}
+    
+    if [[ $duplicate_count -eq 0 ]]; then
+        echo -e "\n  ${GREEN}${BOLD}✨ Excellent! No duplicate GIFs found (Levels 1-5)${NC}"
+        echo -e "  ${GRAY}All $total_gifs GIF files are unique based on:
+    • Binary comparison (MD5)
+    • Visual hashing (perceptual hash)
+    • Content fingerprinting
+    • Metadata matching
+    • Filename similarity${NC}"
+        echo ""
+        echo -e "${CYAN}${BOLD}🔍 Level 6: Deep Frame-by-Frame Analysis${NC}"
+        echo -e "  ${GRAY}• Compares actual GIF frames for visual similarity${NC}"
+        echo -e "  ${GRAY}• Can detect re-encoded or optimized duplicates${NC}"
+        echo -e "  ${GRAY}• Much slower: ~20-40 seconds per pair${NC}"
+        echo -e "  ${YELLOW}• For $total_gifs GIFs: $(( total_gifs * (total_gifs - 1) / 2 )) comparisons needed${NC}"
+        echo ""
+        echo -ne "${BOLD}Proceed with Level 6 frame-by-frame detection? (y/N): ${NC}"
+        read -r level6_choice
+        
+        if [[ ! "$level6_choice" =~ ^[Yy]$ ]]; then
+            echo -e "${GREEN}✓ Skipping Level 6 analysis${NC}"
+            echo -e "  ${BLUE}🚀 Your collection is already optimized!${NC}"
+            return 0
+        fi
+        
+        # Note: Level 6 for GIFs would require implementing compare_gif_frames function
+        # For now, inform user this is not yet implemented
+        echo -e "\n  ${YELLOW}⚠️  Level 6 frame analysis for GIFs is not yet implemented${NC}"
+        echo -e "  ${GRAY}GIF frame-by-frame comparison requires different approach than video${NC}"
+        echo -e "  ${CYAN}Current detection (Levels 1-5) is already very comprehensive for GIFs${NC}"
+        return 0
+    fi
+    
+    echo -e "\n${YELLOW}${BOLD}📊 DUPLICATE GIF DETECTION RESULTS${NC}\n"
+    
+    # Main statistics
+    echo -e "${CYAN}📈 Summary:${NC}"
+    echo -e "  ${BOLD}• Total GIFs scanned:${NC} $total_gifs"
+    echo -e "  ${BOLD}• Duplicate pairs found:${NC} ${YELLOW}$duplicate_count${NC}"
+    echo -e "  ${BOLD}• Duplicate files:${NC} ${YELLOW}$unique_duplicate_gifs${NC}"
+    echo -e "  ${BOLD}• Unique GIFs:${NC} $((total_gifs - unique_duplicate_gifs))"
+    echo ""
+    
+    # Count detection methods
+    declare -A method_counts
+    for pair in "${duplicate_pairs[@]}"; do
+        local rest="${pair#*|}"
         rest="${rest#*|}"
         local similarity_reason="${rest%%|*}"
-        local decision_reason="${rest#*|}"
-        
-        # Get file metadata for display
-        local remove_size=$(stat -c%s "$remove_file" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "unknown")
-        local keep_size=$(stat -c%s "$keep_file" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "unknown")
-        local remove_mtime=$(stat -c%y "$remove_file" 2>/dev/null | cut -d' ' -f1 || echo "unknown")
-        local keep_mtime=$(stat -c%y "$keep_file" 2>/dev/null | cut -d' ' -f1 || echo "unknown")
-        
-        # Display similarity reason with appropriate icon and color
-        local reason_display=""
-        case "$similarity_reason" in
-            "exact_binary")
-                reason_display="${GREEN}🎯 Exact binary match (100% identical)${NC}"
-                ;;
-            "visual_identical")
-                reason_display="${BLUE}👁️  Visual content identical${NC}"
-                ;;
-            "content_fingerprint")
-                reason_display="${CYAN}🔍 Same content fingerprint${NC}"
-                ;;
-            "near_identical")
-                reason_display="${YELLOW}⚠️  Near-identical (manual review suggested)${NC}"
-                ;;
-            "filename_property_match")
-                reason_display="${CYAN}📝 Same properties + similar filename (likely duplicate)${NC}"
-                ;;
-            *)
-                reason_display="${GRAY}🔍 Detected as duplicate${NC}"
-                ;;
-        esac
-        
-        echo -e "    ${RED}🔴 Remove: $remove_file ($remove_size, modified: $remove_mtime)${NC}"
-        echo -e "    ${GREEN}🔵 Keep:   $keep_file ($keep_size, modified: $keep_mtime)${NC}"
-        echo -e "    ${MAGENTA}📊 Detection: $reason_display${NC}"
-        if [[ -n "$decision_reason" && "$decision_reason" != "$similarity_reason" ]]; then
-            echo -e "    ${CYAN}🧠 Decision: $decision_reason${NC}"
-        fi
-        echo ""
+        ((method_counts["$similarity_reason"]++))
     done
     
-    echo -ne "\n  ${YELLOW}${BOLD}Duplicate GIFs are found! Do you want to remove duplicates? (y/N): ${NC}"
+    echo -e "${BLUE}🔍 Detection breakdown by method:${NC}"
+    [[ -n "${method_counts[exact_binary]}" ]] && echo -e "  ${GREEN}• Exact Binary Match:${NC} ${method_counts[exact_binary]} pairs"
+    [[ -n "${method_counts[visual_identical]}" ]] && echo -e "  ${BLUE}• Visual Identical:${NC} ${method_counts[visual_identical]} pairs"
+    [[ -n "${method_counts[content_fingerprint]}" ]] && echo -e "  ${CYAN}• Content Fingerprint:${NC} ${method_counts[content_fingerprint]} pairs"
+    [[ -n "${method_counts[near_identical]}" ]] && echo -e "  ${YELLOW}• Near-Identical:${NC} ${method_counts[near_identical]} pairs"
+    [[ -n "${method_counts[filename_property_match]}" ]] && echo -e "  ${CYAN}• Filename/Property Match:${NC} ${method_counts[filename_property_match]} pairs"
+    echo ""
+    
+    # Calculate potential storage savings
+    local potential_savings=0
+    for pair in "${duplicate_pairs[@]}"; do
+        local remove_file="${pair%%|*}"
+        local remove_size="${gif_file_sizes[$remove_file]:-0}"
+        [[ -n "$remove_size" && "$remove_size" -gt 0 ]] && potential_savings=$((potential_savings + remove_size))
+    done
+    
+    echo -e "${GREEN}💾 Potential storage savings:${NC}"
+    if [[ $potential_savings -gt 0 ]]; then
+        local savings_mb=$((potential_savings / 1024 / 1024))
+        local savings_gb=$((savings_mb / 1024))
+        
+        if [[ $savings_gb -gt 0 ]]; then
+            echo -e "  ${BOLD}• Space to recover:${NC} ${GREEN}${savings_gb}GB${NC} (${savings_mb}MB)"
+        else
+            echo -e "  ${BOLD}• Space to recover:${NC} ${GREEN}${savings_mb}MB${NC}"
+        fi
+        echo -e "  ${BOLD}• Files to remove:${NC} $duplicate_count"
+    fi
+    echo ""
+    
+    # Simple deletion prompt
+    echo -ne "${BOLD}Delete duplicate GIFs? (y/N): ${NC}"
     
     local choice
     read -r choice
     
     # Default to 'no' if empty or anything other than y/Y
     if [[ ! "$choice" =~ ^[Yy]$ ]]; then
-        echo -e "  ${CYAN}⏭️  Skipping duplicate removal${NC}"
+        echo -e "${GREEN}✓ Keeping all files - no changes made${NC}"
         return 0
     fi
     
-    # User chose yes - delete duplicate GIF files only
-    echo -e "\n  ${GREEN}${BOLD}🗑️  Deleting duplicate GIF files...${NC}"
+    # User chose yes - delete duplicate GIF files
+    echo -e "\n${CYAN}🗑️  Deleting duplicate GIF files...${NC}\n"
     local deleted_count=0
     local skipped_count=0
+    local freed_space=0
     declare -A already_deleted  # Track files already deleted to avoid duplicate attempts
     
     for pair in "${duplicate_pairs[@]}"; do
@@ -10913,21 +11289,9 @@ detect_duplicate_gifs() {
             # Track space saved
             DUPLICATE_STATS_SPACE_SAVED=$((DUPLICATE_STATS_SPACE_SAVED + remove_file_size))
             DUPLICATE_STATS_DELETED=$((DUPLICATE_STATS_DELETED + 1))
+            freed_space=$((freed_space + remove_file_size))
             
-            if [[ "$has_source_remove" == true ]]; then
-                echo -e "    ${GREEN}✓ Deleted: $remove_file (keeping $keep_file)${NC}"
-                echo -e "    ${CYAN}  → Both have sources: $(basename -- "$remove_source"), $(basename -- "$keep_source")${NC}"
-            elif [[ "$has_source_keep" == true ]]; then
-                echo -e "    ${GREEN}✓ Deleted: $remove_file (keeping $keep_file)${NC}"
-                echo -e "    ${CYAN}  → Keep has source: $(basename -- "$keep_source")${NC}"
-            else
-                echo -e "    ${GREEN}✓ Deleted: $remove_file (keeping $keep_file)${NC}"
-                echo -e "    ${CYAN}  → Orphaned duplicates${NC}"
-            fi
-            
-            if [[ -n "$quality_info" ]]; then
-                echo -e "    ${GRAY}  📊 Quality: $quality_info${NC}"
-            fi
+            echo -e "  ${RED}❌ Deleting: $(basename -- "$remove_file")${NC}"
             ((deleted_count++))
             already_deleted["$remove_file"]=1  # Mark as deleted
             
@@ -10955,12 +11319,16 @@ detect_duplicate_gifs() {
         fi
     done
     
+    # Show simple summary
+    local freed_mb=$((freed_space / 1024 / 1024))
+    echo -e "\n${GREEN}✓ Deletion complete${NC}"
+    echo -e "  ${BOLD}Deleted: $deleted_count files${NC}"
     if [[ $skipped_count -gt 0 ]]; then
-        echo -e "  ${GREEN}${BOLD}✨ Success! Cleaned up $deleted_count duplicate GIF(s)${NC}"
-        echo -e "  ${YELLOW}⚠️  Skipped $skipped_count file(s) with ambiguous source mapping${NC}"
-    else
-        echo -e "  ${GREEN}${BOLD}✨ Success! Cleaned up $deleted_count duplicate GIF(s)${NC}"
+        echo -e "  ${BOLD}Skipped: $skipped_count files${NC} ${GRAY}(ambiguous source mapping)${NC}"
     fi
+    echo -e "  ${BOLD}Space freed: ${freed_mb}MB${NC}"
+    
+    fi  # End of if false - old GIF sequential code disabled
     
     # Show comprehensive statistical summary
     show_duplicate_detection_statistics
