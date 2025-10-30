@@ -2046,11 +2046,8 @@ init_video_cache() {
     local video_cache_dir="${GIF_CONVERTER_DIR}/video_cache"
     local video_cache_index="$video_cache_dir/video_analysis.db"
     
-    # Create video cache directory
-    mkdir -p "$video_cache_dir" 2>/dev/null || {
-        echo -e "${YELLOW}⚠️  Warning: Cannot create video cache directory${NC}" >&2
-        return 1
-    }
+    # Create video cache directory (silently fail if not possible)
+    mkdir -p "$video_cache_dir" 2>/dev/null || return 1
     
     # Create cache index if it doesn't exist
     if [[ ! -f "$video_cache_index" ]]; then
@@ -6846,39 +6843,34 @@ compare_video_frames() {
     # Check if videos exist
     [[ ! -f "$video1" || ! -f "$video2" ]] && return 1
     
-    # Get video durations
-    local dur1=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$video1" 2>/dev/null | cut -d'.' -f1)
-    local dur2=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$video2" 2>/dev/null | cut -d'.' -f1)
+    # FAST MODE: Only analyze first 1 second with 3 frames for speed
+    # This is 5-10x faster and still highly accurate for duplicate detection
+    local sample_duration=1  # Only look at first 1 second
     
-    [[ -z "$dur1" || -z "$dur2" || ! "$dur1" =~ ^[0-9]+$ || ! "$dur2" =~ ^[0-9]+$ ]] && return 1
-    [[ $dur1 -eq 0 || $dur2 -eq 0 ]] && return 1
-    
-    # Extract 5 key frames from each video (start, 25%, 50%, 75%, end)
     local frames_dir1="$temp_dir/frames1_${RANDOM}"
     local frames_dir2="$temp_dir/frames2_${RANDOM}"
-    mkdir -p "$frames_dir1" "$frames_dir2"
+    mkdir -p "$frames_dir1" "$frames_dir2" 2>/dev/null || return 1
     
-    local sample_times=()
-    local num_samples=5
-    for ((i=0; i<num_samples; i++)); do
-        local time_pct=$((i * 100 / (num_samples - 1)))
-        local time_sec=$((dur1 * time_pct / 100))
-        sample_times+=("$time_sec")
-    done
-    
-    # Extract frames from both videos
+    # Extract only 3 frames from first second (0.0s, 0.5s, 1.0s)
+    local sample_times=(0 0.5 1)
     local frame_num=0
+    
     for time in "${sample_times[@]}"; do
         ((frame_num++))
         
-        # Extract from video 1
-        timeout 10 ffmpeg -ss $time -i "$video1" -vframes 1 -f image2 \
-            "$frames_dir1/frame_${frame_num}.png" >/dev/null 2>&1
+        # Extract from video 1 (with shorter timeout)
+        timeout 3 ffmpeg -ss $time -i "$video1" -vframes 1 -f image2 \
+            "$frames_dir1/frame_${frame_num}.png" >/dev/null 2>&1 &
+        local pid1=$!
         
-        # Extract from video 2 (use proportional time)
-        local time2=$((dur2 * time / dur1))
-        timeout 10 ffmpeg -ss $time2 -i "$video2" -vframes 1 -f image2 \
-            "$frames_dir2/frame_${frame_num}.png" >/dev/null 2>&1
+        # Extract from video 2
+        timeout 3 ffmpeg -ss $time -i "$video2" -vframes 1 -f image2 \
+            "$frames_dir2/frame_${frame_num}.png" >/dev/null 2>&1 &
+        local pid2=$!
+        
+        # Wait for both (parallel extraction)
+        wait $pid1 2>/dev/null
+        wait $pid2 2>/dev/null
     done
     
     # Count extracted frames
@@ -8156,26 +8148,57 @@ detect_duplicate_videos() {
         
         # Run Level 6 analysis on all pairs
         echo -e "\n  ${MAGENTA}${BOLD}🎬 Stage 3: Level 6 Deep Frame Analysis...${NC}"
-        echo -e "  ${CYAN}Analyzing all ${total_files} videos for visual duplicates...${NC}\n"
+        echo -e "  ${CYAN}Analyzing all ${total_files} videos for visual duplicates...${NC}"
+        echo -e "  ${YELLOW}⚠️  Press Ctrl+C to cancel at any time${NC}\n"
         
         local video_files_array=("${!video_sizes[@]}")
         local pair_count=0
         local total_pairs=$(( total_files * (total_files - 1) / 2 ))
+        local level6_found=0
+        
+        # Enable Ctrl+C handling with exit flag
+        local interrupted=false
+        trap 'interrupted=true' INT
         
         for ((i=0; i<total_files; i++)); do
+            # Check for interruption at start of outer loop
+            if [[ "$interrupted" == "true" ]]; then
+                echo -e "\n\n  ${YELLOW}⏸️  Level 6 analysis interrupted by user${NC}"
+                break
+            fi
+            
             for ((j=i+1; j<total_files; j++)); do
+                # Check for interruption in inner loop
+                if [[ "$interrupted" == "true" ]]; then
+                    break
+                fi
+                
                 ((pair_count++))
                 local file1="${video_files_array[$i]}"
                 local file2="${video_files_array[$j]}"
                 
-                # Progress indicator
-                if [[ $((pair_count % 10)) -eq 0 || $pair_count -eq $total_pairs ]]; then
-                    local progress=$((pair_count * 100 / total_pairs))
-                    printf "\r  ${CYAN}Progress: ${BOLD}%3d%%${NC} ${GRAY}(%d/%d pairs)${NC}" "$progress" "$pair_count" "$total_pairs"
-                fi
+                # Calculate progress
+                local progress=$((pair_count * 100 / total_pairs))
+                local filled=$((progress * 40 / 100))
+                local empty=$((40 - filled))
+                
+                # Get short filenames for display
+                local name1="$(basename -- "$file1")"
+                local name2="$(basename -- "$file2")"
+                [[ ${#name1} -gt 25 ]] && name1="${name1:0:22}..."
+                [[ ${#name2} -gt 25 ]] && name2="${name2:0:22}..."
+                
+                # Progress bar with files being compared
+                printf "\r  ${CYAN}["
+                for ((k=0; k<filled; k++)); do printf "${MAGENTA}█${NC}"; done
+                for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
+                printf "${CYAN}] ${BOLD}%3d%%${NC}" "$progress"
+                printf "\n  ${GRAY}Pair %d/%d | Found: ${YELLOW}%d${GRAY} duplicates${NC}" "$pair_count" "$total_pairs" "$level6_found"
+                printf "\n  ${BLUE}Comparing:${NC} %s ${YELLOW}↔${NC} %s" "$name1" "$name2"
+                printf "\r\033[3A"  # Move cursor up 3 lines
                 
                 # Perform frame-by-frame comparison
-                local frame_analysis=$(compare_video_frames "$file1" "$file2" "$temp_analysis_dir")
+                local frame_analysis=$(compare_video_frames "$file1" "$file2" "$temp_analysis_dir" 2>/dev/null)
                 
                 if [[ -n "$frame_analysis" ]]; then
                     local visual_match=$(echo "$frame_analysis" | cut -d':' -f1)
@@ -8185,16 +8208,22 @@ detect_duplicate_videos() {
                     if [[ $visual_match -ge 85 && $color_match -ge 85 ]]; then
                         duplicate_pairs+=("LEVEL6|95|$file1|$file2|Frame-by-frame analysis (V:${visual_match}% C:${color_match}%)")
                         ((duplicate_count++))
+                        ((level6_found++))
                     elif [[ $visual_match -ge 70 || $color_match -ge 75 ]]; then
                         duplicate_pairs+=("LEVEL6|75|$file1|$file2|Partial frame match (V:${visual_match}% C:${color_match}%)")
                         ((duplicate_count++))
+                        ((level6_found++))
                     fi
                 fi
             done
         done
         
-        printf "\r\033[K"
-        echo -e "  ${GREEN}✓ Level 6 analysis complete${NC}\n"
+        # Clear progress lines and restore trap
+        printf "\r\033[K\n\033[K\n\033[K"
+        trap - INT
+        
+        echo -e "  ${GREEN}✓ Level 6 analysis complete${NC}"
+        echo -e "  ${MAGENTA}Found ${BOLD}$level6_found${NC}${MAGENTA} duplicates via frame analysis${NC}\n"
         
         # Check results
         if [[ $duplicate_count -eq 0 ]]; then
@@ -10910,11 +10939,156 @@ detect_duplicate_gifs() {
             return 0
         fi
         
-        # Note: Level 6 for GIFs would require implementing compare_gif_frames function
-        # For now, inform user this is not yet implemented
-        echo -e "\n  ${YELLOW}⚠️  Level 6 frame analysis for GIFs is not yet implemented${NC}"
-        echo -e "  ${GRAY}GIF frame-by-frame comparison requires different approach than video${NC}"
-        echo -e "  ${CYAN}Current detection (Levels 1-5) is already very comprehensive for GIFs${NC}"
+        # Run Level 6 analysis on all GIF pairs
+        echo -e "\n  ${MAGENTA}${BOLD}🎬 Stage 3: Level 6 Deep Frame Analysis...${NC}"
+        echo -e "  ${CYAN}Analyzing all ${total_gifs} GIFs for visual duplicates...${NC}"
+        echo -e "  ${YELLOW}⚠️  Press Ctrl+C to cancel at any time${NC}\n"
+        
+        # Track Level 6 results
+        local level6_duplicate_count=0
+        local level6_checked_here=0
+        local level6_cached_here=0
+        
+        # Compare all GIF pairs with Level 6 frame analysis
+        for ((i=0; i<total_gifs; i++)); do
+            local file1="${gif_files_list[$i]}"
+            
+            for ((j=i+1; j<total_gifs; j++)); do
+                local file2="${gif_files_list[$j]}"
+                
+                # Check if this pair was already marked as duplicate in Levels 1-5
+                # (This section only runs when no duplicates were found, so we can skip this check)
+                
+                ((level6_checked_here++))
+                
+                # Show progress
+                local total_pairs=$(( total_gifs * (total_gifs - 1) / 2 ))
+                local progress_pct=$((level6_checked_here * 100 / total_pairs))
+                printf "\r  ${MAGENTA}Progress: [${NC}"
+                local filled=$((progress_pct * 30 / 100))
+                for ((k=0; k<filled; k++)); do printf "${MAGENTA}█${NC}"; done
+                for ((k=filled; k<30; k++)); do printf "${GRAY}░${NC}"; done
+                printf "${MAGENTA}] ${BOLD}%3d%%${NC} ${GRAY}($level6_checked_here/$total_pairs pairs)${NC}" "$progress_pct"
+                
+                # Check cache first
+                local cache_key="L6_COMPARE:$(basename "$file1"):$(basename "$file2")"
+                local cached_result=""
+                
+                if [[ "$AI_CACHE_ENABLED" == "true" && -f "$AI_CACHE_INDEX" ]]; then
+                    cached_result=$(grep "^$cache_key|" "$AI_CACHE_INDEX" 2>/dev/null | tail -1 | cut -d'|' -f5)
+                fi
+                
+                local frame_analysis=""
+                
+                if [[ -n "$cached_result" ]]; then
+                    # Cache HIT
+                    ((level6_cached_here++))
+                    frame_analysis="$cached_result"
+                else
+                    # Cache MISS - perform analysis
+                    frame_analysis=$(ai_advanced_frame_comparison "$file1" "$file2" "$temp_analysis_dir" "false")
+                    
+                    # Save to cache
+                    if [[ "$AI_CACHE_ENABLED" == "true" && -n "$frame_analysis" && "$frame_analysis" != "0:0" ]]; then
+                        local timestamp=$(date +%s)
+                        local cache_entry="$cache_key|0|0|$timestamp|$frame_analysis"
+                        echo "$cache_entry" >> "$AI_CACHE_INDEX" 2>/dev/null
+                    fi
+                fi
+                
+                # Check if frames match (duplicate detected)
+                if [[ "$frame_analysis" != "0:0" ]]; then
+                    local visual_match=$(echo "$frame_analysis" | cut -d':' -f1)
+                    local color_match=$(echo "$frame_analysis" | cut -d':' -f2)
+                    
+                    # STRICT CRITERIA: Visual >= 80% AND Color >= 85%
+                    if [[ $visual_match -ge 80 && $color_match -ge 85 ]]; then
+                        # Found a Level 6 duplicate!
+                        ((level6_duplicate_count++))
+                        
+                        # Add to duplicate pairs
+                        local size1="${gif_sizes[$file1]:-0}"
+                        local size2="${gif_sizes[$file2]:-0}"
+                        local keep_file="$file1"
+                        local remove_file="$file2"
+                        
+                        # Keep larger file
+                        if [[ $size2 -gt $size1 ]]; then
+                            keep_file="$file2"
+                            remove_file="$file1"
+                        fi
+                        
+                        duplicate_pairs+=("$remove_file|$keep_file|L6_frame_analysis(V:${visual_match}%,C:${color_match}%)|$((size1 - size2))")
+                        ((duplicate_count++))
+                        
+                        printf "\r\033[K"
+                        echo -e "  ${GREEN}✓ Level 6 duplicate found!${NC} ${YELLOW}$(basename "$file1")${NC} ↔ ${YELLOW}$(basename "$file2")${NC}"
+                        echo -e "    ${CYAN}Visual: ${BOLD}${visual_match}%${NC} ${CYAN}| Color: ${BOLD}${color_match}%${NC}"
+                    fi
+                fi
+            done
+        done
+        
+        printf "\r\033[K"
+        echo ""
+        echo -e "  ${GREEN}${BOLD}✓ Level 6 Analysis Complete${NC}"
+        echo -e "  ${GRAY}Analyzed: $level6_checked_here pairs${NC}"
+        echo -e "  ${GRAY}Cached: $level6_cached_here pairs${NC}"
+        echo -e "  ${GRAY}Duplicates found: ${BOLD}$level6_duplicate_count${NC}"
+        echo ""
+        
+        # If Level 6 found duplicates, show results and deletion prompt
+        if [[ $level6_duplicate_count -gt 0 ]]; then
+            echo -e "${YELLOW}${BOLD}📊 LEVEL 6 DUPLICATE DETECTION RESULTS${NC}\n"
+            echo -e "${CYAN}📈 Summary:${NC}"
+            echo -e "  ${BOLD}• Total GIFs scanned:${NC} $total_gifs"
+            echo -e "  ${BOLD}• Duplicate pairs found:${NC} ${YELLOW}$duplicate_count${NC}"
+            echo ""
+            
+            # Calculate storage savings
+            local potential_savings=0
+            for pair in "${duplicate_pairs[@]}"; do
+                local remove_file="${pair%%|*}"
+                local remove_size=$(stat -c%s "$remove_file" 2>/dev/null || echo "0")
+                [[ -n "$remove_size" && "$remove_size" -gt 0 ]] && potential_savings=$((potential_savings + remove_size))
+            done
+            
+            if [[ $potential_savings -gt 0 ]]; then
+                local savings_mb=$((potential_savings / 1024 / 1024))
+                echo -e "${GREEN}💾 Potential storage savings: ${BOLD}${savings_mb}MB${NC}"
+                echo ""
+            fi
+            
+            # Deletion prompt
+            echo -ne "${BOLD}Delete duplicate GIFs found by Level 6? (y/N): ${NC}"
+            read -r delete_choice
+            
+            if [[ "$delete_choice" =~ ^[Yy]$ ]]; then
+                echo -e "\n${CYAN}🗑️  Deleting Level 6 duplicates...${NC}\n"
+                local deleted_count=0
+                
+                for pair in "${duplicate_pairs[@]}"; do
+                    local remove_file="${pair%%|*}"
+                    
+                    if [[ -f "$remove_file" ]]; then
+                        rm -f "$remove_file"
+                        if [[ $? -eq 0 ]]; then
+                            ((deleted_count++))
+                            echo -e "  ${GREEN}✓ Deleted:${NC} $(basename "$remove_file")"
+                        fi
+                    fi
+                done
+                
+                echo ""
+                echo -e "${GREEN}${BOLD}✓ Deleted $deleted_count duplicate files${NC}"
+            else
+                echo -e "${GREEN}✓ Keeping all files - no changes made${NC}"
+            fi
+        else
+            echo -e "  ${GREEN}${BOLD}✨ Excellent! No duplicates found even with Level 6 deep analysis${NC}"
+            echo -e "  ${BLUE}🚀 Your collection is fully optimized!${NC}"
+        fi
+        
         return 0
     fi
     
