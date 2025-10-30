@@ -257,7 +257,7 @@ AI_TRAINING_MIN_SAMPLES=5  # Minimum samples before AI makes confident predictio
 GITHUB_REPO="FreddeITsupport98/converter-mp4-to-gif-using-ffmpeg"
 GITHUB_API_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_URL="https://github.com/${GITHUB_REPO}/releases"
-CURRENT_VERSION="5.3"  # Script version
+CURRENT_VERSION="6.0"  # Script version
 UPDATE_CHECK_FILE="$LOG_DIR/.last_update_check"
 UPDATE_CHECK_INTERVAL=86400  # Check once per day (in seconds)
 AUTO_UPDATE_ENABLED=true  # Enable automatic update checks (user configurable)
@@ -8146,76 +8146,265 @@ detect_duplicate_videos() {
             return 0
         fi
         
-        # Run Level 6 analysis on all pairs
+        # Run Level 6 analysis with BULLETPROOF PRE-FILTERING
         echo -e "\n  ${MAGENTA}${BOLD}🎬 Stage 3: Level 6 Deep Frame Analysis...${NC}"
-        echo -e "  ${CYAN}Analyzing all ${total_files} videos for visual duplicates...${NC}"
+        echo -e "  ${CYAN}🧠 AI Pre-filtering: Only analyzing likely duplicate candidates...${NC}"
         echo -e "  ${YELLOW}⚠️  Press Ctrl+C to cancel at any time${NC}\n"
         
         local video_files_array=("${!video_sizes[@]}")
-        local pair_count=0
-        local total_pairs=$(( total_files * (total_files - 1) / 2 ))
         local level6_found=0
+        
+        # Build candidate pairs using bulletproof similarity detection
+        echo -e "  ${BLUE}🔍 Stage 1: Building candidate pairs based on similarity indicators...${NC}"
+        declare -a video_candidate_pairs
+        local total_possible_pairs=$(( total_files * (total_files - 1) / 2 ))
+        local pairs_evaluated=0
         
         # Enable Ctrl+C handling with exit flag
         local interrupted=false
         trap 'interrupted=true' INT
         
         for ((i=0; i<total_files; i++)); do
-            # Check for interruption at start of outer loop
+            # Check for interruption
+            if [[ "$interrupted" == "true" ]]; then
+                echo -e "\n  ${YELLOW}⏸️  Pre-filtering interrupted by user${NC}"
+                break
+            fi
+            
+            for ((j=i+1; j<total_files; j++)); do
+                if [[ "$interrupted" == "true" ]]; then
+                    break
+                fi
+                
+                ((pairs_evaluated++))
+                local file1="${video_files_array[$i]}"
+                local file2="${video_files_array[$j]}"
+                
+                # Show pre-filtering progress
+                if [[ $((pairs_evaluated % 100)) -eq 0 || $pairs_evaluated -eq $total_possible_pairs ]]; then
+                    local filter_pct=$((pairs_evaluated * 100 / total_possible_pairs))
+                    printf "\r  ${CYAN}Pre-filter: [${NC}"
+                    local filled=$((filter_pct * 30 / 100))
+                    for ((k=0; k<filled; k++)); do printf "${CYAN}█${NC}"; done
+                    for ((k=filled; k<30; k++)); do printf "${GRAY}░${NC}"; done
+                    printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d candidates)${NC}" "$filter_pct" "${#video_candidate_pairs[@]}"
+                fi
+                
+                # ═══════════════════════════════════════════════════════════════
+                # 🛡️ BULLETPROOF SIMILARITY PRE-FILTER (10 Factors)
+                # Only pairs passing this filter will undergo expensive Level 6 analysis
+                # ═══════════════════════════════════════════════════════════════
+                
+                local similarity_score=0
+                
+                # Factor 1: Similar filenames (40 points max)
+                local name1="$(basename -- "$file1")"
+                local name2="$(basename -- "$file2")"
+                # Remove extensions for comparison
+                name1="${name1%.*}"
+                name2="${name2%.*}"
+                if [[ "${name1:0:15}" == "${name2:0:15}" ]]; then
+                    similarity_score=$((similarity_score + 40))
+                elif [[ "${name1:0:10}" == "${name2:0:10}" ]]; then
+                    similarity_score=$((similarity_score + 30))
+                elif [[ "${name1:0:5}" == "${name2:0:5}" ]]; then
+                    similarity_score=$((similarity_score + 15))
+                fi
+                
+                # Factor 2: Similar file sizes (35 points max)
+                local size1="${video_sizes[$file1]:-0}"
+                local size2="${video_sizes[$file2]:-0}"
+                if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
+                    local size_diff_pct=$(( (size1 > size2 ? size1 - size2 : size2 - size1) * 100 / (size1 > size2 ? size1 : size2) ))
+                    if [[ $size_diff_pct -lt 5 ]]; then
+                        similarity_score=$((similarity_score + 35))
+                    elif [[ $size_diff_pct -lt 15 ]]; then
+                        similarity_score=$((similarity_score + 25))
+                    elif [[ $size_diff_pct -lt 30 ]]; then
+                        similarity_score=$((similarity_score + 15))
+                    elif [[ $size_diff_pct -lt 50 ]]; then
+                        similarity_score=$((similarity_score + 5))
+                    fi
+                fi
+                
+                # Factor 3: Duration match (50 points max)
+                local dur1="${video_durations[$file1]:-0}"
+                local dur2="${video_durations[$file2]:-0}"
+                if [[ $dur1 -gt 0 && $dur2 -gt 0 ]]; then
+                    if [[ $dur1 -eq $dur2 ]]; then
+                        similarity_score=$((similarity_score + 50))  # Exact match
+                    else
+                        local dur_diff=$(( (dur1 > dur2 ? dur1 - dur2 : dur2 - dur1) * 100 / (dur1 > dur2 ? dur1 : dur2) ))
+                        if [[ $dur_diff -lt 5 ]]; then
+                            similarity_score=$((similarity_score + 40))
+                        elif [[ $dur_diff -lt 10 ]]; then
+                            similarity_score=$((similarity_score + 25))
+                        elif [[ $dur_diff -lt 20 ]]; then
+                            similarity_score=$((similarity_score + 10))
+                        fi
+                    fi
+                fi
+                
+                # Factor 4: Resolution match (45 points max)
+                local res1="${video_resolutions[$file1]:-}"
+                local res2="${video_resolutions[$file2]:-}"
+                if [[ -n "$res1" && -n "$res2" && "$res1" == "$res2" ]]; then
+                    similarity_score=$((similarity_score + 45))
+                fi
+                
+                # Factor 5: Visual hash similarity (55 points max)
+                local vhash1="${video_visual_hashes[$file1]:-0}"
+                local vhash2="${video_visual_hashes[$file2]:-0}"
+                if [[ -n "$vhash1" && -n "$vhash2" && "$vhash1" != "0" && "$vhash2" != "0" ]]; then
+                    if [[ "$vhash1" == "$vhash2" ]]; then
+                        similarity_score=$((similarity_score + 55))  # Identical hash
+                    fi
+                fi
+                
+                # Factor 6: Bitrate similarity (30 points max)
+                local br1="${video_bitrates[$file1]:-0}"
+                local br2="${video_bitrates[$file2]:-0}"
+                if [[ $br1 -gt 0 && $br2 -gt 0 ]]; then
+                    local br_diff=$(( (br1 > br2 ? br1 - br2 : br2 - br1) * 100 / (br1 > br2 ? br1 : br2) ))
+                    if [[ $br_diff -lt 10 ]]; then
+                        similarity_score=$((similarity_score + 30))
+                    elif [[ $br_diff -lt 25 ]]; then
+                        similarity_score=$((similarity_score + 15))
+                    fi
+                fi
+                
+                # Factor 7: Codec match (35 points max)
+                local codec1="${video_codecs[$file1]:-}"
+                local codec2="${video_codecs[$file2]:-}"
+                if [[ -n "$codec1" && -n "$codec2" && "$codec1" == "$codec2" ]]; then
+                    similarity_score=$((similarity_score + 35))
+                fi
+                
+                # Factor 8: FPS similarity (30 points max)
+                local fps1="${video_fps_values[$file1]:-0}"
+                local fps2="${video_fps_values[$file2]:-0}"
+                if [[ -n "$fps1" && -n "$fps2" ]]; then
+                    # Compare FPS as integers (remove decimals)
+                    local fps1_int=${fps1%.*}
+                    local fps2_int=${fps2%.*}
+                    if [[ $fps1_int -eq $fps2_int ]]; then
+                        similarity_score=$((similarity_score + 30))
+                    fi
+                fi
+                
+                # Factor 9: Timestamp proximity (25 points max)
+                local mtime1=$(stat -c%Y "$file1" 2>/dev/null || echo "0")
+                local mtime2=$(stat -c%Y "$file2" 2>/dev/null || echo "0")
+                if [[ $mtime1 -gt 0 && $mtime2 -gt 0 ]]; then
+                    local time_diff=$((mtime1 > mtime2 ? mtime1 - mtime2 : mtime2 - mtime1))
+                    if [[ $time_diff -lt 60 ]]; then
+                        similarity_score=$((similarity_score + 25))
+                    elif [[ $time_diff -lt 300 ]]; then
+                        similarity_score=$((similarity_score + 15))
+                    elif [[ $time_diff -lt 3600 ]]; then
+                        similarity_score=$((similarity_score + 5))
+                    fi
+                fi
+                
+                # Factor 10: Same directory (15 points)
+                local dir1=$(dirname -- "$file1")
+                local dir2=$(dirname -- "$file2")
+                if [[ "$dir1" == "$dir2" ]]; then
+                    similarity_score=$((similarity_score + 15))
+                fi
+                
+                # ═══════════════════════════════════════════════════════════════
+                # DECISION: Add to candidate list if similarity score >= 60
+                # (Out of max 400 points, 60 = 15% threshold)
+                # ═══════════════════════════════════════════════════════════════
+                if [[ $similarity_score -ge 60 ]]; then
+                    video_candidate_pairs+=("$file1|$file2|$similarity_score")
+                fi
+            done
+        done
+        
+        printf "\r\033[K"
+        
+        # Check if interrupted during pre-filtering
+        if [[ "$interrupted" == "true" ]]; then
+            trap - INT
+            echo -e "  ${GREEN}✓ Pre-filtering interrupted${NC}"
+            return 0
+        fi
+        
+        echo -e "  ${GREEN}✓ Pre-filtering complete${NC}"
+        echo -e "  ${CYAN}📊 Candidates: ${BOLD}${#video_candidate_pairs[@]}${NC}${CYAN} pairs out of ${BOLD}$total_possible_pairs${NC}${CYAN} total${NC}"
+        
+        if [[ ${#video_candidate_pairs[@]} -gt 0 ]]; then
+            local reduction_pct=$(( (total_possible_pairs - ${#video_candidate_pairs[@]}) * 100 / total_possible_pairs ))
+            echo -e "  ${GREEN}⚡ Efficiency: ${BOLD}${reduction_pct}%${NC}${GREEN} of pairs filtered out (skipping unlikely matches)${NC}"
+        fi
+        echo ""
+        
+        # If no candidates, exit early
+        if [[ ${#video_candidate_pairs[@]} -eq 0 ]]; then
+            trap - INT
+            echo -e "  ${GREEN}${BOLD}✨ No similar pairs detected - all files are unique!${NC}"
+            echo -e "  ${BLUE}🚀 Your collection is fully optimized!${NC}"
+            return 0
+        fi
+        
+        echo -e "  ${MAGENTA}${BOLD}🎬 Stage 2: Deep frame analysis on ${#video_candidate_pairs[@]} candidate pairs...${NC}\n"
+        
+        local pair_count=0
+        
+        # Analyze only the candidate pairs
+        for candidate_pair in "${video_candidate_pairs[@]}"; do
+            # Check for interruption
             if [[ "$interrupted" == "true" ]]; then
                 echo -e "\n\n  ${YELLOW}⏸️  Level 6 analysis interrupted by user${NC}"
                 break
             fi
             
-            for ((j=i+1; j<total_files; j++)); do
-                # Check for interruption in inner loop
-                if [[ "$interrupted" == "true" ]]; then
-                    break
+            ((pair_count++))
+            local file1="${candidate_pair%%|*}"
+            local rest="${candidate_pair#*|}"
+            local file2="${rest%%|*}"
+            local sim_score="${rest##*|}"
+            
+            # Calculate progress
+            local progress=$((pair_count * 100 / ${#video_candidate_pairs[@]}))
+            local filled=$((progress * 40 / 100))
+            local empty=$((40 - filled))
+            
+            # Get short filenames for display
+            local name1="$(basename -- "$file1")"
+            local name2="$(basename -- "$file2")"
+            [[ ${#name1} -gt 25 ]] && name1="${name1:0:22}..."
+            [[ ${#name2} -gt 25 ]] && name2="${name2:0:22}..."
+            
+            # Progress bar with files being compared
+            printf "\r  ${CYAN}["
+            for ((k=0; k<filled; k++)); do printf "${MAGENTA}█${NC}"; done
+            for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
+            printf "${CYAN}] ${BOLD}%3d%%${NC}" "$progress"
+            printf "\n  ${GRAY}Candidate %d/%d | Sim: ${CYAN}%d${GRAY} | Found: ${YELLOW}%d${GRAY} duplicates${NC}" "$pair_count" "${#video_candidate_pairs[@]}" "$sim_score" "$level6_found"
+            printf "\n  ${BLUE}Comparing:${NC} %s ${YELLOW}↔${NC} %s" "$name1" "$name2"
+            printf "\r\033[3A"  # Move cursor up 3 lines
+            
+            # Perform frame-by-frame comparison
+            local frame_analysis=$(compare_video_frames "$file1" "$file2" "$temp_analysis_dir" 2>/dev/null)
+            
+            if [[ -n "$frame_analysis" ]]; then
+                local visual_match=$(echo "$frame_analysis" | cut -d':' -f1)
+                local color_match=$(echo "$frame_analysis" | cut -d':' -f2)
+                
+                # Determine if it's a duplicate based on frame analysis
+                if [[ $visual_match -ge 85 && $color_match -ge 85 ]]; then
+                    duplicate_pairs+=("LEVEL6|95|$file1|$file2|Frame-by-frame analysis (V:${visual_match}% C:${color_match}%)")
+                    ((duplicate_count++))
+                    ((level6_found++))
+                elif [[ $visual_match -ge 70 || $color_match -ge 75 ]]; then
+                    duplicate_pairs+=("LEVEL6|75|$file1|$file2|Partial frame match (V:${visual_match}% C:${color_match}%)")
+                    ((duplicate_count++))
+                    ((level6_found++))
                 fi
-                
-                ((pair_count++))
-                local file1="${video_files_array[$i]}"
-                local file2="${video_files_array[$j]}"
-                
-                # Calculate progress
-                local progress=$((pair_count * 100 / total_pairs))
-                local filled=$((progress * 40 / 100))
-                local empty=$((40 - filled))
-                
-                # Get short filenames for display
-                local name1="$(basename -- "$file1")"
-                local name2="$(basename -- "$file2")"
-                [[ ${#name1} -gt 25 ]] && name1="${name1:0:22}..."
-                [[ ${#name2} -gt 25 ]] && name2="${name2:0:22}..."
-                
-                # Progress bar with files being compared
-                printf "\r  ${CYAN}["
-                for ((k=0; k<filled; k++)); do printf "${MAGENTA}█${NC}"; done
-                for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
-                printf "${CYAN}] ${BOLD}%3d%%${NC}" "$progress"
-                printf "\n  ${GRAY}Pair %d/%d | Found: ${YELLOW}%d${GRAY} duplicates${NC}" "$pair_count" "$total_pairs" "$level6_found"
-                printf "\n  ${BLUE}Comparing:${NC} %s ${YELLOW}↔${NC} %s" "$name1" "$name2"
-                printf "\r\033[3A"  # Move cursor up 3 lines
-                
-                # Perform frame-by-frame comparison
-                local frame_analysis=$(compare_video_frames "$file1" "$file2" "$temp_analysis_dir" 2>/dev/null)
-                
-                if [[ -n "$frame_analysis" ]]; then
-                    local visual_match=$(echo "$frame_analysis" | cut -d':' -f1)
-                    local color_match=$(echo "$frame_analysis" | cut -d':' -f2)
-                    
-                    # Determine if it's a duplicate based on frame analysis
-                    if [[ $visual_match -ge 85 && $color_match -ge 85 ]]; then
-                        duplicate_pairs+=("LEVEL6|95|$file1|$file2|Frame-by-frame analysis (V:${visual_match}% C:${color_match}%)")
-                        ((duplicate_count++))
-                        ((level6_found++))
-                    elif [[ $visual_match -ge 70 || $color_match -ge 75 ]]; then
-                        duplicate_pairs+=("LEVEL6|75|$file1|$file2|Partial frame match (V:${visual_match}% C:${color_match}%)")
-                        ((duplicate_count++))
-                        ((level6_found++))
-                    fi
-                fi
-            done
+            fi
         done
         
         # Clear progress lines and restore trap
@@ -10939,94 +11128,279 @@ detect_duplicate_gifs() {
             return 0
         fi
         
-        # Run Level 6 analysis on all GIF pairs
+        # Run Level 6 analysis with BULLETPROOF PRE-FILTERING
         echo -e "\n  ${MAGENTA}${BOLD}🎬 Stage 3: Level 6 Deep Frame Analysis...${NC}"
-        echo -e "  ${CYAN}Analyzing all ${total_gifs} GIFs for visual duplicates...${NC}"
+        echo -e "  ${CYAN}🧠 AI Pre-filtering: Only analyzing likely duplicate candidates...${NC}"
         echo -e "  ${YELLOW}⚠️  Press Ctrl+C to cancel at any time${NC}\n"
         
         # Track Level 6 results
         local level6_duplicate_count=0
         local level6_checked_here=0
         local level6_cached_here=0
+        local level6_skipped=0
         
-        # Compare all GIF pairs with Level 6 frame analysis
+        # Build candidate pairs using bulletproof similarity detection
+        echo -e "  ${BLUE}🔍 Stage 1: Building candidate pairs based on similarity indicators...${NC}"
+        declare -a candidate_pairs
+        local total_possible_pairs=$(( total_gifs * (total_gifs - 1) / 2 ))
+        local pairs_evaluated=0
+        
         for ((i=0; i<total_gifs; i++)); do
             local file1="${gif_files_list[$i]}"
             
             for ((j=i+1; j<total_gifs; j++)); do
                 local file2="${gif_files_list[$j]}"
+                ((pairs_evaluated++))
                 
-                # Check if this pair was already marked as duplicate in Levels 1-5
-                # (This section only runs when no duplicates were found, so we can skip this check)
-                
-                ((level6_checked_here++))
-                
-                # Show progress
-                local total_pairs=$(( total_gifs * (total_gifs - 1) / 2 ))
-                local progress_pct=$((level6_checked_here * 100 / total_pairs))
-                printf "\r  ${MAGENTA}Progress: [${NC}"
-                local filled=$((progress_pct * 30 / 100))
-                for ((k=0; k<filled; k++)); do printf "${MAGENTA}█${NC}"; done
-                for ((k=filled; k<30; k++)); do printf "${GRAY}░${NC}"; done
-                printf "${MAGENTA}] ${BOLD}%3d%%${NC} ${GRAY}($level6_checked_here/$total_pairs pairs)${NC}" "$progress_pct"
-                
-                # Check cache first
-                local cache_key="L6_COMPARE:$(basename "$file1"):$(basename "$file2")"
-                local cached_result=""
-                
-                if [[ "$AI_CACHE_ENABLED" == "true" && -f "$AI_CACHE_INDEX" ]]; then
-                    cached_result=$(grep "^$cache_key|" "$AI_CACHE_INDEX" 2>/dev/null | tail -1 | cut -d'|' -f5)
+                # Show pre-filtering progress
+                if [[ $((pairs_evaluated % 50)) -eq 0 || $pairs_evaluated -eq $total_possible_pairs ]]; then
+                    local filter_pct=$((pairs_evaluated * 100 / total_possible_pairs))
+                    printf "\r  ${CYAN}Pre-filter: [${NC}"
+                    local filled=$((filter_pct * 30 / 100))
+                    for ((k=0; k<filled; k++)); do printf "${CYAN}█${NC}"; done
+                    for ((k=filled; k<30; k++)); do printf "${GRAY}░${NC}"; done
+                    printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d candidates)${NC}" "$filter_pct" "${#candidate_pairs[@]}"
                 fi
                 
-                local frame_analysis=""
+                # ═══════════════════════════════════════════════════════════════
+                # 🛡️ BULLETPROOF SIMILARITY PRE-FILTER (10 Factors)
+                # Only pairs passing this filter will undergo expensive Level 6 analysis
+                # ═══════════════════════════════════════════════════════════════
                 
-                if [[ -n "$cached_result" ]]; then
-                    # Cache HIT
-                    ((level6_cached_here++))
-                    frame_analysis="$cached_result"
-                else
-                    # Cache MISS - perform analysis
-                    frame_analysis=$(ai_advanced_frame_comparison "$file1" "$file2" "$temp_analysis_dir" "false")
-                    
-                    # Save to cache
-                    if [[ "$AI_CACHE_ENABLED" == "true" && -n "$frame_analysis" && "$frame_analysis" != "0:0" ]]; then
-                        local timestamp=$(date +%s)
-                        local cache_entry="$cache_key|0|0|$timestamp|$frame_analysis"
-                        echo "$cache_entry" >> "$AI_CACHE_INDEX" 2>/dev/null
+                local similarity_score=0
+                local should_analyze=false
+                
+                # Factor 1: Similar filenames (40 points max)
+                local name1="$(basename -- "$file1" .gif)"
+                local name2="$(basename -- "$file2" .gif)"
+                if [[ "${name1:0:15}" == "${name2:0:15}" ]]; then
+                    similarity_score=$((similarity_score + 40))
+                elif [[ "${name1:0:10}" == "${name2:0:10}" ]]; then
+                    similarity_score=$((similarity_score + 30))
+                elif [[ "${name1:0:5}" == "${name2:0:5}" ]]; then
+                    similarity_score=$((similarity_score + 15))
+                fi
+                
+                # Factor 2: Similar file sizes (35 points max)
+                local size1="${gif_sizes[$file1]:-0}"
+                local size2="${gif_sizes[$file2]:-0}"
+                if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
+                    local size_diff_pct=$(( (size1 > size2 ? size1 - size2 : size2 - size1) * 100 / (size1 > size2 ? size1 : size2) ))
+                    if [[ $size_diff_pct -lt 5 ]]; then
+                        similarity_score=$((similarity_score + 35))
+                    elif [[ $size_diff_pct -lt 15 ]]; then
+                        similarity_score=$((similarity_score + 25))
+                    elif [[ $size_diff_pct -lt 30 ]]; then
+                        similarity_score=$((similarity_score + 15))
+                    elif [[ $size_diff_pct -lt 50 ]]; then
+                        similarity_score=$((similarity_score + 5))
                     fi
                 fi
                 
-                # Check if frames match (duplicate detected)
-                if [[ "$frame_analysis" != "0:0" ]]; then
-                    local visual_match=$(echo "$frame_analysis" | cut -d':' -f1)
-                    local color_match=$(echo "$frame_analysis" | cut -d':' -f2)
-                    
-                    # STRICT CRITERIA: Visual >= 80% AND Color >= 85%
-                    if [[ $visual_match -ge 80 && $color_match -ge 85 ]]; then
-                        # Found a Level 6 duplicate!
-                        ((level6_duplicate_count++))
-                        
-                        # Add to duplicate pairs
-                        local size1="${gif_sizes[$file1]:-0}"
-                        local size2="${gif_sizes[$file2]:-0}"
-                        local keep_file="$file1"
-                        local remove_file="$file2"
-                        
-                        # Keep larger file
-                        if [[ $size2 -gt $size1 ]]; then
-                            keep_file="$file2"
-                            remove_file="$file1"
+                # Factor 3: Frame count match (50 points max)
+                local frame1="${gif_frame_counts[$file1]:-0}"
+                local frame2="${gif_frame_counts[$file2]:-0}"
+                if [[ $frame1 -gt 0 && $frame2 -gt 0 ]]; then
+                    if [[ $frame1 -eq $frame2 ]]; then
+                        similarity_score=$((similarity_score + 50))  # Exact match = very suspicious
+                    else
+                        local frame_diff=$(( (frame1 > frame2 ? frame1 - frame2 : frame2 - frame1) * 100 / (frame1 > frame2 ? frame1 : frame2) ))
+                        if [[ $frame_diff -lt 5 ]]; then
+                            similarity_score=$((similarity_score + 40))
+                        elif [[ $frame_diff -lt 10 ]]; then
+                            similarity_score=$((similarity_score + 25))
+                        elif [[ $frame_diff -lt 20 ]]; then
+                            similarity_score=$((similarity_score + 10))
                         fi
-                        
-                        duplicate_pairs+=("$remove_file|$keep_file|L6_frame_analysis(V:${visual_match}%,C:${color_match}%)|$((size1 - size2))")
-                        ((duplicate_count++))
-                        
-                        printf "\r\033[K"
-                        echo -e "  ${GREEN}✓ Level 6 duplicate found!${NC} ${YELLOW}$(basename "$file1")${NC} ↔ ${YELLOW}$(basename "$file2")${NC}"
-                        echo -e "    ${CYAN}Visual: ${BOLD}${visual_match}%${NC} ${CYAN}| Color: ${BOLD}${color_match}%${NC}"
                     fi
+                fi
+                
+                # Factor 4: Duration match (45 points max)
+                local dur1="${gif_durations[$file1]:-0}"
+                local dur2="${gif_durations[$file2]:-0}"
+                if [[ $dur1 -gt 0 && $dur2 -gt 0 ]]; then
+                    if [[ $dur1 -eq $dur2 ]]; then
+                        similarity_score=$((similarity_score + 45))  # Exact match
+                    else
+                        local dur_diff=$(( (dur1 > dur2 ? dur1 - dur2 : dur2 - dur1) * 100 / (dur1 > dur2 ? dur1 : dur2) ))
+                        if [[ $dur_diff -lt 5 ]]; then
+                            similarity_score=$((similarity_score + 35))
+                        elif [[ $dur_diff -lt 10 ]]; then
+                            similarity_score=$((similarity_score + 20))
+                        elif [[ $dur_diff -lt 20 ]]; then
+                            similarity_score=$((similarity_score + 10))
+                        fi
+                    fi
+                fi
+                
+                # Factor 5: Visual hash similarity (55 points max)
+                local vhash1="${gif_visual_hashes[$file1]:-0}"
+                local vhash2="${gif_visual_hashes[$file2]:-0}"
+                if [[ -n "$vhash1" && -n "$vhash2" && "$vhash1" != "0" && "$vhash2" != "0" ]]; then
+                    if [[ "$vhash1" == "$vhash2" ]]; then
+                        similarity_score=$((similarity_score + 55))  # Identical hash
+                    else
+                        # Hamming distance check if available
+                        local hash_proximity=$(( 100 - (vhash1 > vhash2 ? vhash1 - vhash2 : vhash2 - vhash1) * 100 / vhash1 ))
+                        if [[ $hash_proximity -gt 90 ]]; then
+                            similarity_score=$((similarity_score + 45))
+                        elif [[ $hash_proximity -gt 80 ]]; then
+                            similarity_score=$((similarity_score + 30))
+                        elif [[ $hash_proximity -gt 70 ]]; then
+                            similarity_score=$((similarity_score + 15))
+                        fi
+                    fi
+                fi
+                
+                # Factor 6: Content fingerprint match (50 points max)
+                local fp1="${gif_fingerprints[$file1]:-}"
+                local fp2="${gif_fingerprints[$file2]:-}"
+                if [[ -n "$fp1" && -n "$fp2" && "$fp1" == "$fp2" ]]; then
+                    similarity_score=$((similarity_score + 50))
+                fi
+                
+                # Factor 7: Resolution similarity (30 points max)
+                if [[ -n "$fp1" && -n "$fp2" ]]; then
+                    local res1=$(echo "$fp1" | cut -d':' -f2)
+                    local res2=$(echo "$fp2" | cut -d':' -f2)
+                    if [[ "$res1" == "$res2" ]]; then
+                        similarity_score=$((similarity_score + 30))
+                    fi
+                fi
+                
+                # Factor 8: MD5 prefix similarity (35 points max)
+                local hash1="${gif_checksums[$file1]:-}"
+                local hash2="${gif_checksums[$file2]:-}"
+                if [[ -n "$hash1" && -n "$hash2" && "$hash1" != "ERROR" && "$hash2" != "ERROR" ]]; then
+                    if [[ "${hash1:0:8}" == "${hash2:0:8}" ]]; then
+                        similarity_score=$((similarity_score + 35))
+                    elif [[ "${hash1:0:4}" == "${hash2:0:4}" ]]; then
+                        similarity_score=$((similarity_score + 20))
+                    elif [[ "${hash1:0:2}" == "${hash2:0:2}" ]]; then
+                        similarity_score=$((similarity_score + 10))
+                    fi
+                fi
+                
+                # Factor 9: Timestamp proximity (25 points max)
+                local mtime1=$(stat -c%Y "$file1" 2>/dev/null || echo "0")
+                local mtime2=$(stat -c%Y "$file2" 2>/dev/null || echo "0")
+                if [[ $mtime1 -gt 0 && $mtime2 -gt 0 ]]; then
+                    local time_diff=$((mtime1 > mtime2 ? mtime1 - mtime2 : mtime2 - mtime1))
+                    if [[ $time_diff -lt 60 ]]; then
+                        similarity_score=$((similarity_score + 25))  # Within 1 minute
+                    elif [[ $time_diff -lt 300 ]]; then
+                        similarity_score=$((similarity_score + 15))  # Within 5 minutes
+                    elif [[ $time_diff -lt 3600 ]]; then
+                        similarity_score=$((similarity_score + 5))   # Within 1 hour
+                    fi
+                fi
+                
+                # Factor 10: Same directory (15 points)
+                local dir1=$(dirname -- "$file1")
+                local dir2=$(dirname -- "$file2")
+                if [[ "$dir1" == "$dir2" ]]; then
+                    similarity_score=$((similarity_score + 15))
+                fi
+                
+                # ═══════════════════════════════════════════════════════════════
+                # DECISION: Add to candidate list if similarity score >= 60
+                # (Out of max 400 points, 60 = 15% threshold)
+                # ═══════════════════════════════════════════════════════════════
+                if [[ $similarity_score -ge 60 ]]; then
+                    candidate_pairs+=("$file1|$file2|$similarity_score")
                 fi
             done
+        done
+        
+        printf "\r\033[K"
+        echo -e "  ${GREEN}✓ Pre-filtering complete${NC}"
+        echo -e "  ${CYAN}📊 Candidates: ${BOLD}${#candidate_pairs[@]}${NC}${CYAN} pairs out of ${BOLD}$total_possible_pairs${NC}${CYAN} total${NC}"
+        local reduction_pct=$(( (total_possible_pairs - ${#candidate_pairs[@]}) * 100 / total_possible_pairs ))
+        echo -e "  ${GREEN}⚡ Efficiency: ${BOLD}${reduction_pct}%${NC}${GREEN} of pairs filtered out (skipping unlikely matches)${NC}"
+        echo ""
+        
+        # If no candidates, exit early
+        if [[ ${#candidate_pairs[@]} -eq 0 ]]; then
+            echo -e "  ${GREEN}${BOLD}✨ No similar pairs detected - all files are unique!${NC}"
+            echo -e "  ${BLUE}🚀 Your collection is fully optimized!${NC}"
+            return 0
+        fi
+        
+        echo -e "  ${MAGENTA}${BOLD}🎬 Stage 2: Deep frame analysis on ${#candidate_pairs[@]} candidate pairs...${NC}\n"
+        
+        # Analyze only the candidate pairs
+        for candidate_pair in "${candidate_pairs[@]}"; do
+            local file1="${candidate_pair%%|*}"
+            local rest="${candidate_pair#*|}"
+            local file2="${rest%%|*}"
+            local sim_score="${rest##*|}"
+            
+            ((level6_checked_here++))
+            
+            # Show progress
+            local progress_pct=$((level6_checked_here * 100 / ${#candidate_pairs[@]}))
+            printf "\r  ${MAGENTA}Progress: [${NC}"
+            local filled=$((progress_pct * 30 / 100))
+            for ((k=0; k<filled; k++)); do printf "${MAGENTA}█${NC}"; done
+            for ((k=filled; k<30; k++)); do printf "${GRAY}░${NC}"; done
+            printf "${MAGENTA}] ${BOLD}%3d%%${NC} ${GRAY}($level6_checked_here/${#candidate_pairs[@]} candidates, Sim: $sim_score)${NC}" "$progress_pct"
+            
+            # Check cache first
+            local cache_key="L6_COMPARE:$(basename "$file1"):$(basename "$file2")"
+            local cached_result=""
+            
+            if [[ "$AI_CACHE_ENABLED" == "true" && -f "$AI_CACHE_INDEX" ]]; then
+                cached_result=$(grep "^$cache_key|" "$AI_CACHE_INDEX" 2>/dev/null | tail -1 | cut -d'|' -f5)
+            fi
+            
+            local frame_analysis=""
+            
+            if [[ -n "$cached_result" ]]; then
+                # Cache HIT
+                ((level6_cached_here++))
+                frame_analysis="$cached_result"
+            else
+                # Cache MISS - perform analysis
+                frame_analysis=$(ai_advanced_frame_comparison "$file1" "$file2" "$temp_analysis_dir" "false")
+                
+                # Save to cache
+                if [[ "$AI_CACHE_ENABLED" == "true" && -n "$frame_analysis" && "$frame_analysis" != "0:0" ]]; then
+                    local timestamp=$(date +%s)
+                    local cache_entry="$cache_key|0|0|$timestamp|$frame_analysis"
+                    echo "$cache_entry" >> "$AI_CACHE_INDEX" 2>/dev/null
+                fi
+            fi
+            
+            # Check if frames match (duplicate detected)
+            if [[ "$frame_analysis" != "0:0" ]]; then
+                local visual_match=$(echo "$frame_analysis" | cut -d':' -f1)
+                local color_match=$(echo "$frame_analysis" | cut -d':' -f2)
+                
+                # STRICT CRITERIA: Visual >= 80% AND Color >= 85%
+                if [[ $visual_match -ge 80 && $color_match -ge 85 ]]; then
+                    # Found a Level 6 duplicate!
+                    ((level6_duplicate_count++))
+                    
+                    # Add to duplicate pairs
+                    local size1="${gif_sizes[$file1]:-0}"
+                    local size2="${gif_sizes[$file2]:-0}"
+                    local keep_file="$file1"
+                    local remove_file="$file2"
+                    
+                    # Keep larger file
+                    if [[ $size2 -gt $size1 ]]; then
+                        keep_file="$file2"
+                        remove_file="$file1"
+                    fi
+                    
+                    duplicate_pairs+=("$remove_file|$keep_file|L6_frame_analysis(V:${visual_match}%,C:${color_match}%)|$((size1 - size2))")
+                    ((duplicate_count++))
+                    
+                    printf "\r\033[K"
+                    echo -e "  ${GREEN}✓ Level 6 duplicate found!${NC} ${YELLOW}$(basename "$file1")${NC} ↔ ${YELLOW}$(basename "$file2")${NC}"
+                    echo -e "    ${CYAN}Visual: ${BOLD}${visual_match}%${NC} ${CYAN}| Color: ${BOLD}${color_match}%${NC}"
+                fi
+            fi
         done
         
         printf "\r\033[K"
