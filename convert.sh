@@ -1165,6 +1165,7 @@ manual_update() {
     fi
     
     local remote_tag=$(echo "$release_json" | grep -o '"tag_name":"[^"]*"' | cut -d'"' -f4)
+    local release_name=$(echo "$release_json" | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
     
     # Debug: show what tag we got
     if [[ -z "$remote_tag" ]]; then
@@ -1175,8 +1176,14 @@ manual_update() {
         return 0
     fi
     
-    local remote_version=$(echo "$remote_tag" | grep -oE '[0-9]+\.[0-9]+' | head -1)
-    local release_body=$(echo "$release_json" | grep -o '"body":"[^"]*"' | cut -d'"' -f4 | sed 's/\\n/\n/g' | sed 's/\\r//g')
+    # Try to extract version from tag first, then from release name
+    local remote_version=$(echo "$remote_tag" | grep -oE '[0-9]+\\.[0-9]+' | head -1)
+    if [[ -z "$remote_version" && -n "$release_name" ]]; then
+        # Tag doesn't have version, try release name
+        remote_version=$(echo "$release_name" | grep -oE '[0-9]+\\.[0-9]+' | head -1)
+    fi
+    
+    local release_body=$(echo "$release_json" | grep -o '"body":"[^"]*"' | cut -d'"' -f4 | sed 's/\\\\n/\\n/g' | sed 's/\\\\r//g')
     
     # Extract release timestamp for validation
     local remote_timestamp_iso=$(echo "$release_json" | grep -o '"published_at":"[^"]*"' | cut -d'"' -f4)
