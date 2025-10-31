@@ -107,7 +107,7 @@ trap cleanup_lock_file EXIT
 # 🎬 SMART GIF CONVERTER - Revolutionary Video-to-GIF Conversion Tool
 # =============================================================================
 # Author: AI Assistant
-# Version: 5.3
+# Version: 6.1
 # Description: Advanced, customizable video-to-GIF converter with intelligent
 #              processing, quality optimization, and extensive configuration options.
 # =============================================================================
@@ -257,7 +257,7 @@ AI_TRAINING_MIN_SAMPLES=5  # Minimum samples before AI makes confident predictio
 GITHUB_REPO="FreddeITsupport98/converter-mp4-to-gif-using-ffmpeg"
 GITHUB_API_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_URL="https://github.com/${GITHUB_REPO}/releases"
-CURRENT_VERSION="6.0"  # Script version
+CURRENT_VERSION="6.1"  # Script version
 UPDATE_CHECK_FILE="$LOG_DIR/.last_update_check"
 UPDATE_CHECK_INTERVAL=86400  # Check once per day (in seconds)
 AUTO_UPDATE_ENABLED=true  # Enable automatic update checks (user configurable)
@@ -1014,7 +1014,7 @@ perform_update() {
     
     # Security Check 1: File size sanity check
     echo -e "${CYAN}[1/6] Checking file size...${NC}"
-    local file_size=$(stat -c%s "convert.sh.new" 2>/dev/null || echo "0")
+    local file_size=$(stat -c%s -- "convert.sh.new" 2>/dev/null || echo "0")
     if [[ $file_size -lt $MIN_FILE_SIZE ]]; then
         echo -e "${RED}❌ Downloaded file too small ($file_size bytes) - possibly corrupted or fake${NC}"
         rm -f convert.sh.new
@@ -1194,7 +1194,7 @@ manual_update() {
     
     if [[ -z "$remote_version" ]]; then
         echo -e "${RED}❌ Cannot parse version from tag: ${remote_tag}${NC}"
-        echo -e "${YELLOW}💡 Expected format: v6.0 or 6.0${NC}"
+        echo -e "${YELLOW}💡 Expected format: v6.1 or 6.0${NC}"
         echo -e "${BLUE}📝 GitHub Releases: ${CYAN}${GITHUB_RELEASES_URL}${NC}"
         return 1
     fi
@@ -1610,7 +1610,7 @@ EOF
         fi
         
         if [[ -f "$file_path" ]]; then
-            local filemtime=$(stat -c%Y "$file_path" 2>/dev/null || echo "0")
+            local filemtime=$(stat -c%Y -- "$file_path" 2>/dev/null || echo "0")
             # Write new format: filename|filesize|filemtime|timestamp|analysis_data
             echo "$filename|$filesize|$filemtime|$timestamp|$analysis_data" >> "$AI_CACHE_INDEX"
             ((migrated++))
@@ -1768,8 +1768,8 @@ get_file_fingerprint() {
     
     # Use file size and modification time for FAST change detection
     # MD5 is stored in cache data, no need to recalculate here!
-    local filesize=$(stat -c%s "$file" 2>/dev/null || echo "0")
-    local filemtime=$(stat -c%Y "$file" 2>/dev/null || echo "0")
+    local filesize=$(stat -c%s -- "$file" 2>/dev/null || echo "0")
+    local filemtime=$(stat -c%Y -- "$file" 2>/dev/null || echo "0")
     
     echo "${filesize}:${filemtime}"
 }
@@ -1931,8 +1931,8 @@ get_cached_checksum() {
         return 1
     fi
     
-    local filesize=$(stat -c%s "$filepath" 2>/dev/null || echo "0")
-    local filemtime=$(stat -c%Y "$filepath" 2>/dev/null || echo "0")
+    local filesize=$(stat -c%s -- "$filepath" 2>/dev/null || echo "0")
+    local filemtime=$(stat -c%Y -- "$filepath" 2>/dev/null || echo "0")
     
     # Check cache if enabled
     if [[ "$CHECKSUM_CACHE_ENABLED" == "true" && -f "$CHECKSUM_CACHE_DB" ]]; then
@@ -2131,8 +2131,8 @@ check_video_cache() {
     [[ -f "$video_cache_index" ]] || return 1
     
     local basename=$(basename -- "$video_file")
-    local current_filesize=$(stat -c%s "$video_file" 2>/dev/null || echo "0")
-    local current_filemtime=$(stat -c%Y "$video_file" 2>/dev/null || echo "0")
+    local current_filesize=$(stat -c%s -- "$video_file" 2>/dev/null || echo "0")
+    local current_filemtime=$(stat -c%Y -- "$video_file" 2>/dev/null || echo "0")
     
     # Search for matching entry
     while IFS='|' read -r filename filesize filemtime timestamp analysis_data; do
@@ -2158,8 +2158,8 @@ save_video_analysis_to_cache() {
     [[ -f "$video_cache_index" ]] || return 1
     
     local basename=$(basename -- "$video_file")
-    local filesize=$(stat -c%s "$video_file" 2>/dev/null || echo "0")
-    local filemtime=$(stat -c%Y "$video_file" 2>/dev/null || echo "0")
+    local filesize=$(stat -c%s -- "$video_file" 2>/dev/null || echo "0")
+    local filemtime=$(stat -c%Y -- "$video_file" 2>/dev/null || echo "0")
     local timestamp=$(date +%s)
     
     # Atomic append
@@ -2705,7 +2705,7 @@ show_ai_status() {
     local clickable_settings=$(make_clickable_path "$SETTINGS_FILE" "$settings_display_path")
     echo -e "${YELLOW}📁 Settings Location: ${BOLD}$clickable_settings${NC}"
     if [[ -f "$SETTINGS_FILE" ]]; then
-        local mod_time=$(stat -c %Y "$SETTINGS_FILE" 2>/dev/null || echo "0")
+        local mod_time=$(stat -c %Y -- "$SETTINGS_FILE" 2>/dev/null || echo "0")
         local readable_time=$(date -d "@$mod_time" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "Unknown")
         echo -e "${GRAY}   Last updated: $readable_time${NC}"
     else
@@ -2736,7 +2736,7 @@ show_ai_status() {
     
     # Cache file status
     if [[ -f "$AI_CACHE_INDEX" ]]; then
-        local cache_size=$(stat -c%s "$AI_CACHE_INDEX" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "?")
+        local cache_size=$(stat -c%s -- "$AI_CACHE_INDEX" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "?")
         local cache_entries=$(grep -v '^#' "$AI_CACHE_INDEX" 2>/dev/null | grep -c '|' 2>/dev/null || echo "0")
         echo -e "  📈 Cache Status: ${GREEN}✓ Active${NC} ($cache_entries entries, $cache_size)"
         
@@ -2766,7 +2766,7 @@ show_ai_status() {
     # Training data status
     if [[ "$AI_TRAINING_ENABLED" == true ]]; then
         if [[ -f "$AI_MODEL_FILE" ]]; then
-            local model_size=$(stat -c%s "$AI_MODEL_FILE" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "?")
+            local model_size=$(stat -c%s -- "$AI_MODEL_FILE" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "?")
             local total_patterns=$(grep -v '^#' "$AI_MODEL_FILE" 2>/dev/null | grep -c '|' 2>/dev/null || echo "0")
             local avg_confidence="0.00"
             
@@ -2792,7 +2792,7 @@ show_ai_status() {
         fi
         
         if [[ -f "$AI_TRAINING_LOG" ]]; then
-            local log_size=$(stat -c%s "$AI_TRAINING_LOG" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "?")
+            local log_size=$(stat -c%s -- "$AI_TRAINING_LOG" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "?")
             local training_events=$(grep -v '^#' "$AI_TRAINING_LOG" 2>/dev/null | grep -c '|' 2>/dev/null || echo "0")
             echo -e "  📜 Training Log: ${GREEN}✓ Active${NC} ($training_events sessions, $log_size)"
             
@@ -2916,8 +2916,8 @@ ai_analyze_file_health() {
     [[ -z "$file" || ! -f "$file" ]] && echo "CORRUPTED" && return 1
     
     # Get file characteristics for AI analysis
-    local file_size=$(stat -c%s "$file" 2>/dev/null || echo "0")
-    local file_age=$(stat -c%Y "$file" 2>/dev/null || echo "0")
+    local file_size=$(stat -c%s -- "$file" 2>/dev/null || echo "0")
+    local file_age=$(stat -c%Y -- "$file" 2>/dev/null || echo "0")
     local current_time=$(date +%s)
     local age_days=$(( (current_time - file_age) / 86400 ))
     
@@ -3046,8 +3046,8 @@ train_ai_file_health() {
     fi
     
     # Get file characteristics
-    local file_size=$(stat -c%s "$file" 2>/dev/null || echo "0")
-    local file_age=$(stat -c%Y "$file" 2>/dev/null || echo "0")
+    local file_size=$(stat -c%s -- "$file" 2>/dev/null || echo "0")
+    local file_age=$(stat -c%Y -- "$file" 2>/dev/null || echo "0")
     local current_time=$(date +%s)
     local age_days=$(( (current_time - file_age) / 86400 ))
     
@@ -3603,7 +3603,7 @@ estimate_and_optimize_gif_settings() {
     local duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$file" 2>/dev/null | awk '{printf("%.1f", $1)}')
     local width=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$file" 2>/dev/null)
     local height=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$file" 2>/dev/null)
-    local input_size=$(stat -c%s "$file" 2>/dev/null || echo "1000000")
+    local input_size=$(stat -c%s -- "$file" 2>/dev/null || echo "1000000")
     
     # Convert to MB for easier calculation
     local input_size_mb=$((input_size / 1024 / 1024))
@@ -4161,7 +4161,8 @@ ai_scene_detection() {
     static_regions=${static_regions//[^0-9]/}; static_regions=${static_regions:-0}
     
     # Calculate scene complexity score
-    local scene_density=$((major_scenes * 100 / sample_duration))
+    local scene_density=0
+    [[ $sample_duration -gt 0 ]] && scene_density=$((major_scenes * 100 / sample_duration))
     local transition_smoothness=$((minor_scenes - major_scenes))
     local static_ratio=$((static_regions * 100 / (frame_consistency + 1)))
     
@@ -4180,6 +4181,11 @@ ai_smart_framerate_adjustment() {
     local temp_data="${scene_data#*|}"
     local transition_smoothness="${temp_data%%|*}"
     local static_ratio="${scene_data##*|}"
+    
+    # Ensure numeric values
+    scene_density=${scene_density//[^0-9]/}; scene_density=${scene_density:-0}
+    transition_smoothness=${transition_smoothness//[^0-9-]/}; transition_smoothness=${transition_smoothness:-0}
+    static_ratio=${static_ratio//[^0-9]/}; static_ratio=${static_ratio:-0}
     
     # Base frame rate selection
     local optimal_fps=12
@@ -4900,7 +4906,7 @@ ai_quality_selection() {
         local width=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$sample_file" 2>/dev/null || echo "0")
         local height=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$sample_file" 2>/dev/null || echo "0")
         local bitrate=$(ffprobe -v error -show_entries format=bit_rate -of csv=p=0 "$sample_file" 2>/dev/null || echo "0")
-        local file_size=$(stat -c%s "$sample_file" 2>/dev/null || echo "0")
+        local file_size=$(stat -c%s -- "$sample_file" 2>/dev/null || echo "0")
         
         # AI-based recommendation logic
         local total_pixels=$((width * height))
@@ -5144,8 +5150,8 @@ ai_discover_videos() {
             for video in "$search_dir"/*."$ext"; do
                 if [[ -f "$video" ]]; then
                     # Get file info for intelligent sorting
-                    local size=$(stat -c%s "$video" 2>/dev/null || echo "0")
-                    local modified=$(stat -c%Y "$video" 2>/dev/null || echo "0")
+                    local size=$(stat -c%s -- "$video" 2>/dev/null || echo "0")
+                    local modified=$(stat -c%Y -- "$video" 2>/dev/null || echo "0")
                     found_videos+=("$video|$size|$modified")
                 fi
             done
@@ -6331,7 +6337,7 @@ force_cleanup_on_exit() {
         # Delete incomplete output GIF if it exists
         local incomplete_gif="${CURRENT_FILE%.*}.${OUTPUT_FORMAT}"
         if [[ -f "$incomplete_gif" ]]; then
-            local output_size=$(stat -c%s "$incomplete_gif" 2>/dev/null || echo "0")
+            local output_size=$(stat -c%s -- "$incomplete_gif" 2>/dev/null || echo "0")
             # If GIF is suspiciously small or incomplete, delete it
             if [[ $output_size -lt 1000 ]]; then
                 rm -f "$incomplete_gif" 2>/dev/null || true
@@ -7131,7 +7137,7 @@ detect_duplicate_videos() {
     # Calculate total size and estimate time
     local total_size=0
     for video_file in "${video_files_list[@]}"; do
-        local file_size=$(stat -c%s "$video_file" 2>/dev/null || echo "0")
+        local file_size=$(stat -c%s -- "$video_file" 2>/dev/null || echo "0")
         total_size=$((total_size + file_size))
     done
     
@@ -7194,8 +7200,8 @@ detect_duplicate_videos() {
             local cached_fingerprint=$(echo "$cached_entry" | cut -d'|' -f1)
             local cached_data=$(echo "$cached_entry" | cut -d'|' -f2-)
             
-            local current_filesize=$(stat -c%s "$video_file" 2>/dev/null || echo "0")
-            local current_filemtime=$(stat -c%Y "$video_file" 2>/dev/null || echo "0")
+            local current_filesize=$(stat -c%s -- "$video_file" 2>/dev/null || echo "0")
+            local current_filemtime=$(stat -c%Y -- "$video_file" 2>/dev/null || echo "0")
             local current_fingerprint="${current_filesize}:${current_filemtime}"
             
             if [[ "$cached_fingerprint" == "$current_fingerprint" ]]; then
@@ -7258,7 +7264,7 @@ detect_duplicate_videos() {
         
         # Stage 1: Fast MD5 checksum with intelligent caching
         local checksum
-        local size=$(stat -c%s "$video_file" 2>/dev/null || echo "0")
+        local size=$(stat -c%s -- "$video_file" 2>/dev/null || echo "0")
         
         # Try to get cached checksum first
         checksum=$(get_cached_checksum "$video_file" 2>/dev/null)
@@ -7799,8 +7805,8 @@ detect_duplicate_videos() {
             local filename_similarity=$(calculate_filename_similarity "$name1" "$name2")
             
             # Get file timestamps for additional comparison
-            local mtime1=$(stat -c%Y "$file1" 2>/dev/null || echo "0")
-            local mtime2=$(stat -c%Y "$file2" 2>/dev/null || echo "0")
+            local mtime1=$(stat -c%Y -- "$file1" 2>/dev/null || echo "0")
+            local mtime2=$(stat -c%Y -- "$file2" 2>/dev/null || echo "0")
             local atime1=$(stat -c%X "$file1" 2>/dev/null || echo "0")
             local atime2=$(stat -c%X "$file2" 2>/dev/null || echo "0")
             
@@ -8676,7 +8682,7 @@ detect_corrupted_videos() {
         local failure_reasons=()
         
         # Layer 1: File size check (suspiciously small files)
-        local file_size=$(stat -c%s "$video_file" 2>/dev/null || echo "0")
+        local file_size=$(stat -c%s -- "$video_file" 2>/dev/null || echo "0")
         if [[ $file_size -lt 1024 ]]; then
             # File less than 1KB is almost certainly corrupted
             ((failed_checks++))
@@ -8747,7 +8753,7 @@ detect_corrupted_videos() {
     echo -e "\n  ${RED}${BOLD}⚠️  Found $corrupted_count corrupted video file(s):${NC}\n"
     
     for corrupted_file in "${corrupted_files[@]}"; do
-        local file_size=$(stat -c%s "$corrupted_file" 2>/dev/null || echo "0")
+        local file_size=$(stat -c%s -- "$corrupted_file" 2>/dev/null || echo "0")
         local file_size_mb=$((file_size / 1024 / 1024))
         local reasons="${corruption_reasons[$corrupted_file]}"
         
@@ -8939,7 +8945,7 @@ detect_duplicate_gifs() {
     # Calculate total size and estimate time
     local total_size=0
     for gif_file in "${gif_files_list[@]}"; do
-        local file_size=$(stat -c%s "$gif_file" 2>/dev/null || echo "0")
+        local file_size=$(stat -c%s -- "$gif_file" 2>/dev/null || echo "0")
         total_size=$((total_size + file_size))
     done
     
@@ -8998,8 +9004,8 @@ detect_duplicate_gifs() {
             local cached_data=$(echo "$cached_entry" | cut -d'|' -f2-)
             
             # Get current file fingerprint (fast: just size + mtime)
-            local current_filesize=$(stat -c%s "$prescan_file" 2>/dev/null || echo "0")
-            local current_filemtime=$(stat -c%Y "$prescan_file" 2>/dev/null || echo "0")
+            local current_filesize=$(stat -c%s -- "$prescan_file" 2>/dev/null || echo "0")
+            local current_filemtime=$(stat -c%Y -- "$prescan_file" 2>/dev/null || echo "0")
             local current_fingerprint="${current_filesize}:${current_filemtime}"
             
             # If fingerprint matches and it's duplicate detection data, file is cached
@@ -9092,7 +9098,7 @@ detect_duplicate_gifs() {
             # Stage 1: Fast MD5 checksum with intelligent caching
             # Use cached checksum if available, only calculate if needed
             local checksum
-            local size=$(stat -c%s "$gif_file" 2>/dev/null || echo "0")
+            local size=$(stat -c%s -- "$gif_file" 2>/dev/null || echo "0")
             
             # Try to get cached checksum first
             checksum=$(get_cached_checksum "$gif_file" 2>/dev/null)
@@ -9319,7 +9325,7 @@ detect_duplicate_gifs() {
         consecutive_loop_detections=0
         
         # Get file size immediately to handle problematic files early
-        local size=$(stat -c%s "$gif_file" 2>/dev/null || echo "0")
+        local size=$(stat -c%s -- "$gif_file" 2>/dev/null || echo "0")
         
         # Skip unreadable files immediately and ensure we continue to next file
         if [[ ! -r "$gif_file" ]]; then
@@ -9694,7 +9700,7 @@ detect_duplicate_gifs() {
     # Identify new/modified files
     local gif_files=("${!gif_checksums[@]}")
     for gif_file in "${gif_files[@]}"; do
-        local file_mtime=$(stat -c%Y "$gif_file" 2>/dev/null || echo "0")
+        local file_mtime=$(stat -c%Y -- "$gif_file" 2>/dev/null || echo "0")
         local file_size="${gif_sizes[$gif_file]}"
         local file_fingerprint="${file_mtime}:${file_size}"
         
@@ -9793,7 +9799,7 @@ detect_duplicate_gifs() {
         echo "# File Tracking Database - Updated: $(date)" >> "$file_tracking_db"
         echo "# Format: filename|mtime|size" >> "$file_tracking_db"
         for gif_file in "${gif_files[@]}"; do
-            local file_mtime=$(stat -c%Y "$gif_file" 2>/dev/null || echo "0")
+            local file_mtime=$(stat -c%Y -- "$gif_file" 2>/dev/null || echo "0")
             local file_size="${gif_sizes[$gif_file]}"
             echo "$gif_file|$file_mtime|$file_size" >> "$file_tracking_db"
         done
@@ -10678,8 +10684,8 @@ detect_duplicate_gifs() {
                 
                 # Factor 3: File Metadata & Timestamps
                 local metadata_score=0
-                local mtime1=$(stat -c%Y "$file1" 2>/dev/null || echo "0")
-                local mtime2=$(stat -c%Y "$file2" 2>/dev/null || echo "0")
+                local mtime1=$(stat -c%Y -- "$file1" 2>/dev/null || echo "0")
+                local mtime2=$(stat -c%Y -- "$file2" 2>/dev/null || echo "0")
                 if [[ $mtime1 -gt 0 && $mtime2 -gt 0 ]]; then
                     local time_diff=$((mtime1 > mtime2 ? mtime1 - mtime2 : mtime2 - mtime1))
                     if [[ $time_diff -lt 60 ]]; then
@@ -10860,8 +10866,8 @@ detect_duplicate_gifs() {
                 local metadata_score=0
                 
                 # Get file metadata
-                local mtime1=$(stat -c%Y "$file1" 2>/dev/null || echo "0")
-                local mtime2=$(stat -c%Y "$file2" 2>/dev/null || echo "0")
+                local mtime1=$(stat -c%Y -- "$file1" 2>/dev/null || echo "0")
+                local mtime2=$(stat -c%Y -- "$file2" 2>/dev/null || echo "0")
                 local ctime1=$(stat -c%Z "$file1" 2>/dev/null || echo "0")
                 local ctime2=$(stat -c%Z "$file2" 2>/dev/null || echo "0")
                 
@@ -11265,8 +11271,8 @@ detect_duplicate_gifs() {
                 local size2="${gif_sizes[$file2]}"
                 
                 # Get file metadata for intelligent decision
-                local mtime1=$(stat -c%Y "$file1" 2>/dev/null || echo "0")  # Modification time
-                local mtime2=$(stat -c%Y "$file2" 2>/dev/null || echo "0")
+                local mtime1=$(stat -c%Y -- "$file1" 2>/dev/null || echo "0")  # Modification time
+                local mtime2=$(stat -c%Y -- "$file2" 2>/dev/null || echo "0")
                 local ctime1=$(stat -c%Z "$file1" 2>/dev/null || echo "0")  # Change time (creation on some systems)
                 local ctime2=$(stat -c%Z "$file2" 2>/dev/null || echo "0")
                 local perms1=$(stat -c%a "$file1" 2>/dev/null || echo "0")  # File permissions
@@ -11473,7 +11479,7 @@ detect_duplicate_gifs() {
     echo "# File Tracking Database - Updated: $(date)" >> "$file_tracking_db"
     echo "# Format: filename|mtime|size" >> "$file_tracking_db"
     for gif_file in "${gif_files[@]}"; do
-        local file_mtime=$(stat -c%Y "$gif_file" 2>/dev/null || echo "0")
+        local file_mtime=$(stat -c%Y -- "$gif_file" 2>/dev/null || echo "0")
         local file_size="${gif_sizes[$gif_file]}"
         echo "$gif_file|$file_mtime|$file_size" >> "$file_tracking_db"
     done
@@ -11615,8 +11621,8 @@ detect_duplicate_gifs() {
         all_duplicate_gifs["$keep_file"]=1
         
         # Store file sizes for savings calculation
-        gif_file_sizes["$remove_file"]=$(stat -c%s "$remove_file" 2>/dev/null || echo "0")
-        gif_file_sizes["$keep_file"]=$(stat -c%s "$keep_file" 2>/dev/null || echo "0")
+        gif_file_sizes["$remove_file"]=$(stat -c%s -- "$remove_file" 2>/dev/null || echo "0")
+        gif_file_sizes["$keep_file"]=$(stat -c%s -- "$keep_file" 2>/dev/null || echo "0")
     done
     local unique_duplicate_gifs=${#all_duplicate_gifs[@]}
     
@@ -11798,8 +11804,8 @@ detect_duplicate_gifs() {
                 fi
                 
                 # Factor 9: Timestamp proximity (25 points max)
-                local mtime1=$(stat -c%Y "$file1" 2>/dev/null || echo "0")
-                local mtime2=$(stat -c%Y "$file2" 2>/dev/null || echo "0")
+                local mtime1=$(stat -c%Y -- "$file1" 2>/dev/null || echo "0")
+                local mtime2=$(stat -c%Y -- "$file2" 2>/dev/null || echo "0")
                 if [[ $mtime1 -gt 0 && $mtime2 -gt 0 ]]; then
                     local time_diff=$((mtime1 > mtime2 ? mtime1 - mtime2 : mtime2 - mtime1))
                     if [[ $time_diff -lt 60 ]]; then
@@ -11939,7 +11945,7 @@ detect_duplicate_gifs() {
             local potential_savings=0
             for pair in "${duplicate_pairs[@]}"; do
                 local remove_file="${pair%%|*}"
-                local remove_size=$(stat -c%s "$remove_file" 2>/dev/null || echo "0")
+                local remove_size=$(stat -c%s -- "$remove_file" 2>/dev/null || echo "0")
                 [[ -n "$remove_size" && "$remove_size" -gt 0 ]] && potential_savings=$((potential_savings + remove_size))
             done
             
@@ -12127,10 +12133,10 @@ detect_duplicate_gifs() {
         local property_warning=""
         
         # Get comprehensive file properties for both files
-        local remove_file_size=$(stat -c%s "$remove_file" 2>/dev/null || echo "0")
-        local keep_file_size=$(stat -c%s "$keep_file" 2>/dev/null || echo "0")
-        local remove_file_mtime=$(stat -c%Y "$remove_file" 2>/dev/null || echo "0")
-        local keep_file_mtime=$(stat -c%Y "$keep_file" 2>/dev/null || echo "0")
+        local remove_file_size=$(stat -c%s -- "$remove_file" 2>/dev/null || echo "0")
+        local keep_file_size=$(stat -c%s -- "$keep_file" 2>/dev/null || echo "0")
+        local remove_file_mtime=$(stat -c%Y -- "$remove_file" 2>/dev/null || echo "0")
+        local keep_file_mtime=$(stat -c%Y -- "$keep_file" 2>/dev/null || echo "0")
         local remove_file_ctime=$(stat -c%Z "$remove_file" 2>/dev/null || echo "0")
         local keep_file_ctime=$(stat -c%Z "$keep_file" 2>/dev/null || echo "0")
         local remove_file_perms=$(stat -c%a "$remove_file" 2>/dev/null || echo "0")
@@ -12147,8 +12153,8 @@ detect_duplicate_gifs() {
             local remove_gif_size="${gif_sizes[$remove_file]:-0}"
             
             # Get source video file properties
-            local remove_source_size=$(stat -c%s "$remove_source" 2>/dev/null || echo "0")
-            local remove_source_mtime=$(stat -c%Y "$remove_source" 2>/dev/null || echo "0")
+            local remove_source_size=$(stat -c%s -- "$remove_source" 2>/dev/null || echo "0")
+            local remove_source_mtime=$(stat -c%Y -- "$remove_source" 2>/dev/null || echo "0")
             local remove_source_ctime=$(stat -c%Z "$remove_source" 2>/dev/null || echo "0")
             
             # Get source video properties
@@ -12232,8 +12238,8 @@ detect_duplicate_gifs() {
             local keep_gif_size="${gif_sizes[$keep_file]:-0}"
             
             # Get source video file properties
-            local keep_source_size=$(stat -c%s "$keep_source" 2>/dev/null || echo "0")
-            local keep_source_mtime=$(stat -c%Y "$keep_source" 2>/dev/null || echo "0")
+            local keep_source_size=$(stat -c%s -- "$keep_source" 2>/dev/null || echo "0")
+            local keep_source_mtime=$(stat -c%Y -- "$keep_source" 2>/dev/null || echo "0")
             local keep_source_ctime=$(stat -c%Z "$keep_source" 2>/dev/null || echo "0")
             
             local keep_source_duration=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$keep_source" 2>/dev/null | cut -d'.' -f1 || echo "0")
@@ -12699,7 +12705,7 @@ analyze_video_gif_mapping() {
     declare -A gif_files
     declare -A video_to_gif_map
     declare -A orphaned_gifs
-    declare -A conversion_needed
+    declare -gA conversion_needed  # Make global so other functions can access it
     
     local total_videos=0
     local total_gifs=0
@@ -12805,15 +12811,18 @@ analyze_video_gif_mapping() {
             # Found corresponding GIF
             local gif_file="${gif_files[$basename]}"
             video_to_gif_map["$video_file"]="$gif_file"
-            ((already_converted++))
             
-            # Check if GIF is newer than video (to detect if conversion is up-to-date)
-            local video_time=$(stat -c %Y "$video_file" 2>/dev/null || echo "0")
-            local gif_time=$(stat -c %Y "$gif_file" 2>/dev/null || echo "0")
+            # Check if GIF is up-to-date
+            local video_time=$(stat -c %Y -- "$video_file" 2>/dev/null || echo "0")
+            local gif_time=$(stat -c %Y -- "$gif_file" 2>/dev/null || echo "0")
             
             if [[ $video_time -gt $gif_time ]]; then
-                # Video is newer, might need re-conversion
+                # Video is newer, needs re-conversion
                 conversion_needed["$video_file"]="outdated"
+                ((need_conversion++))
+            else
+                # GIF is up-to-date
+                ((already_converted++))
             fi
         else
             # No corresponding GIF found
@@ -12849,7 +12858,7 @@ analyze_video_gif_mapping() {
     if [[ $orphaned_count -gt 0 ]]; then
         echo -e "\n  ${YELLOW}🔍 Orphaned GIFs (no matching video):${NC}"
         for gif_file in "${!orphaned_gifs[@]}"; do
-            local gif_size=$(stat -c%s "$gif_file" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "?")
+            local gif_size=$(stat -c%s -- "$gif_file" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "?")
             echo -e "    ${YELLOW}🎨 $(basename -- "$gif_file") ($gif_size) → ${GRAY}[no video]${NC}"
         done
         
@@ -12970,7 +12979,7 @@ estimate_conversion_requirements() {
         
         # Check if conversion is needed
         if [[ ! -f "$expected_gif" ]] || [[ "$FORCE_CONVERSION" == "true" ]]; then
-            local size=$(stat -c%s "$video" 2>/dev/null || echo "0")
+            local size=$(stat -c%s -- "$video" 2>/dev/null || echo "0")
             total_size=$((total_size + size))
             ((file_count++))
         fi
@@ -13070,7 +13079,7 @@ detect_corrupted_gifs() {
         local failure_reasons=()
         
         # Layer 1: File size check (suspiciously small)
-        local file_size=$(stat -c%s "$gif_file" 2>/dev/null || echo "0")
+        local file_size=$(stat -c%s -- "$gif_file" 2>/dev/null || echo "0")
         if [[ $file_size -lt 100 ]]; then
             # File less than 100 bytes is almost certainly corrupted
             ((failed_checks++))
@@ -13141,7 +13150,7 @@ detect_corrupted_gifs() {
     echo -e "\n  ${RED}${BOLD}⚠️  Found $corrupted_count corrupted GIF file(s):${NC}\n"
     
     for corrupted_file in "${corrupted_files[@]}"; do
-        local file_size=$(stat -c%s "$corrupted_file" 2>/dev/null || echo "0")
+        local file_size=$(stat -c%s -- "$corrupted_file" 2>/dev/null || echo "0")
         local file_size_kb=$((file_size / 1024))
         local reasons="${corruption_reasons[$corrupted_file]}"
         
@@ -13893,7 +13902,7 @@ benchmark_cpu_performance() {
             local end_time=$(date +%s.%N)
             local duration=$(echo "$end_time - $start_time" | bc 2>/dev/null || echo "999")
             
-            if [[ -f "$test_output" ]] && [[ $(stat -c%s "$test_output" 2>/dev/null || echo "0") -gt 100 ]]; then
+            if [[ -f "$test_output" ]] && [[ $(stat -c%s -- "$test_output" 2>/dev/null || echo "0") -gt 100 ]]; then
                 echo -e "    ${GREEN}✓ $threads threads: ${duration}s${NC}"
                 
                 # Check if this is the best time
@@ -14215,7 +14224,7 @@ preload_files_to_cache() {
         
         for file in "${files[@]}"; do
             if [[ -f "$file" ]]; then
-                local file_size=$(stat -c%s "$file" 2>/dev/null || echo "0")
+                local file_size=$(stat -c%s -- "$file" 2>/dev/null || echo "0")
                 local file_size_mb=$((file_size / 1024 / 1024))
                 
                 # Only preload files smaller than 500MB each and total < 2GB
@@ -14720,9 +14729,9 @@ monitor_new_files() {
                 
                 if [[ "$is_new" == "true" ]]; then
                     # Verify it's a valid video file and not being written
-                    local file_size1=$(stat -c%s "$current_file" 2>/dev/null || echo "0")
+                    local file_size1=$(stat -c%s -- "$current_file" 2>/dev/null || echo "0")
                     sleep 1
-                    local file_size2=$(stat -c%s "$current_file" 2>/dev/null || echo "0")
+                    local file_size2=$(stat -c%s -- "$current_file" 2>/dev/null || echo "0")
                     
                     # Only add if file size is stable (not being written)
                     if [[ $file_size1 -eq $file_size2 && $file_size1 -gt 1024 ]]; then
@@ -14736,7 +14745,7 @@ monitor_new_files() {
                 {
                     echo "[$(date '+%Y-%m-%d %H:%M:%S')] DYNAMIC SCAN: Found ${#new_files[@]} new file(s)"
                     for new_file in "${new_files[@]}"; do
-                        local file_size=$(stat -c%s "$new_file" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "unknown")
+                        local file_size=$(stat -c%s -- "$new_file" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "unknown")
                         echo "[$(date '+%Y-%m-%d %H:%M:%S')] NEW FILE DETECTED: $(basename -- "$new_file") ($file_size)"
                     done
                 } >> "$CONVERSION_LOG" 2>/dev/null || true
@@ -14773,7 +14782,7 @@ check_for_new_files() {
             
             for new_file in "${new_files_array[@]}"; do
                 if [[ -f "$new_file" ]]; then
-                    local file_size=$(stat -c%s "$new_file" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "unknown")
+                    local file_size=$(stat -c%s -- "$new_file" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "unknown")
                     echo -e "  ${CYAN}📄 $(basename -- "$new_file") (${file_size})${NC}"
                 fi
             done
@@ -14950,7 +14959,7 @@ check_dependencies() {
     
     # Check if cache exists and is recent
     if [[ -f "$cache_file" ]]; then
-        local cache_age=$(($(date +%s) - $(stat -c %Y "$cache_file" 2>/dev/null || echo 0)))
+        local cache_age=$(($(date +%s) - $(stat -c %Y -- "$cache_file" 2>/dev/null || echo 0)))
         local cache_max_age=$((cache_validity_hours * 3600))
         
         if [[ $cache_age -lt $cache_max_age ]]; then
@@ -15168,7 +15177,7 @@ validate_video_file() {
     fi
     
     # Check file size (must be > 1KB for valid video)
-    local file_size=$(stat -c%s "$file" 2>/dev/null || echo "0")
+    local file_size=$(stat -c%s -- "$file" 2>/dev/null || echo "0")
     if [[ $file_size -lt 1024 ]]; then
         log_error "File too small or empty" "$file" "Size: $file_size bytes (minimum: 1KB)" "${BASH_LINENO[0]}" "validate_video_file"
         return 1
@@ -15176,7 +15185,7 @@ validate_video_file() {
     
     # MD5-based validation cache to skip expensive FFprobe checks
     local validation_cache="$LOG_DIR/validation_cache.db"
-    local file_mtime=$(stat -c%Y "$file" 2>/dev/null || echo "0")
+    local file_mtime=$(stat -c%Y -- "$file" 2>/dev/null || echo "0")
     local cache_key="${file}|${file_size}|${file_mtime}"
     
     # Validate cache integrity on first access (silent rebuild)
@@ -15234,7 +15243,7 @@ detect_video_corruption() {
     # Silent validation - no output
     
     # Test 1: Basic stream validation
-    if ! ffprobe -v quiet -select_streams v:0 -show_entries stream=codec_type -of csv=p=0 "$file" 2>"$temp_error" | grep -q "video"; then
+    if ! ffprobe -v quiet -select_streams v:0 -show_entries stream=codec_type -of csv=p=0 -- "$file" 2>"$temp_error" | grep -q "video"; then
         local error_msg="No video stream found"
         [[ -s "$temp_error" ]] && error_msg="$(head -3 "$temp_error" | tr '\n' ' ')"
         log_error "Invalid video file - no video stream" "$file" "$error_msg" "${BASH_LINENO[0]}" "detect_video_corruption"
@@ -15283,7 +15292,7 @@ check_duplicate_output() {
     fi
     
     # Check if output file is valid (basic size check)
-    local output_size=$(stat -c%s "$output_file" 2>/dev/null || echo "0")
+    local output_size=$(stat -c%s -- "$output_file" 2>/dev/null || echo "0")
     if [[ $output_size -lt 100 ]]; then
         [[ "$VALIDATION_SILENT_MODE" != "true" ]] && echo -e "  ${YELLOW}⚠️ Existing file too small, will recreate: $(basename -- "$output_file")${NC}"
         rm -f "$output_file" 2>/dev/null
@@ -15319,7 +15328,7 @@ validate_output_file() {
     fi
     
     # Test 2: Check file size (must be > 100 bytes for valid GIF)
-    local file_size=$(stat -c%s "$output_file" 2>/dev/null || echo "0")
+    local file_size=$(stat -c%s -- "$output_file" 2>/dev/null || echo "0")
     if [[ $file_size -lt 100 ]]; then
         log_error "Output file too small" "$source_file" "Output: $output_file, Size: $file_size bytes (minimum: 100)" "${BASH_LINENO[0]}" "validate_output_file"
         echo -e "  ${RED}❌ Output file too small: $file_size bytes${NC}"
@@ -15359,7 +15368,7 @@ validate_output_file() {
     # Test 7: Check for reasonable file size ratio (not too big or suspiciously small)
     # NOTE: Video→GIF conversion typically results in 100-50000% ratio depending on quality settings
     # This is NORMAL and expected behavior - don't warn unless truly anomalous
-    local source_size=$(stat -c%s "$source_file" 2>/dev/null || echo "1")
+    local source_size=$(stat -c%s -- "$source_file" 2>/dev/null || echo "1")
     local ratio=$((file_size * 100 / source_size))
     
     # Only warn if GIF is EXTREMELY large (100,000%+ = 1000x source) which might indicate issues
@@ -15383,7 +15392,7 @@ validate_output_file() {
     
     # Cleanup and success
     rm -f "$temp_error" 2>/dev/null
-    local file_size_mb=$(echo "scale=1; $(stat -c%s "$output_file" 2>/dev/null || echo "0") / 1024 / 1024" | bc 2>/dev/null || echo "?.?")
+    local file_size_mb=$(echo "scale=1; $(stat -c%s -- "$output_file" 2>/dev/null || echo "0") / 1024 / 1024" | bc 2>/dev/null || echo "?.?")
     echo -e "  ${GREEN}✓ GIF created successfully: ${file_size_mb}MB${NC}"
     return 0
 }
@@ -18832,8 +18841,17 @@ start_conversion() {
     local already_converted=0
     local resumed_files=0
     
-    # If ONLY_FILE is set, process just that file
-    if [[ -n "$ONLY_FILE" ]]; then
+    # If validation already found files needing conversion, use that list
+    if [[ ${#conversion_needed[@]} -gt 0 ]]; then
+        echo -e "${CYAN}💡 Using validation results: ${#conversion_needed[@]} files need conversion${NC}"
+        for video_file in "${!conversion_needed[@]}"; do
+            if [[ -f "$video_file" ]]; then
+                files_to_process+=("$video_file")
+                ((total_files++))
+            fi
+        done
+        # Skip the rescan since we already know what needs conversion
+    elif [[ -n "$ONLY_FILE" ]]; then
         if [[ -f "$ONLY_FILE" ]]; then
             if validate_video_file "$ONLY_FILE"; then
                 files_to_process+=("$ONLY_FILE")
@@ -18871,7 +18889,7 @@ start_conversion() {
         
         # Skip zero-byte or very small files early to avoid repeated errors
         if [[ -f "$file" ]]; then
-            local file_size=$(stat -c%s "$file" 2>/dev/null || echo "0")
+            local file_size=$(stat -c%s -- "$file" 2>/dev/null || echo "0")
             if [[ $file_size -lt 1024 ]]; then
                 ((checked++))
                 ((total_files++))
@@ -19156,7 +19174,7 @@ start_conversion() {
 show_welcome() {
     clear
     echo -e "${CYAN}${BOLD}╔═════════════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}${BOLD}║                    🎬 SMART GIF CONVERTER v6.0                    ║${NC}"
+    echo -e "${CYAN}${BOLD}║                    🎬 SMART GIF CONVERTER v6.1                    ║${NC}"
     echo -e "${CYAN}${BOLD}║                  🤖 AI-Powered Video to GIF Magic                  ║${NC}"
     echo -e "${CYAN}${BOLD}╚═════════════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
@@ -19325,7 +19343,7 @@ get_responsive_help_text() {
 # 🎪 Function to print fancy headers (simplified for menus)
 print_header() {
     echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}${BOLD}║                🎬 SMART GIF CONVERTER v6.0                ║${NC}"
+    echo -e "${CYAN}${BOLD}║                🎬 SMART GIF CONVERTER v6.1                ║${NC}"
     echo -e "${CYAN}${BOLD}║                AI-Powered Video to GIF Magic                  ║${NC}"
     echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
@@ -19846,7 +19864,7 @@ convert_video() {
     fi
     
     # Check if file is actually a video
-    if ! ffprobe -v quiet -select_streams v:0 -show_entries stream=codec_type -of csv=p=0 "$file" 2>/dev/null | grep -q "video"; then
+    if ! ffprobe -v quiet -select_streams v:0 -show_entries stream=codec_type -of csv=p=0 -- "$file" 2>/dev/null | grep -q "video"; then
         log_error "File is not a valid video" "$file"
         echo -e "\n${RED}❌ Error: '$file' is not a valid video file${NC}"
         ((failed_files++))
@@ -19925,7 +19943,7 @@ convert_video() {
         return 1
     fi
     
-    local file_size=$(stat -c%s "$output_file" 2>/dev/null || echo "0")
+    local file_size=$(stat -c%s -- "$output_file" 2>/dev/null || echo "0")
     if [[ $file_size -eq 0 ]]; then
         log_error "Output file is empty" "$file"
         echo -e "\n  ${RED}❌ Error: Output file is empty${NC}"
@@ -19936,7 +19954,7 @@ convert_video() {
     fi
     
     # Show file size comparison
-    local original_size=$(stat -c%s "$file" 2>/dev/null || echo "0")
+    local original_size=$(stat -c%s -- "$file" 2>/dev/null || echo "0")
     local converted_size=$file_size
     local ratio_pct_str=$(compute_ratio_percent "$converted_size" "$original_size")
     
@@ -20380,7 +20398,7 @@ _convert_video_internal() {
     fi
     
     # Check if file is actually a video
-    if ! ffprobe -v quiet -select_streams v:0 -show_entries stream=codec_type -of csv=p=0 "$file" 2>/dev/null | grep -q "video"; then
+    if ! ffprobe -v quiet -select_streams v:0 -show_entries stream=codec_type -of csv=p=0 -- "$file" 2>/dev/null | grep -q "video"; then
         log_error "File is not a valid video" "$file"
         echo -e "\n${RED}❌ Error: '$file' is not a valid video file${NC}"
         ((failed_files++))
@@ -20405,7 +20423,7 @@ _convert_video_internal() {
             
             # Delete incomplete output GIF if it exists
             if [[ -f "$final_output_file" ]]; then
-                local output_size=$(stat -c%s "$final_output_file" 2>/dev/null || echo "0")
+                local output_size=$(stat -c%s -- "$final_output_file" 2>/dev/null || echo "0")
                 # If GIF is suspiciously small or was just created, delete it
                 if [[ $output_size -lt 1000 ]] || [[ "$final_output_file" -nt "$file" ]]; then
                     rm -f "$final_output_file" 2>/dev/null
@@ -20513,7 +20531,7 @@ _convert_video_internal() {
         # Check if palette generation was successful
         local palette_success=false
         if [[ $ffmpeg_exit_code -eq 0 && -f "$temp_palette_file" ]]; then
-            local palette_size=$(stat -c%s "$temp_palette_file" 2>/dev/null || echo "0")
+            local palette_size=$(stat -c%s -- "$temp_palette_file" 2>/dev/null || echo "0")
             if [[ $palette_size -gt 50 ]]; then
                 palette_success=true
                 printf "\r  ${GREEN}✓ Palette generation completed ($(numfmt --to=iec $palette_size))${NC}\n"
@@ -20537,7 +20555,7 @@ _convert_video_internal() {
             elif [[ ! -f "$temp_palette_file" ]]; then
                 is_genuine_error=true
             elif [[ -f "$temp_palette_file" ]]; then
-                local palette_size=$(stat -c%s "$temp_palette_file" 2>/dev/null || echo "0")
+                local palette_size=$(stat -c%s -- "$temp_palette_file" 2>/dev/null || echo "0")
                 if [[ $palette_size -le 50 ]]; then
                     is_genuine_error=true
                 fi
@@ -20555,7 +20573,7 @@ _convert_video_internal() {
                     echo "[$(date '+%Y-%m-%d %H:%M:%S')] COMMAND: ffmpeg -i \"$file\" -vf \"$filter_chain\" -frames:v 1 -update 1 -y \"$temp_palette_file\" -loglevel info"
                     echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXIT CODE: $ffmpeg_exit_code ($(explain_exit_code $ffmpeg_exit_code))"
                     echo "[$(date '+%Y-%m-%d %H:%M:%S')] PALETTE FILE EXISTS: $([[ -f "$temp_palette_file" ]] && echo "YES" || echo "NO")"
-                    [[ -f "$temp_palette_file" ]] && echo "[$(date '+%Y-%m-%d %H:%M:%S')] PALETTE SIZE: $(stat -c%s "$temp_palette_file" 2>/dev/null || echo "0") bytes"
+                    [[ -f "$temp_palette_file" ]] && echo "[$(date '+%Y-%m-%d %H:%M:%S')] PALETTE SIZE: $(stat -c%s -- "$temp_palette_file" 2>/dev/null || echo "0") bytes"
                     echo "[$(date '+%Y-%m-%d %H:%M:%S')] DIAGNOSIS: $diagnosis"
                     echo "[$(date '+%Y-%m-%d %H:%M:%S')] FFMPEG FULL OUTPUT:"
                     cat "$ffmpeg_error_file"
@@ -20608,7 +20626,7 @@ _convert_video_internal() {
                 
                 # Re-check palette file
                 if [[ -f "$temp_palette_file" ]]; then
-                    local final_palette_size=$(stat -c%s "$temp_palette_file" 2>/dev/null || echo "0")
+                    local final_palette_size=$(stat -c%s -- "$temp_palette_file" 2>/dev/null || echo "0")
                     if [[ $final_palette_size -gt 50 ]]; then
                         palette_success=true
                         printf "  ${GREEN}✓ Palette generation completed ($(numfmt --to=iec $final_palette_size))${NC}\n"
@@ -20713,7 +20731,7 @@ _convert_video_internal() {
                     echo "[$(date '+%Y-%m-%d %H:%M:%S')] COMMAND: ffmpeg -i \"$file\" -i \"$temp_palette_file\" -lavfi \"$conversion_filter\" -y \"$temp_output_file\" -loglevel info"
                     echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXIT CODE: $conversion_exit_code ($(explain_exit_code $conversion_exit_code))"
                     echo "[$(date '+%Y-%m-%d %H:%M:%S')] OUTPUT FILE EXISTS: $([[ -f "$temp_output_file" ]] && echo "YES" || echo "NO")"
-                    [[ -f "$temp_output_file" ]] && echo "[$(date '+%Y-%m-%d %H:%M:%S')] OUTPUT SIZE: $(stat -c%s "$temp_output_file" 2>/dev/null || echo "0") bytes"
+                    [[ -f "$temp_output_file" ]] && echo "[$(date '+%Y-%m-%d %H:%M:%S')] OUTPUT SIZE: $(stat -c%s -- "$temp_output_file" 2>/dev/null || echo "0") bytes"
                     echo "[$(date '+%Y-%m-%d %H:%M:%S')] DIAGNOSIS: $conv_diagnosis"
                     echo "[$(date '+%Y-%m-%d %H:%M:%S')] FFMPEG FULL OUTPUT:"
                     cat "$conversion_error_file"
@@ -20773,7 +20791,7 @@ _convert_video_internal() {
         if [[ "$SKIP_VALIDATION" == "true" ]]; then
             echo -e "  ${YELLOW}⚡ Skipping validation for speed${NC}"
             if [[ -f "$temp_output_file" ]]; then
-                local file_size=$(stat -c%s "$temp_output_file" 2>/dev/null || echo "0")
+                local file_size=$(stat -c%s -- "$temp_output_file" 2>/dev/null || echo "0")
                 if [[ $file_size -gt 100 ]]; then
                     echo -e "  ${GREEN}✓ GIF created: $(numfmt --to=iec $file_size)${NC}"
                 else
@@ -20803,7 +20821,7 @@ _convert_video_internal() {
         fi
         
         # Step 4: Smart AI Decision - Check if compression is truly needed
-        local temp_gif_size_mb=$(($(stat -c%s "$temp_output_file" 2>/dev/null || echo 0) / 1024 / 1024))
+        local temp_gif_size_mb=$(($(stat -c%s -- "$temp_output_file" 2>/dev/null || echo 0) / 1024 / 1024))
         local compress_needed=false
         local compression_reason=""
         
@@ -20933,7 +20951,7 @@ _convert_video_internal() {
                 local emerg_conv_filter="fps=${emerg_fps},scale=${emerg_resolution}:force_original_aspect_ratio=decrease:flags=${SCALING_ALGO},pad=${emerg_resolution}:(ow-iw)/2:(oh-ih)/2:black[x];[x][1:v]paletteuse=$emerg_dither_option"
                 
                 if ffmpeg -i "$file" -i "$emergency_palette" -lavfi "$emerg_conv_filter" -threads $FFMPEG_THREADS -nostats -nostdin -loglevel error -y "$emergency_temp" 2>/dev/null; then
-                    local emergency_size_mb=$(($(stat -c%s "$emergency_temp" 2>/dev/null || echo 0) / 1024 / 1024))
+                    local emergency_size_mb=$(($(stat -c%s -- "$emergency_temp" 2>/dev/null || echo 0) / 1024 / 1024))
                     echo -e "    ${GREEN}✓ Emergency compression: ${emergency_size_mb}MB${NC}"
                     
                     # Use emergency version if significantly smaller
@@ -20984,8 +21002,8 @@ _convert_video_internal() {
         fi
         
         # Show file size comparison
-        local original_size=$(stat -c%s "$file" 2>/dev/null || echo "1")
-        local converted_size=$(stat -c%s "$final_output_file" 2>/dev/null || echo "0")
+        local original_size=$(stat -c%s -- "$file" 2>/dev/null || echo "1")
+        local converted_size=$(stat -c%s -- "$final_output_file" 2>/dev/null || echo "0")
         local ratio=0
         if [[ $original_size -gt 0 ]]; then
             ratio=$((converted_size * 100 / original_size))
@@ -21037,7 +21055,7 @@ _convert_video_internal() {
                     
                     local temp_file="${final_output_file}.gifsicle.tmp"
                     if timeout 30 gifsicle $opt_level "$final_output_file" -o "$temp_file" 2>/dev/null; then
-                        local new_size=$(stat -c%s "$temp_file" 2>/dev/null || echo "0")
+                        local new_size=$(stat -c%s -- "$temp_file" 2>/dev/null || echo "0")
                         if [[ $new_size -gt 100 && $new_size -lt $best_size ]]; then
                             best_file="$temp_file"
                             best_size=$new_size
@@ -21148,7 +21166,7 @@ _convert_video_internal() {
                     SCRIPT_FFMPEG_PIDS=("${new_pids2[@]}")
                     
                     if [[ $reopt_result -eq 0 ]]; then
-                        local reopt_size=$(stat -c%s "$temp_output" 2>/dev/null || echo "0")
+                        local reopt_size=$(stat -c%s -- "$temp_output" 2>/dev/null || echo "0")
                         if [[ $reopt_size -gt 100 && $reopt_size -lt $best_size ]]; then
                             # Clean up previous best file if it's a temp file
                             [[ "$best_file" != "$final_output_file" ]] && rm -f "$best_file" 2>/dev/null
@@ -21830,7 +21848,7 @@ main() {
                 echo -e "  ${BLUE}Palette Mode:${NC} $PALETTE_MODE"
                 
                 if [[ -f "$SETTINGS_FILE" ]]; then
-                    local mod_time=$(stat -c %Y "$SETTINGS_FILE" 2>/dev/null || echo "0")
+                    local mod_time=$(stat -c %Y -- "$SETTINGS_FILE" 2>/dev/null || echo "0")
                     local readable_time=$(date -d "@$mod_time" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "Unknown")
                     echo -e "\n${YELLOW}ℹ️ Settings file last updated: $readable_time${NC}"
                 else
@@ -21863,7 +21881,7 @@ main() {
                 if [[ -f "$SETTINGS_FILE" ]]; then
                     echo -e "${GREEN}✓ Settings file exists${NC}"
                     echo -e "  ${BLUE}Path:${NC} $(make_clickable_path "$SETTINGS_FILE" "$SETTINGS_FILE")"
-                    echo -e "  ${BLUE}Size:${NC} $(stat -c%s "$SETTINGS_FILE" 2>/dev/null || echo '0') bytes"
+                    echo -e "  ${BLUE}Size:${NC} $(stat -c%s -- "$SETTINGS_FILE" 2>/dev/null || echo '0') bytes"
                     echo -e "  ${BLUE}Permissions:${NC} $(ls -l "$SETTINGS_FILE" | awk '{print $1}')"
                     echo -e "  ${BLUE}Owner:${NC} $(ls -l "$SETTINGS_FILE" | awk '{print $3 ":" $4}')"
                     echo -e "  ${BLUE}Readable:${NC} $([ -r "$SETTINGS_FILE" ] && echo "${GREEN}YES${NC}" || echo "${RED}NO${NC}")"
@@ -21911,7 +21929,7 @@ main() {
                 if [[ -f "$CONFIG_FILE" ]]; then
                     echo -e "${YELLOW}⚠️ Legacy config file exists${NC}"
                     echo -e "  ${BLUE}Path:${NC} $CONFIG_FILE"
-                    echo -e "  ${BLUE}Size:${NC} $(stat -c%s "$CONFIG_FILE" 2>/dev/null || echo '0') bytes"
+                    echo -e "  ${BLUE}Size:${NC} $(stat -c%s -- "$CONFIG_FILE" 2>/dev/null || echo '0') bytes"
                     echo -e "  ${CYAN}💡 Consider migrating with: ./convert.sh --save-config${NC}"
                 else
                     echo -e "${GREEN}✓ No legacy config file - using new settings format${NC}"
@@ -22064,7 +22082,7 @@ main() {
                     exit 0
                 fi
                 
-                local cache_size=$(stat -c%s "$validation_cache" 2>/dev/null | numfmt --to=iec)
+                local cache_size=$(stat -c%s -- "$validation_cache" 2>/dev/null | numfmt --to=iec)
                 local cache_entries=$(grep -c '|' "$validation_cache" 2>/dev/null || echo "0")
                 echo -e "${YELLOW}Cache Location:${NC} $(make_clickable_path "$validation_cache" "${validation_cache/$HOME/~}")"
                 echo -e "${YELLOW}Cache Size:${NC} $cache_size ($cache_entries entries)"
