@@ -52,17 +52,25 @@ if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != 
     
     # Verify tmux is available
     if ! command -v tmux >/dev/null 2>&1; then
-        # tmux not installed - show friendly warning but continue
+        # tmux not installed - show friendly warning and prompt
         echo -e "\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m" >&2
         echo -e "\033[1;33m⚠️  TERMINAL CRASH PROTECTION UNAVAILABLE\033[0m" >&2
         echo -e "\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m" >&2
         echo -e "\033[0;33m\nThis script produces large output that may crash some terminals (like Konsole).\033[0m" >&2
-        echo -e "\033[0;36m\n💡 Install tmux for automatic crash protection:\033[0m" >&2
-        echo -e "\033[0;32m   sudo zypper install tmux\033[0m" >&2
-        echo -e "\033[0;36m\nOr run in a more stable terminal (xterm, warp, alacritty)\033[0m" >&2
-        echo -e "\033[0;33m\nContinuing without protection in 60 seconds...\033[0m" >&2
-        echo -e "\033[0;36m(Press Ctrl+C to cancel)\033[0m" >&2
-        sleep 60
+        echo -e "\033[0;36m\n💡 tmux provides automatic crash protection and session persistence.\033[0m" >&2
+        echo -e "\033[0;36m   Your conversions will survive terminal crashes and disconnects!\033[0m" >&2
+        echo -e "\033[0;32m\n📦 Install command: sudo zypper install tmux\033[0m" >&2
+        echo -e "\033[0;36m\nAlternatively, use a more stable terminal (xterm, warp, alacritty)\033[0m" >&2
+        echo -e "\n\033[0;33mWould you like to continue without crash protection? [y/N]:\033[0m " >&2
+        read -r tmux_continue_choice
+        
+        if [[ ! "$tmux_continue_choice" =~ ^[Yy]$ ]]; then
+            echo -e "\033[0;36m\n💡 Install tmux first, then run the script again.\033[0m" >&2
+            exit 0
+        fi
+        
+        echo -e "\033[1;33m⚠️  Continuing without crash protection...\033[0m" >&2
+        sleep 2
     else
         # tmux is available - validate and launch
         
