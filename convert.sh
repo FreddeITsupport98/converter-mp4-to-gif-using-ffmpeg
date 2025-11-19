@@ -157,21 +157,7 @@ if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != 
         SCRIPT_ARGS="$*"
         
         # Create robust tmux command with error handling
-        TMUX_CMD=""
-        TMUX_CMD+="set -e; "  # Exit on error
-        TMUX_CMD+="trap 'echo; echo \"\033[1;31m❌ Script error occurred\033[0m\"; read -p \"Press Enter to close...\"' ERR; "
-        TMUX_CMD+="bash '$SCRIPT_PATH' $SCRIPT_ARGS --no-tmux; "
-        TMUX_CMD+="EXIT_CODE=\$?; "
-        TMUX_CMD+="echo; "
-        TMUX_CMD+="if [ \$EXIT_CODE -eq 0 ]; then "
-        TMUX_CMD+="  echo '\033[1;32m✓ Conversion completed successfully!\033[0m'; "
-        TMUX_CMD+="else "
-        TMUX_CMD+="  echo '\033[1;31m❌ Conversion exited with code: '\$EXIT_CODE'\033[0m'; "
-        TMUX_CMD+="fi; "
-        TMUX_CMD+="echo; "
-        TMUX_CMD+="echo '\033[0;36mSession will remain open for review.\033[0m'; "
-        TMUX_CMD+="echo '\033[0;33mPress Ctrl+b then d to detach, or Ctrl+d to close.\033[0m'; "
-        TMUX_CMD+="exec bash"  # Keep shell open after script ends
+        TMUX_CMD="cd '$(pwd)' && bash '$SCRIPT_PATH' $SCRIPT_ARGS --no-tmux; EXIT_CODE=\$?; echo; if [ \$EXIT_CODE -eq 0 ]; then echo '\033[1;32m✓ Conversion completed successfully!\033[0m'; else echo '\033[1;31m❌ Conversion exited with code: '\$EXIT_CODE'\033[0m'; fi; echo; echo '\033[0;36mSession will remain open for review.\033[0m'; echo '\033[0;33mPress Enter to close, or Ctrl+b then d to detach.\033[0m'; read"
         
         # Launch tmux session with error handling
         if exec tmux new-session -s "$SESSION_NAME" "$TMUX_CMD" 2>/dev/null; then
