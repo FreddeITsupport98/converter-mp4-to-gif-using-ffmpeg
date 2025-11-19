@@ -61,6 +61,17 @@ else
     export TERMINAL_BOUND=false
 fi
 
+# 🎨 Color codes for early use (needed for lock file messages)
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
+CYAN='\033[0;36m'
+GRAY='\033[0;37m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
+
 # 🔒 Single Instance Lock - Prevent multiple concurrent executions
 # This ensures only one instance of the script runs at a time
 LOCK_FILE="${HOME}/.smart-gif-converter/script.lock"
@@ -74,22 +85,34 @@ if [[ -f "$LOCK_FILE" ]]; then
     # Lock file exists, check if the process is still running
     existing_pid=$(cat "$LOCK_FILE" 2>/dev/null)
     
+    # Check if process exists AND is actually running this script
     if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" 2>/dev/null; then
-        # Process is still running - block this new instance
-        echo -e "" >&2
-        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
-        echo -e "${RED}${BOLD}⏸️  Script is already running in another terminal${NC}" >&2
-        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
-        echo -e "" >&2
-        echo -e "${CYAN}Running process ID (PID): ${BOLD}$existing_pid${NC}" >&2
-        echo -e "" >&2
-        echo -e "${CYAN}Your options:${NC}" >&2
-        echo -e "  ${GREEN}1. Wait${NC} - Let the current conversion finish" >&2
-        echo -e "  ${GREEN}2. Stop${NC} - Run: ${BOLD}kill $existing_pid${NC}" >&2
-        echo -e "" >&2
-        exit 1
+        # Verify this PID is actually running convert.sh (not just any process)
+        local process_cmd=$(ps -p "$existing_pid" -o comm= 2>/dev/null || echo "")
+        local process_args=$(ps -p "$existing_pid" -o args= 2>/dev/null || echo "")
+        
+        # Check if it's a bash process running this script
+        if [[ "$process_cmd" == "bash" || "$process_cmd" == */"bash" ]] && [[ "$process_args" == *"convert.sh"* ]]; then
+            # Process is still running THIS script - block this new instance
+            echo -e "" >&2
+            echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+            echo -e "${RED}${BOLD}⏸️  Script is already running in another terminal${NC}" >&2
+            echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+            echo -e "" >&2
+            echo -e "${CYAN}Running process ID (PID): ${BOLD}$existing_pid${NC}" >&2
+            echo -e "" >&2
+            echo -e "${CYAN}Your options:${NC}" >&2
+            echo -e "  ${GREEN}1. Wait${NC} - Let the current conversion finish" >&2
+            echo -e "  ${GREEN}2. Stop${NC} - Run: ${BOLD}kill $existing_pid${NC}" >&2
+            echo -e "" >&2
+            exit 1
+        else
+            # PID exists but is NOT running convert.sh (PID was reused)
+            # Clean up stale lock file
+            rm -f "$LOCK_FILE" 2>/dev/null || true
+        fi
     else
-        # Process is not running, clean up stale lock
+        # Process is not running at all, clean up stale lock
         rm -f "$LOCK_FILE" 2>/dev/null || true
     fi
 fi
@@ -112,16 +135,7 @@ trap cleanup_lock_file EXIT
 #              processing, quality optimization, and extensive configuration options.
 # =============================================================================
 
-# 🎨 Color codes for fancy output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-MAGENTA='\033[0;35m'
-CYAN='\033[0;36m'
-GRAY='\033[0;37m'
-BOLD='\033[1m'
-NC='\033[0m' # No Color
+# Note: Color codes already defined above (before lock file check)
 
 # 📊 Statistics tracking
 total_files=0
