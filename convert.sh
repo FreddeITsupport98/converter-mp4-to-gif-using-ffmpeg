@@ -113,7 +113,7 @@ if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != 
             echo -e "  \033[1;32m[1]\033[0m Attach to existing session (resume conversion)"
             echo -e "  \033[1;33m[2]\033[0m Create new session (start fresh conversion)"
             echo -e "  \033[1;31m[3]\033[0m Run without tmux (not recommended)"
-            echo -e "\n\033[0;36mChoice [1/2/3, default=1]: \033[0m"
+            echo -ne "\n\033[0;36mChoice [1/2/3, default=1]: \033[0m"
             read -r choice || choice="1"
             
             case "$choice" in
@@ -156,20 +156,31 @@ if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != 
         SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
         SCRIPT_ARGS="$*"
         
-        # Create robust tmux command with error handling
-        TMUX_CMD="cd '$(pwd)' && bash '$SCRIPT_PATH' $SCRIPT_ARGS --no-tmux; EXIT_CODE=\$?; echo; if [ \$EXIT_CODE -eq 0 ]; then echo '\033[1;32m✓ Conversion completed successfully!\033[0m'; else echo '\033[1;31m❌ Conversion exited with code: '\$EXIT_CODE'\033[0m'; fi; echo; echo '\033[0;36mSession will remain open for review.\033[0m'; echo '\033[0;33mPress Enter to close, or Ctrl+b then d to detach.\033[0m'; read"
-        
-        # Launch tmux session with error handling
-        if exec tmux new-session -s "$SESSION_NAME" "$TMUX_CMD" 2>/dev/null; then
-            # Success - this line won't be reached due to exec
-            :
-        else
-            # Failed to launch tmux - fallback to direct execution
-            echo -e "\033[1;31m❌ Failed to launch tmux session\033[0m" >&2
-            echo -e "\033[1;33m⚠️  Falling back to direct execution (no crash protection)\033[0m" >&2
-            sleep 2
-            exec bash "$0" "$@" --no-tmux
-        fi
+        # Create robust tmux wrapper script to avoid quoting issues and keep session open
+        TMUX_WRAPPER="$(mktemp -t smart_gif_tmux_XXXXXX.sh)"
+        cat > "$TMUX_WRAPPER" <<'TMUX_EOF'
+#!/usr/bin/env bash
+cd "$(pwd)" || exit 1
+bash "$SCRIPT_PATH" $SCRIPT_ARGS --no-tmux
+EXIT_CODE=$?
+echo
+if [ -n "$EXIT_CODE" ] && [ "$EXIT_CODE" -eq 0 ]; then
+  echo -e '\033[1;32m✓ Conversion completed successfully!\033[0m'
+elif [ -n "$EXIT_CODE" ]; then
+  echo -e '\033[1;31m❌ Conversion exited with code: '"$EXIT_CODE"'\033[0m'
+else
+  echo -e '\033[1;33m⚠️ Script execution issue detected\033[0m'
+fi
+echo
+echo -e '\033[0;36mPress Enter to close, or Ctrl+b then d to detach.\033[0m'
+read -r
+exec bash
+TMUX_EOF
+        # Substitute variables into the wrapper
+        sed -i "s|\$SCRIPT_PATH|$SCRIPT_PATH|g" "$TMUX_WRAPPER"
+        sed -i "s|\$SCRIPT_ARGS|$SCRIPT_ARGS|g" "$TMUX_WRAPPER"
+        chmod +x "$TMUX_WRAPPER"
+        exec tmux new-session -s "$SESSION_NAME" "$TMUX_WRAPPER"
     fi
 fi
 
@@ -889,7 +900,7 @@ show_update_available() {
     
     if [[ "$mode" == "prompt" ]]; then
         echo ""
-        echo -e "${YELLOW}Would you like to update now? [Y/n/later]: ${NC}"
+        echo -ne "${YELLOW}Would you like to update now? [Y/n/later]: ${NC}"
         read -r update_response
         
         case "$update_response" in
@@ -1378,7 +1389,7 @@ manual_update() {
     echo -e "${BLUE}📝 Release notes (first 10 lines):${NC}"
     echo "$release_body" | head -10 | sed 's/^/  /'
     echo ""
-    echo -e "${YELLOW}Update now? [y/N]: ${NC}"
+    echo -ne "${YELLOW}Update now? [y/N]: ${NC}"
     read -r response
     
     if [[ "$response" =~ ^[Yy]$ ]]; then
@@ -16138,7 +16149,7 @@ configure_output_directory() {
             
             # Create directory if it doesn't exist
             if [[ ! -d "$custom_path" ]]; then
-                echo -e "\n${YELLOW}Directory does not exist. Create it? [Y/n]: ${NC}"
+                echo -ne "\n${YELLOW}Directory does not exist. Create it? [Y/n]: ${NC}"
                 read -r confirm
                 if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
                     mkdir -p "$custom_path" 2>/dev/null || {
@@ -18617,7 +18628,7 @@ reset_all_settings() {
     echo -e "  ${GREEN}✓ Logs and history will be preserved${NC}"
     echo -e "  ${GREEN}✓ AI cache and training data will be kept${NC}\n"
     
-    echo -e "${MAGENTA}${BOLD}Are you ABSOLUTELY SURE you want to reset all settings? [y/N]: ${NC}"
+    echo -ne "${MAGENTA}${BOLD}Are you ABSOLUTELY SURE you want to reset all settings? [y/N]: ${NC}"
     read -r confirm_reset
     
     if [[ ! "$confirm_reset" =~ ^[Yy]$ ]]; then
@@ -18772,7 +18783,7 @@ manage_log_files() {
             manage_log_files
             ;;
         "4")
-            echo -e "\n${RED}Are you sure you want to clear all logs? [y/N]: ${NC}"
+            echo -ne "\n${RED}Are you sure you want to clear all logs? [y/N]: ${NC}"
             read -r confirm
             if [[ "$confirm" =~ ^[Yy]$ ]]; then
                 rm -f "$ERROR_LOG" "$CONVERSION_LOG" 2>/dev/null
@@ -21663,7 +21674,7 @@ main() {
                     
                     if [[ -n "$custom_path" ]]; then
                         if [[ ! -d "$custom_path" ]]; then
-                            echo -e "\n${YELLOW}Directory doesn't exist. Create it? [Y/n]: ${NC}"
+                            echo -ne "\n${YELLOW}Directory doesn't exist. Create it? [Y/n]: ${NC}"
                             read -r create_confirm
                             if [[ ! "$create_confirm" =~ ^[Nn]$ ]]; then
                                 mkdir -p "$custom_path" 2>/dev/null && {
@@ -21705,12 +21716,16 @@ main() {
         fi
     fi
     
-    # If no arguments provided, enable interactive mode
-    if [[ $# -eq 0 ]]; then
-        show_welcome
-        show_main_menu
-        exit 0
-    fi
+    # Store original argument count before parsing (for menu decision later)
+    # Exclude --no-tmux as it's an internal flag that shouldn't prevent menu display
+    local original_arg_count=$#
+    local has_meaningful_args=false
+    for arg in "$@"; do
+        if [[ "$arg" != "--no-tmux" ]]; then
+            has_meaningful_args=true
+            break
+        fi
+    done
     
     # Parse command line arguments
     while [[ $# -gt 0 ]]; do
@@ -22308,6 +22323,10 @@ main() {
                 fi
                 exit 0
                 ;;
+            --no-tmux)
+                # Internal flag used by tmux wrapper - skip and continue
+                shift
+                ;;
             *)
                 echo -e "${RED}Unknown option: $1${NC}"
                 echo -e "${YELLOW}Use --help for available options${NC}"
@@ -22315,6 +22334,13 @@ main() {
                 ;;
         esac
     done
+    
+    # If no meaningful arguments provided (or only --no-tmux), enable interactive mode
+    if [[ $has_meaningful_args == false ]]; then
+        show_welcome
+        show_main_menu
+        exit 0
+    fi
     
     # Count total files
     shopt -s nullglob
@@ -22348,7 +22374,7 @@ main() {
     
     # Confirmation in interactive mode
     if [[ "$INTERACTIVE_MODE" == true ]]; then
-        echo -e "\n${MAGENTA}Proceed with conversion? [Y/n]: ${NC}"
+        echo -ne "\n${MAGENTA}Proceed with conversion? [Y/n]: ${NC}"
         read -r confirm
         if [[ "$confirm" =~ ^[Nn]$ ]]; then
             echo -e "${YELLOW}Operation cancelled by user${NC}"
