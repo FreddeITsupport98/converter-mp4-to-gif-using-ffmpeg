@@ -37,6 +37,132 @@ if [ -z "$BASH_VERSION" ]; then
     exit 1
 fi
 
+# ============================================================================
+# 🛡️  TMUX PROTECTION - Auto-launch in tmux to prevent terminal crashes
+# ============================================================================
+# This prevents Konsole and other terminals from crashing due to large output
+# Automatically launches in tmux with comprehensive error handling
+
+# Configuration
+TMUX_PROTECTION_ENABLED=true  # Set to false to disable auto-tmux
+TMUX_MIN_VERSION="1.8"        # Minimum tmux version required
+
+# Check if tmux protection should run
+if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != *"--no-tmux"* ]]; then
+    
+    # Verify tmux is available
+    if ! command -v tmux >/dev/null 2>&1; then
+        # tmux not installed - show friendly warning but continue
+        echo -e "\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m" >&2
+        echo -e "\033[1;33m⚠️  TERMINAL CRASH PROTECTION UNAVAILABLE\033[0m" >&2
+        echo -e "\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m" >&2
+        echo -e "\033[0;33m\nThis script produces large output that may crash some terminals (like Konsole).\033[0m" >&2
+        echo -e "\033[0;36m\n💡 Install tmux for automatic crash protection:\033[0m" >&2
+        echo -e "\033[0;32m   sudo zypper install tmux\033[0m" >&2
+        echo -e "\033[0;36m\nOr run in a more stable terminal (xterm, warp, alacritty)\033[0m" >&2
+        echo -e "\033[0;33m\nContinuing without protection in 3 seconds...\033[0m" >&2
+        sleep 3
+    else
+        # tmux is available - validate and launch
+        
+        # Check tmux version
+        TMUX_VERSION=$(tmux -V 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
+        if [[ -z "$TMUX_VERSION" ]]; then
+            echo -e "\033[1;33m⚠️  Warning: Could not detect tmux version. Proceeding anyway...\033[0m" >&2
+            sleep 1
+        fi
+        
+        # Create unique session name with sanitization
+        CURRENT_DIR="$(basename "$PWD" 2>/dev/null || echo 'unknown')"
+        # Sanitize: remove special chars, limit length, add timestamp for uniqueness
+        SANITIZED_DIR=$(echo "$CURRENT_DIR" | tr -cd '[:alnum:]-' | cut -c1-30)
+        SESSION_NAME="gif-converter-${SANITIZED_DIR}"
+        
+        # Handle existing session
+        if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+            # Session exists - ask user what to do
+            echo -e "\033[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+            echo -e "\033[1;36m🔄 Existing conversion session found!\033[0m"
+            echo -e "\033[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+            echo -e "\n\033[0;33mSession name: \033[1m$SESSION_NAME\033[0m"
+            echo -e "\n\033[0;36mYour options:\033[0m"
+            echo -e "  \033[1;32m[1]\033[0m Attach to existing session (resume conversion)"
+            echo -e "  \033[1;33m[2]\033[0m Create new session (start fresh conversion)"
+            echo -e "  \033[1;31m[3]\033[0m Run without tmux (not recommended)"
+            echo -e "\n\033[0;36mChoice [1/2/3, default=1]: \033[0m"
+            read -r -t 10 choice || choice="1"
+            
+            case "$choice" in
+                2)
+                    # Kill old session and create new one
+                    echo -e "\033[0;33m🗑️  Terminating old session...\033[0m"
+                    tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
+                    sleep 1
+                    ;;
+                3)
+                    # User wants to run without tmux
+                    echo -e "\033[1;33m⚠️  Running without crash protection...\033[0m"
+                    exec bash "$0" "$@" --no-tmux
+                    ;;
+                *)
+                    # Attach to existing session (default)
+                    echo -e "\033[0;36m🔗 Attaching to existing session: $SESSION_NAME\033[0m"
+                    sleep 1
+                    exec tmux attach-session -t "$SESSION_NAME"
+                    ;;
+            esac
+        fi
+        
+        # Create new tmux session
+        echo -e "\033[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+        echo -e "\033[1;36m🛡️  LAUNCHING TERMINAL CRASH PROTECTION\033[0m"
+        echo -e "\033[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+        echo -e "\n\033[0;32m✓ tmux detected and available\033[0m"
+        echo -e "\033[0;32m✓ Session name: \033[1m$SESSION_NAME\033[0m"
+        echo -e "\n\033[0;36m📝 Useful commands:\033[0m"
+        echo -e "  \033[1;33mDetach:\033[0m     Ctrl+b then d (keeps conversion running)"
+        echo -e "  \033[1;33mReattach:\033[0m   tmux attach -t $SESSION_NAME"
+        echo -e "  \033[1;33mList:\033[0m       tmux ls"
+        echo -e "  \033[1;33mTerminate:\033[0m  tmux kill-session -t $SESSION_NAME"
+        echo -e "\n\033[0;33m💡 Your conversion will survive terminal crashes and disconnects!\033[0m"
+        echo -e "\n\033[0;36mLaunching in 2 seconds...\033[0m\n"
+        sleep 2
+        
+        # Prepare script path and arguments
+        SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+        SCRIPT_ARGS="$*"
+        
+        # Create robust tmux command with error handling
+        TMUX_CMD=""
+        TMUX_CMD+="set -e; "  # Exit on error
+        TMUX_CMD+="trap 'echo; echo \"\033[1;31m❌ Script error occurred\033[0m\"; read -p \"Press Enter to close...\"' ERR; "
+        TMUX_CMD+="bash '$SCRIPT_PATH' $SCRIPT_ARGS --no-tmux; "
+        TMUX_CMD+="EXIT_CODE=\$?; "
+        TMUX_CMD+="echo; "
+        TMUX_CMD+="if [ \$EXIT_CODE -eq 0 ]; then "
+        TMUX_CMD+="  echo '\033[1;32m✓ Conversion completed successfully!\033[0m'; "
+        TMUX_CMD+="else "
+        TMUX_CMD+="  echo '\033[1;31m❌ Conversion exited with code: '\$EXIT_CODE'\033[0m'; "
+        TMUX_CMD+="fi; "
+        TMUX_CMD+="echo; "
+        TMUX_CMD+="echo '\033[0;36mSession will remain open for review.\033[0m'; "
+        TMUX_CMD+="echo '\033[0;33mPress Ctrl+b then d to detach, or Ctrl+d to close.\033[0m'; "
+        TMUX_CMD+="exec bash"  # Keep shell open after script ends
+        
+        # Launch tmux session with error handling
+        if exec tmux new-session -s "$SESSION_NAME" "$TMUX_CMD" 2>/dev/null; then
+            # Success - this line won't be reached due to exec
+            :
+        else
+            # Failed to launch tmux - fallback to direct execution
+            echo -e "\033[1;31m❌ Failed to launch tmux session\033[0m" >&2
+            echo -e "\033[1;33m⚠️  Falling back to direct execution (no crash protection)\033[0m" >&2
+            sleep 2
+            exec bash "$0" "$@" --no-tmux
+        fi
+    fi
+fi
+
 # 🔒 Process Group Management - Ensure all processes die with terminal
 # This creates a process group so when the script terminates, ALL children die
 if [[ $$ == $BASHPID ]] || [[ -z "$BASHPID" ]]; then
@@ -14458,6 +14584,18 @@ get_package_names() {
                 *) echo "curl" ;;
             esac
             ;;
+        "tmux")
+            case "$distro" in
+                "debian-based") echo "tmux" ;;
+                "redhat-based") echo "tmux" ;;
+                "arch-based") echo "tmux" ;;
+                "suse-based") echo "tmux" ;;
+                "alpine") echo "tmux" ;;
+                "gentoo") echo "app-misc/tmux" ;;
+                "void") echo "tmux" ;;
+                *) echo "tmux" ;;
+            esac
+            ;;
     esac
 }
 
@@ -14485,6 +14623,7 @@ show_manual_install_instructions() {
             "ffmpeg") echo -n " ffmpeg" ;;
             "git") echo -n " git" ;;
             "curl") echo -n " curl" ;;
+            "tmux") echo -n " tmux" ;;
             "gifsicle") echo -n " gifsicle" ;;
             "jq") echo -n " jq" ;;
             "convert") echo -n " imagemagick" ;;
@@ -14501,6 +14640,7 @@ show_manual_install_instructions() {
             "ffmpeg") echo -n " ffmpeg" ;;
             "git") echo -n " git" ;;
             "curl") echo -n " curl" ;;
+            "tmux") echo -n " tmux" ;;
             "gifsicle") echo -n " gifsicle" ;;
             "jq") echo -n " jq" ;;
             "convert") echo -n " ImageMagick" ;;
@@ -14517,6 +14657,7 @@ show_manual_install_instructions() {
             "ffmpeg") echo -n " ffmpeg" ;;
             "git") echo -n " git" ;;
             "curl") echo -n " curl" ;;
+            "tmux") echo -n " tmux" ;;
             "gifsicle") echo -n " gifsicle" ;;
             "jq") echo -n " jq" ;;
             "convert") echo -n " imagemagick" ;;
@@ -14533,6 +14674,7 @@ show_manual_install_instructions() {
             "ffmpeg") echo -n " ffmpeg-4" ;;
             "git") echo -n " git" ;;
             "curl") echo -n " curl" ;;
+            "tmux") echo -n " tmux" ;;
             "gifsicle") echo -n " gifsicle" ;;
             "jq") echo -n " jq" ;;
             "convert") echo -n " ImageMagick" ;;
@@ -14549,6 +14691,7 @@ show_manual_install_instructions() {
             "ffmpeg") echo -n " ffmpeg" ;;
             "git") echo -n " git" ;;
             "curl") echo -n " curl" ;;
+            "tmux") echo -n " tmux" ;;
             "gifsicle") echo -n " gifsicle" ;;
             "jq") echo -n " jq" ;;
             "convert") echo -n " imagemagick" ;;
@@ -14565,6 +14708,7 @@ show_manual_install_instructions() {
             "ffmpeg") echo -n " media-video/ffmpeg" ;;
             "git") echo -n " dev-vcs/git" ;;
             "curl") echo -n " net-misc/curl" ;;
+            "tmux") echo -n " app-misc/tmux" ;;
             "gifsicle") echo -n " media-gfx/gifsicle" ;;
             "jq") echo -n " app-misc/jq" ;;
             "convert") echo -n " media-gfx/imagemagick" ;;
@@ -14581,6 +14725,7 @@ show_manual_install_instructions() {
             "ffmpeg") echo -n " ffmpeg" ;;
             "git") echo -n " git" ;;
             "curl") echo -n " curl" ;;
+            "tmux") echo -n " tmux" ;;
             "gifsicle") echo -n " gifsicle" ;;
             "jq") echo -n " jq" ;;
             "convert") echo -n " ImageMagick" ;;
@@ -14597,6 +14742,7 @@ show_manual_install_instructions() {
             "ffmpeg") echo -n "ffmpeg " ;;
             "git") echo -n "git " ;;
             "curl") echo -n "curl " ;;
+            "tmux") echo -n "tmux " ;;
             "gifsicle") echo -n "gifsicle " ;;
             "jq") echo -n "jq " ;;
             "convert") echo -n "imagemagick " ;;
@@ -14999,7 +15145,7 @@ check_dependencies() {
     # Perform full check if needed
     echo -e "${CYAN}🔍 Checking system dependencies...${NC}"
     
-    local required_tools=("ffmpeg" "git" "curl")
+    local required_tools=("ffmpeg" "git" "curl" "tmux")
     local optional_tools=("gifsicle" "jq" "convert")  # convert is from ImageMagick
     local missing_required=()
     local missing_optional=()
