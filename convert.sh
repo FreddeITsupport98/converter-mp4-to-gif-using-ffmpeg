@@ -60,8 +60,9 @@ if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != 
         echo -e "\033[0;36m\n💡 Install tmux for automatic crash protection:\033[0m" >&2
         echo -e "\033[0;32m   sudo zypper install tmux\033[0m" >&2
         echo -e "\033[0;36m\nOr run in a more stable terminal (xterm, warp, alacritty)\033[0m" >&2
-        echo -e "\033[0;33m\nContinuing without protection in 3 seconds...\033[0m" >&2
-        sleep 3
+        echo -e "\033[0;33m\nContinuing without protection in 60 seconds...\033[0m" >&2
+        echo -e "\033[0;36m(Press Ctrl+C to cancel)\033[0m" >&2
+        sleep 60
     else
         # tmux is available - validate and launch
         
@@ -90,7 +91,7 @@ if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != 
             echo -e "  \033[1;33m[2]\033[0m Create new session (start fresh conversion)"
             echo -e "  \033[1;31m[3]\033[0m Run without tmux (not recommended)"
             echo -e "\n\033[0;36mChoice [1/2/3, default=1]: \033[0m"
-            read -r -t 10 choice || choice="1"
+            read -r choice || choice="1"
             
             case "$choice" in
                 2)
