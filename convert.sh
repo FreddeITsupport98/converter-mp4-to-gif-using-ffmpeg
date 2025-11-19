@@ -88,8 +88,8 @@ if [[ -f "$LOCK_FILE" ]]; then
     # Check if process exists AND is actually running this script
     if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" 2>/dev/null; then
         # Verify this PID is actually running convert.sh (not just any process)
-        local process_cmd=$(ps -p "$existing_pid" -o comm= 2>/dev/null || echo "")
-        local process_args=$(ps -p "$existing_pid" -o args= 2>/dev/null || echo "")
+        process_cmd=$(ps -p "$existing_pid" -o comm= 2>/dev/null || echo "")
+        process_args=$(ps -p "$existing_pid" -o args= 2>/dev/null || echo "")
         
         # Check if it's a bash process running this script
         if [[ "$process_cmd" == "bash" || "$process_cmd" == */"bash" ]] && [[ "$process_args" == *"convert.sh"* ]]; then
