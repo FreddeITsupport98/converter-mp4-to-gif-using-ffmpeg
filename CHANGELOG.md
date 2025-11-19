@@ -2,6 +2,79 @@
 
 All notable changes to Smart GIF Converter will be documented in this file.
 
+## [7.0.0] - 2025-01-19
+
+### 🛡️ Major Update: Automatic Terminal Crash Protection
+
+#### Revolutionary Stability Enhancement
+Introduced automatic tmux integration that eliminates terminal crashes caused by massive FFmpeg output. Your conversions will now survive terminal crashes, SSH disconnects, and accidental closes!
+
+#### Added
+- **Automatic tmux Integration** (lines 40-185):
+  - Auto-detects if tmux is installed
+  - Offers one-click installation if missing with user-controlled prompts
+  - Automatically launches script in tmux session for crash protection
+  - Unique session names per directory: `gif-converter-<sanitized-dir-name>`
+  - Session persistence - conversions survive terminal crashes and disconnects
+  
+- **Smart Session Management**:
+  - Detects existing conversion sessions
+  - Three clear options when session exists:
+    - [1] Attach to existing session (resume conversion)
+    - [2] Create new session (terminate old, start fresh)
+    - [3] Run without tmux (not recommended)
+  - User-controlled prompts with no auto-timeouts
+  
+- **Universal tmux Support**:
+  - Added tmux to required dependencies list
+  - Installation support for 10+ Linux distributions:
+    - Debian/Ubuntu, Arch, Fedora/RHEL, openSUSE
+    - Void, Alpine, Gentoo, NixOS
+  - Auto-installation with user confirmation (Y/n prompts)
+  - Manual installation guides for all distributions
+  
+- **Reliable Session Startup**:
+  - Uses temporary wrapper scripts to avoid quoting issues
+  - Proper exit code handling and status display
+  - Session keeps shell open after completion for review
+  - Clean temporary file management
+
+#### Fixed
+- **Interactive Menu Flow**: Menu was being bypassed when running without arguments
+  - Now properly shows main menu when script is run without arguments
+  - Tracks meaningful arguments vs internal flags like `--no-tmux`
+  - Proper flow: First-run setup → Main menu → User choices → Conversion
+  
+- **Prompt Alignment**: Fixed 10+ prompts throughout the script
+  - Changed `echo -e` to `echo -ne` to keep cursor on same line
+  - Includes: tmux installation, session choices, directory creation, conversion proceed
+  - Professional, consistent interface across all user interactions
+  
+- **Terminal Crashes**: Solved Konsole and other terminal crashes
+  - **Before**: Terminal crashes with segfault (Signal 11) from massive FFmpeg output
+  - **After**: All output safely contained in tmux - terminal stays stable
+
+#### Changed
+- Updated version to 7.0.0 (from 6.1.1)
+- Enhanced README.md with comprehensive v7.0.0 documentation
+- Updated version badge to v7.0
+
+#### Technical Details
+- Requires tmux 1.8+ (automatically installed if missing)
+- Internal `--no-tmux` flag to bypass protection when needed
+- Comprehensive error handling and graceful fallbacks
+- Zero configuration needed - works automatically
+- Compatible with all existing features and workflows
+
+#### Performance & User Experience
+- **Before**: Terminal crashes → lose all conversion progress
+- **After**: Conversions survive crashes → resume anytime with `tmux attach`
+- Detach with `Ctrl+b then d` - conversion continues in background
+- Reattach from any terminal or SSH session
+- Perfect for long-running batch conversions
+
+---
+
 ## [6.0.0] - 2024-10-30
 
 ### 🚀 Major Update: Bulletproof Level 6 Pre-Filtering System

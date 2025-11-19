@@ -277,7 +277,7 @@ trap cleanup_lock_file EXIT
 # 🎬 SMART GIF CONVERTER - Revolutionary Video-to-GIF Conversion Tool
 # =============================================================================
 # Author: AI Assistant
-# Version: 6.1
+# Version: 7.0
 # Description: Advanced, customizable video-to-GIF converter with intelligent
 #              processing, quality optimization, and extensive configuration options.
 # =============================================================================
@@ -418,7 +418,7 @@ AI_TRAINING_MIN_SAMPLES=5  # Minimum samples before AI makes confident predictio
 GITHUB_REPO="FreddeITsupport98/converter-mp4-to-gif-using-ffmpeg"
 GITHUB_API_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_URL="https://github.com/${GITHUB_REPO}/releases"
-CURRENT_VERSION="6.1.1"  # Script version
+CURRENT_VERSION="7.0.0"  # Script version
 UPDATE_CHECK_FILE="$LOG_DIR/.last_update_check"
 UPDATE_CHECK_INTERVAL=86400  # Check once per day (in seconds)
 AUTO_UPDATE_ENABLED=true  # Enable automatic update checks (user configurable)

@@ -7,11 +7,87 @@
 [![FFmpeg](https://img.shields.io/badge/Powered%20by-FFmpeg-007808?logo=ffmpeg&logoColor=white)](https://ffmpeg.org/)
 [![AI](https://img.shields.io/badge/AI-Powered-FF6B6B?logo=brain&logoColor=white)](#ai-features)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-6.0-brightgreen.svg)](#latest-updates)
+[![Version](https://img.shields.io/badge/Version-7.0-brightgreen.svg)](#latest-updates)
 
 ---
 
-## 🆕 Latest Updates (Version 6.0)
+## 🆕 Latest Updates (Version 7.0)
+
+### **🚀 What's New in v7.0**
+
+#### **🛡️ Automatic Terminal Crash Protection** (BREAKTHROUGH!)
+**Bulletproof terminal stability** - Your conversions will never crash your terminal again!
+
+- **🔧 Automatic tmux Integration**:
+  - Detects if tmux is installed, offers one-click installation if missing
+  - Automatically launches script in tmux session for crash protection
+  - Unique session names per directory: `gif-converter-<dir-name>`
+  - Session persistence - conversions survive terminal crashes and disconnects
+
+- **📋 Smart Session Management**:
+  - Detects existing conversion sessions
+  - Three clear options when session exists:
+    - [1] Attach to existing (resume conversion)
+    - [2] Create new session (terminate old, start fresh)
+    - [3] Run without tmux (not recommended)
+  - User-controlled prompts - no auto-timeouts
+
+- **🚨 Problem Solved**:
+  - **Before**: Konsole and other terminals crash with segfault from large FFmpeg output
+  - **After**: All output safely contained in tmux - terminal stays stable
+  - Conversions can survive: terminal crashes, SSH disconnects, accidental closes
+
+- **💡 Developer Experience**:
+  ```
+  🛡️  LAUNCHING TERMINAL CRASH PROTECTION
+  
+  ✓ tmux detected and available
+  ✓ Session name: gif-converter-myvideos
+  
+  📝 Useful commands:
+    Detach:     Ctrl+b then d (keeps conversion running)
+    Reattach:   tmux attach -t gif-converter-myvideos
+    List:       tmux ls
+    Terminate:  tmux kill-session -t gif-converter-myvideos
+  
+  💡 Your conversion will survive terminal crashes and disconnects!
+  ```
+
+- **🔧 Technical Details**:
+  - Requires tmux 1.8+ (auto-installed on all major distros)
+  - Uses temporary wrapper scripts for reliable session startup
+  - Bypass flag available: `--no-tmux` (internal use)
+  - Comprehensive error handling and fallback options
+  - Zero configuration needed - just works!
+
+#### **🎯 Fixed Interactive Menu Flow**
+**Proper menu display** - Interactive mode now works as designed!
+
+- **🐛 Fixed**: Menu was being bypassed when running without arguments
+- **✅ Now**: Running `./convert.sh` properly shows main menu with all options
+- **🔧 Technical**: Tracks meaningful arguments vs internal flags like `--no-tmux`
+- **🎨 User Experience**: First-run setup → Main menu → User choices → Conversion
+
+#### **🎨 Improved User Prompts**
+**Aligned prompts throughout** - Consistent, professional interface!
+
+- Fixed 10+ prompts to keep cursor on same line as question
+- Includes: tmux installation, session choices, directory creation, conversion proceed
+- Professional look-and-feel across all user interactions
+
+#### **📦 Universal Dependency Support**
+**tmux across all distributions** - Complete package coverage!
+
+- Added tmux to required dependencies list
+- Installation support for 10+ distributions:
+  - Debian/Ubuntu, Arch, Fedora/RHEL, openSUSE
+  - Void, Alpine, Gentoo, NixOS
+- Manual installation guides included
+- Auto-installation with user confirmation
+
+---
+
+## 📜 Previous Updates (Version 6.0)
 
 ### **🚀 What's New in v6.0**
 
@@ -141,11 +217,16 @@ Every update goes through 7 security checks:
 - **📚 Distribution Guides**: Manual installation commands for all major distros
 - **🔗 Package Repository Links**: Direct links to official package searches
 
-### **🔧 New Commands**
+### **🔧 Commands (Updated for v7.0)**
 ```bash
+# Version & Updates
 ./convert.sh --version          # Show version and repository info
 ./convert.sh --check-update     # Check for updates manually
 ./convert.sh --update           # Download and install latest version
+
+# Terminal Protection
+./convert.sh --no-tmux          # Bypass tmux protection (not recommended)
+tmux attach -t gif-converter-*  # Reattach to running conversion session
 ```
 
 ### **🌟 v5.3 Feature Highlights**
