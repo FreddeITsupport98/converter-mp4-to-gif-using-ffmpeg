@@ -61,7 +61,7 @@ if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != 
         echo -e "\033[0;36m   Your conversions will survive terminal crashes and disconnects!\033[0m" >&2
         echo -e "\033[0;32m\n📦 Install command: sudo zypper install tmux\033[0m" >&2
         echo -e "\033[0;36m\nAlternatively, use a more stable terminal (xterm, warp, alacritty)\033[0m" >&2
-        echo -e "\n\033[0;33mWould you like to continue without crash protection? [y/N]:\033[0m " >&2
+        echo -ne "\n\033[0;33mWould you like to continue without crash protection? [y/N]: \033[0m" >&2
         read -r tmux_continue_choice
         
         if [[ ! "$tmux_continue_choice" =~ ^[Yy]$ ]]; then
