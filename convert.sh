@@ -52,7 +52,7 @@ if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != 
     
     # Verify tmux is available
     if ! command -v tmux >/dev/null 2>&1; then
-        # tmux not installed - show friendly warning and prompt
+        # tmux not installed - offer to install like other dependencies
         echo -e "\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m" >&2
         echo -e "\033[1;33m⚠️  TERMINAL CRASH PROTECTION UNAVAILABLE\033[0m" >&2
         echo -e "\033[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m" >&2
@@ -61,12 +61,27 @@ if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != 
         echo -e "\033[0;36m   Your conversions will survive terminal crashes and disconnects!\033[0m" >&2
         echo -e "\033[0;32m\n📦 Install command: sudo zypper install tmux\033[0m" >&2
         echo -e "\033[0;36m\nAlternatively, use a more stable terminal (xterm, warp, alacritty)\033[0m" >&2
-        echo -ne "\n\033[0;33mWould you like to continue without crash protection? [y/N]: \033[0m" >&2
-        read -r tmux_continue_choice
+        echo -ne "\n\033[0;33mWould you like to install tmux now? [Y/n]: \033[0m" >&2
+        read -r tmux_install_choice
         
-        if [[ ! "$tmux_continue_choice" =~ ^[Yy]$ ]]; then
-            echo -e "\033[0;36m\n💡 Install tmux first, then run the script again.\033[0m" >&2
-            exit 0
+        if [[ ! "$tmux_install_choice" =~ ^[Nn]$ ]]; then
+            # User wants to install (default is Yes)
+            echo -e "\n\033[0;36m🚀 Installing tmux...\033[0m" >&2
+            if sudo zypper install -y tmux; then
+                echo -e "\n\033[0;32m✅ tmux installed successfully!\033[0m" >&2
+                echo -e "\033[0;36m🔄 Restarting script with tmux protection...\033[0m" >&2
+                sleep 2
+                # Re-exec script to apply tmux protection
+                exec bash "$0" "$@"
+            else
+                echo -e "\n\033[1;31m❌ Installation failed!\033[0m" >&2
+                echo -ne "\n\033[0;33mContinue without crash protection? [y/N]: \033[0m" >&2
+                read -r continue_anyway
+                if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
+                    echo -e "\033[0;36m\n💡 Install tmux manually and run the script again.\033[0m" >&2
+                    exit 1
+                fi
+            fi
         fi
         
         echo -e "\033[1;33m⚠️  Continuing without crash protection...\033[0m" >&2
