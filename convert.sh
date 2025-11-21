@@ -160,9 +160,17 @@ if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != 
         TMUX_WRAPPER="$(mktemp -t smart_gif_tmux_XXXXXX.sh)"
         cat > "$TMUX_WRAPPER" <<'TMUX_EOF'
 #!/usr/bin/env bash
+# Wrapper runs inside tmux. Keep pane alive and behave interactively after conversion.
+# Make the current pane remain on exit as a safety net (won't hurt if unsupported)
+if [ -n "$TMUX_PANE" ]; then
+  tmux set-option -pt "$TMUX_PANE" remain-on-exit on >/dev/null 2>&1 || true
+fi
+
 cd "$(pwd)" || exit 1
 bash "$SCRIPT_PATH" $SCRIPT_ARGS --no-tmux
 EXIT_CODE=$?
+
+# Report result
 echo
 if [ -n "$EXIT_CODE" ] && [ "$EXIT_CODE" -eq 0 ]; then
   echo -e '\033[1;32m✓ Conversion completed successfully!\033[0m'
@@ -171,10 +179,29 @@ elif [ -n "$EXIT_CODE" ]; then
 else
   echo -e '\033[1;33m⚠️ Script execution issue detected\033[0m'
 fi
-echo
-echo -e '\033[0;36mPress Enter to close, or Ctrl+b then d to detach.\033[0m'
-read -r
-exec bash
+
+# Wait for user input from the TTY (avoids accidental EOF)
+if [ -t 0 ]; then
+  echo
+  echo -e '\033[0;36mPress Enter to close, or Ctrl+b then d to detach.\033[0m'
+  read -r </dev/tty || true
+else
+  echo
+  echo -e '\033[0;36mNo TTY detected; keeping pane open for 2 minutes.\033[0m'
+  sleep 120
+fi
+
+# Drop into an interactive shell so the pane stays open
+SHELL_TO_EXEC="${SHELL:-/bin/bash}"
+if command -v "$SHELL_TO_EXEC" >/dev/null 2>&1; then
+  if [ "${SHELL_TO_EXEC##*/}" = "bash" ]; then
+    exec "$SHELL_TO_EXEC" -l -i
+  else
+    exec "$SHELL_TO_EXEC" -l
+  fi
+fi
+# Fallback to bash
+exec bash -i
 TMUX_EOF
         # Substitute variables into the wrapper
         sed -i "s|\$SCRIPT_PATH|$SCRIPT_PATH|g" "$TMUX_WRAPPER"
