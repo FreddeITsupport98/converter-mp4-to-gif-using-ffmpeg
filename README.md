@@ -7,11 +7,80 @@
 [![FFmpeg](https://img.shields.io/badge/Powered%20by-FFmpeg-007808?logo=ffmpeg&logoColor=white)](https://ffmpeg.org/)
 [![AI](https://img.shields.io/badge/AI-Powered-FF6B6B?logo=brain&logoColor=white)](#ai-features)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-7.0-brightgreen.svg)](#latest-updates)
+[![Version](https://img.shields.io/badge/Version-7.1-brightgreen.svg)](#latest-updates)
 
 ---
 
-## 🆕 Latest Updates (Version 7.0)
+## 🆕 Latest Updates (Version 7.1)
+
+### **🚀 What's New in v7.1**
+
+#### **🔔 Desktop Notification System** (NEW!)
+**Stay informed about your conversions** - Comprehensive desktop notification system integrated!
+
+- **📢 Notification Types**:
+  - ✅ **Session Start**: Notified when tmux session launches with reconnection commands
+  - 🔄 **Session Found**: Persistent alert when existing conversion session detected
+  - ✅ **Conversion Complete**: Success/failure notifications when conversions finish
+  - 📊 **Progress Updates**: Periodic notifications during long conversions
+  - 💻 **Terminal Closed Detection**: Smart monitoring alerts you when Konsole closes but tmux session is still running
+  - ⏰ **Periodic Reminders**: Configurable reminders that conversion is still running
+  - 🚨 **Error Notifications**: Immediate alerts when errors occur
+
+- **⚙️ Advanced Settings Menu**:
+  - 🎛️ Navigate with `w`/`s` keys, toggle with `Enter`/`Space`
+  - Master toggle to enable/disable all notifications
+  - Individual toggles for each notification type
+  - Customizable reminder intervals (5, 10, 15, 30 minutes or custom)
+  - Customizable progress intervals (2, 5, 10 minutes or custom)
+  - 🧪 Test notification button to preview notifications
+  - Real-time status indicators (☑/☐) with help tooltips
+  - Auto-save: All settings persist across sessions
+
+- **💻 Terminal Closure Detection**:
+  - Background monitor detects when Konsole (or other terminals) closes
+  - Sends persistent notification with reconnection instructions
+  - Works on ANY screen (main menu, converting, settings, etc.)
+  - Periodic reminders every 10 minutes until you reconnect
+  - Session name and reconnect commands included in notification
+
+- **📝 User Experience**:
+  ```
+  🔔 NOTIFICATION SETTINGS
+  📡 Notification System: ENABLED
+  
+    ❯ 🔔 Master Toggle - All Notifications ☑
+      🚀 Session Start Notifications ☑
+      🔄 Session Found Notifications ☑
+      ✅ Conversion Complete Notifications ☑
+      📢 Error Notifications ☑
+      💻 Terminal Closed Detection ☑
+      ⏰ Periodic Reminders (Still Running) ☑
+      ⏱️  Reminder Interval (600s / 10m)
+      📢 Progress Notifications ☑
+      ⏲️  Progress Interval (300s / 5m)
+      🧪 Test Notification
+      ← Back to Main Menu
+  
+  🎮 Controls: w/s=Navigate Enter/Space=Toggle/Select q=Back
+  ```
+
+- **🔧 Technical Details**:
+  - Uses `notify-send` (auto-detects, prompts to install if missing)
+  - Settings stored in `~/.smart-gif-converter/settings.conf`
+  - Terminal monitor runs as background process with debug logging
+  - Automatic upgrade system detects and initializes notification settings
+  - Compatible with all desktop environments (KDE, GNOME, XFCE, etc.)
+
+#### **🐛 Bug Fixes**
+- **Fixed**: `save_settings --silent` was creating a file named `--silent` instead of saving to settings file
+- **Fixed**: Notification settings not persisting across tmux session restarts
+- **Fixed**: Settings upgrade banner not showing at main menu
+- **Improved**: Settings file now properly handles all notification configuration options
+
+---
+
+## 📜 Previous Updates (Version 7.0)
 
 ### **🚀 What's New in v7.0**
 

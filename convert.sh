@@ -38,6 +38,137 @@ if [ -z "$BASH_VERSION" ]; then
 fi
 
 # ============================================================================
+# 🔔 TERMINAL MONITOR - Detects when terminal closes and sends notifications
+# ============================================================================
+# This function runs in the background and monitors the parent terminal process
+# When it detects the terminal has closed, it sends notifications about the tmux session
+
+start_terminal_monitor() {
+    local session_name="$1"
+    local monitor_log="$HOME/.smart-gif-converter/terminal_monitor.log"
+    
+    # Create monitor script that will run independently
+    local monitor_script="/tmp/gif_terminal_monitor_$$.sh"
+    
+    cat > "$monitor_script" << 'MONITOR_EOF'
+#!/bin/bash
+SESSION_NAME="__SESSION_NAME__"
+MONITOR_LOG="__MONITOR_LOG__"
+MONITOR_INTERVAL=5  # Check every 5 seconds
+
+# Create log directory
+mkdir -p "$(dirname "$MONITOR_LOG")" 2>/dev/null
+
+# Log start
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Monitor started for session: $SESSION_NAME" >> "$MONITOR_LOG"
+
+# Find the Konsole process - walk up the process tree
+find_terminal_pid() {
+    local current_pid=$$
+    local max_depth=20
+    local depth=0
+    
+    while [[ $depth -lt $max_depth ]]; do
+        # Get parent PID
+        local parent_pid=$(ps -o ppid= -p $current_pid 2>/dev/null | tr -d ' ')
+        [[ -z "$parent_pid" || "$parent_pid" == "1" ]] && break
+        
+        # Get process name
+        local proc_name=$(ps -o comm= -p $parent_pid 2>/dev/null)
+        
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Checking PID $parent_pid: $proc_name" >> "$MONITOR_LOG"
+        
+        # Check if this is Konsole or another terminal
+        if [[ "$proc_name" =~ ^(konsole|gnome-terminal|xterm|alacritty|kitty|wezterm|warp)$ ]]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Found terminal: $proc_name (PID: $parent_pid)" >> "$MONITOR_LOG"
+            echo "$parent_pid"
+            return 0
+        fi
+        
+        current_pid=$parent_pid
+        ((depth++))
+    done
+    
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] No terminal found in process tree" >> "$MONITOR_LOG"
+    return 1
+}
+
+# Get terminal PID
+TERMINAL_PID=$(find_terminal_pid)
+
+if [[ -z "$TERMINAL_PID" ]]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Could not find terminal PID" >> "$MONITOR_LOG"
+    exit 1
+fi
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Monitoring terminal PID: $TERMINAL_PID" >> "$MONITOR_LOG"
+
+NOTIFICATION_SENT=false
+
+# Monitoring loop
+while true; do
+    sleep $MONITOR_INTERVAL
+    
+    # Check if terminal still exists
+    if ! kill -0 "$TERMINAL_PID" 2>/dev/null; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Terminal closed! Checking tmux session..." >> "$MONITOR_LOG"
+        
+        # Terminal closed - check if tmux session still exists
+        if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Session still active, sending notification" >> "$MONITOR_LOG"
+            
+            if ! $NOTIFICATION_SENT; then
+                # Send persistent notification
+                notify-send -u critical -t 0 -i video-x-generic \
+                    "💻 Terminal Closed - Conversion Still Running!" \
+                    "Your GIF conversion is still active in tmux!\n\n📍 Session: $SESSION_NAME\n\n🔗 To reconnect:\n• Open terminal and run: ./convert.sh\n• Or use: tmux attach -t $SESSION_NAME\n\n✅ Your work is safe!" \
+                    2>>"$MONITOR_LOG" &
+                
+                NOTIFICATION_SENT=true
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] Initial notification sent" >> "$MONITOR_LOG"
+                
+                # Send periodic reminders
+                while tmux has-session -t "$SESSION_NAME" 2>/dev/null; do
+                    sleep 600  # 10 minutes
+                    
+                    if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+                        notify-send -u normal -t 0 -i video-x-generic \
+                            "⏰ Reminder: Conversion Still Running" \
+                            "Session: $SESSION_NAME is still active.\n\nReconnect with: tmux attach -t $SESSION_NAME" \
+                            2>>"$MONITOR_LOG" &
+                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Reminder sent" >> "$MONITOR_LOG"
+                    fi
+                done
+            fi
+        fi
+        
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Monitor exiting" >> "$MONITOR_LOG"
+        exit 0
+    fi
+    
+    # Check if tmux session still exists
+    if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Session ended, monitor exiting" >> "$MONITOR_LOG"
+        exit 0
+    fi
+done
+MONITOR_EOF
+
+    # Substitute variables
+    sed -i "s|__SESSION_NAME__|$session_name|g" "$monitor_script"
+    sed -i "s|__MONITOR_LOG__|$monitor_log|g" "$monitor_script"
+    
+    chmod +x "$monitor_script"
+    
+    # Launch monitor in background, completely detached
+    nohup "$monitor_script" &>/dev/null &
+    disown
+    
+    # Clean up the script after a delay
+    (sleep 2; rm -f "$monitor_script" 2>/dev/null) &
+}
+
+# ============================================================================
 # 🛡️  TMUX PROTECTION - Auto-launch in tmux to prevent terminal crashes
 # ============================================================================
 # This prevents Konsole and other terminals from crashing due to large output
@@ -105,14 +236,24 @@ if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != 
         # Handle existing session
         if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
             # Session exists - ask user what to do
-            echo -e "\033[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+            echo -e "\033[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
             echo -e "\033[1;36m🔄 Existing conversion session found!\033[0m"
-            echo -e "\033[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+            echo -e "\033[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
             echo -e "\n\033[0;33mSession name: \033[1m$SESSION_NAME\033[0m"
             echo -e "\n\033[0;36mYour options:\033[0m"
             echo -e "  \033[1;32m[1]\033[0m Attach to existing session (resume conversion)"
             echo -e "  \033[1;33m[2]\033[0m Create new session (start fresh conversion)"
             echo -e "  \033[1;31m[3]\033[0m Run without tmux (not recommended)"
+            
+            # Send persistent desktop notification
+            if [[ "$NOTIFY_ENABLED" == "true" && "$NOTIFY_SESSION_FOUND" == "true" ]] && command -v notify-send >/dev/null 2>&1; then
+                # Use -t 0 for persistent notification (stays until clicked)
+                notify-send -u critical -t 0 -i video-x-generic \
+                    "🎬 GIF Converter Still Running" \
+                    "Your conversion session is active!\n\nSession: $SESSION_NAME\n\nClick here or run the script again to reconnect." \
+                    2>/dev/null &
+            fi
+            
             echo -ne "\n\033[0;36mChoice [1/2/3, default=1]: \033[0m"
             read -r choice || choice="1"
             
@@ -149,8 +290,29 @@ if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != 
         echo -e "  \033[1;33mList:\033[0m       tmux ls"
         echo -e "  \033[1;33mTerminate:\033[0m  tmux kill-session -t $SESSION_NAME"
         echo -e "\n\033[0;33m💡 Your conversion will survive terminal crashes and disconnects!\033[0m"
-        echo -e "\n\033[0;36mLaunching in 2 seconds...\033[0m\n"
-        sleep 2
+        echo ""
+        
+        # Animated countdown from 3 to 0
+        for i in 3 2 1; do
+            echo -ne "\r\033[0;36mLaunching in ${i} second$([ $i -ne 1 ] && echo 's' || echo '')...\033[0m"
+            sleep 1
+        done
+        echo -ne "\r\033[0;32m✓ Starting tmux session now!          \033[0m\n\n"
+        
+        # Send desktop notification about tmux session starting
+        if [[ "$NOTIFY_ENABLED" == "true" && "$NOTIFY_SESSION_START" == "true" ]] && command -v notify-send >/dev/null 2>&1; then
+            notify-send -u normal -t 8000 -i video-x-generic \
+                "🛡️ GIF Converter Running in tmux" \
+                "Session: $SESSION_NAME\n\nYour conversion is protected from crashes!\n\nTo reconnect if disconnected:\n• Run ./convert.sh again, or\n• Use: tmux attach -t $SESSION_NAME" \
+                2>/dev/null &
+        fi
+        
+        # Start background terminal closure monitor
+        if [[ "$NOTIFY_ENABLED" == "true" && "$NOTIFY_TERMINAL_CLOSED" == "true" ]] && command -v notify-send >/dev/null 2>&1; then
+            start_terminal_monitor "$SESSION_NAME" &
+        fi
+        
+        sleep 1
         
         # Prepare script path and arguments
         SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
@@ -304,7 +466,7 @@ trap cleanup_lock_file EXIT
 # 🎬 SMART GIF CONVERTER - Revolutionary Video-to-GIF Conversion Tool
 # =============================================================================
 # Author: AI Assistant
-# Version: 7
+# Version: 7.1
 # Description: Advanced, customizable video-to-GIF converter with intelligent
 #              processing, quality optimization, and extensive configuration options.
 # =============================================================================
@@ -445,7 +607,7 @@ AI_TRAINING_MIN_SAMPLES=5  # Minimum samples before AI makes confident predictio
 GITHUB_REPO="FreddeITsupport98/converter-mp4-to-gif-using-ffmpeg"
 GITHUB_API_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_URL="https://github.com/${GITHUB_REPO}/releases"
-CURRENT_VERSION="7"  # Script version
+CURRENT_VERSION="7.1"  # Script version
 UPDATE_CHECK_FILE="$LOG_DIR/.last_update_check"
 UPDATE_CHECK_INTERVAL=86400  # Check once per day (in seconds)
 AUTO_UPDATE_ENABLED=true  # Enable automatic update checks (user configurable)
@@ -467,6 +629,18 @@ GPG_SIGNATURE_REQUIRED=false  # Require GPG signature verification (set true for
 GPG_KEY_FINGERPRINT=""  # Your GPG key fingerprint (set this for GPG verification)
 TRUSTED_GITHUB_DOMAINS=("raw.githubusercontent.com" "github.com" "api.github.com")
 MIN_FILE_SIZE=10000  # Minimum expected file size in bytes (sanity check)
+
+# 🔔 Desktop Notification Configuration
+NOTIFY_ENABLED=true                    # Master toggle for all notifications
+NOTIFY_SESSION_START=true              # Notify when tmux session starts
+NOTIFY_SESSION_FOUND=true              # Notify when existing session is found
+NOTIFY_CONVERSION_COMPLETE=true        # Notify when conversion completes
+NOTIFY_CONVERSION_PROGRESS=true        # Periodic progress notifications during conversion
+NOTIFY_PROGRESS_INTERVAL=300           # Progress notification interval in seconds (5 minutes)
+NOTIFY_ERROR=true                      # Notify on errors
+NOTIFY_REMINDER_ENABLED=true           # Enable periodic "still running" reminders
+NOTIFY_REMINDER_INTERVAL=600           # Reminder interval in seconds (10 minutes)
+NOTIFY_TERMINAL_CLOSED=true            # Notify when terminal closes with active tmux session
 
 # 🚀 Parallel Processing Utility Functions
 # =====================================================
@@ -15623,6 +15797,7 @@ kill_ffmpeg_processes() {
     
     if [[ ${#ffmpeg_pids[@]} -eq 0 ]]; then
         echo -e "${GREEN}✓ No ffmpeg processes are currently running${NC}"
+        show_tmux_controls
         echo -e "\n${YELLOW}Press any key to return to main menu...${NC}"
         read -rsn1
         return
@@ -15647,7 +15822,10 @@ kill_ffmpeg_processes() {
     echo -e "  ${GREEN}[1]${NC} Send SIGTERM (graceful shutdown)"
     echo -e "  ${GREEN}[2]${NC} Send SIGKILL (force kill)"
     echo -e "  ${GREEN}[3]${NC} Interactive kill (choose specific processes)"
-    echo -e "  ${GREEN}[0]${NC} Cancel and return to menu\n"
+            echo -e "  ${GREEN}[0]${NC} Cancel and return to menu\n"
+    
+    # Show tmux controls
+    show_tmux_controls
     
     echo -ne "${MAGENTA}Select an option [0-3]: ${NC}"
     read -r choice
@@ -15716,6 +15894,7 @@ kill_ffmpeg_processes() {
             ;;
     esac
     
+    show_tmux_controls
     echo -e "\n${YELLOW}Press any key to return to main menu...${NC}"
     read -rsn1
 }
@@ -15956,6 +16135,233 @@ select_video_folder() {
             sleep 1
         fi
     fi
+}
+
+# 🔔 Configure notification settings (Advanced UI)
+configure_notifications() {
+    # Check if settings need upgrade and do it immediately
+    local notify_count=$(grep "^NOTIFY_" "$SETTINGS_FILE" 2>/dev/null | wc -l | tr -d ' ')
+    [[ -z "$notify_count" ]] && notify_count=0
+    if [[ $notify_count -lt 10 ]]; then
+        clear
+        print_header
+        echo -e "${YELLOW}🔄 Initializing notification settings... ($notify_count/10 found)${NC}\n"
+        echo -e "${CYAN}Adding missing notification options to your settings file...${NC}"
+        save_settings --silent
+        echo -e "${GREEN}✓ Notification settings initialized successfully!${NC}"
+        echo -e "${CYAN}All 10 notification options are now available.${NC}\n"
+        sleep 2
+    fi
+    
+    local selected=0
+    local options=(
+        "🔔 Master Toggle - All Notifications"
+        "🚀 Session Start Notifications"
+        "🔄 Session Found Notifications"
+        "✅ Conversion Complete Notifications"
+        "📢 Error Notifications"
+        "💻 Terminal Closed Detection"
+        "⏰ Periodic Reminders (Still Running)"
+        "⏱️  Reminder Interval"
+        "📢 Progress Notifications"
+        "⏲️  Progress Interval"
+        "🧪 Test Notification"
+        "← Back to Main Menu"
+    )
+    
+    while true; do
+        clear
+        print_header
+        
+        echo -e "${CYAN}${BOLD}🔔 NOTIFICATION SETTINGS${NC}"
+        echo -e "${GRAY}Configure desktop notifications for various conversion events${NC}\n"
+        
+        # Check if notify-send is available
+        if ! command -v notify-send >/dev/null 2>&1; then
+            echo -e "${RED}⚠️  notify-send not found!${NC}"
+            echo -e "${YELLOW}Install: ${GREEN}sudo zypper install libnotify-tools${NC}\n"
+        fi
+        
+        # Show current notification status
+        local master_status=$([ "$NOTIFY_ENABLED" = "true" ] && echo "${GREEN}${BOLD}ENABLED${NC}" || echo "${RED}${BOLD}DISABLED${NC}")
+        echo -e "${BLUE}📡 Notification System: ${master_status}${NC}\n"
+        
+        # Display options with current values
+        for i in "${!options[@]}"; do
+            local status_indicator=""
+            local value_display=""
+            
+            case $i in
+                0) status_indicator=$([ "$NOTIFY_ENABLED" = "true" ] && echo "${GREEN}☑${NC}" || echo "${RED}☐${NC}") ;;
+                1) status_indicator=$([ "$NOTIFY_SESSION_START" = "true" ] && echo "${GREEN}☑${NC}" || echo "${GRAY}☐${NC}"); [ "$NOTIFY_ENABLED" = "false" ] && status_indicator="${GRAY}☐${NC}" ;;
+                2) status_indicator=$([ "$NOTIFY_SESSION_FOUND" = "true" ] && echo "${GREEN}☑${NC}" || echo "${GRAY}☐${NC}"); [ "$NOTIFY_ENABLED" = "false" ] && status_indicator="${GRAY}☐${NC}" ;;
+                3) status_indicator=$([ "$NOTIFY_CONVERSION_COMPLETE" = "true" ] && echo "${GREEN}☑${NC}" || echo "${GRAY}☐${NC}"); [ "$NOTIFY_ENABLED" = "false" ] && status_indicator="${GRAY}☐${NC}" ;;
+                4) status_indicator=$([ "$NOTIFY_ERROR" = "true" ] && echo "${GREEN}☑${NC}" || echo "${GRAY}☐${NC}"); [ "$NOTIFY_ENABLED" = "false" ] && status_indicator="${GRAY}☐${NC}" ;;
+                5) status_indicator=$([ "$NOTIFY_TERMINAL_CLOSED" = "true" ] && echo "${GREEN}☑${NC}" || echo "${GRAY}☐${NC}"); [ "$NOTIFY_ENABLED" = "false" ] && status_indicator="${GRAY}☐${NC}" ;;
+                6) status_indicator=$([ "$NOTIFY_REMINDER_ENABLED" = "true" ] && echo "${GREEN}☑${NC}" || echo "${GRAY}☐${NC}"); [ "$NOTIFY_ENABLED" = "false" ] && status_indicator="${GRAY}☐${NC}" ;;
+                7) value_display="${CYAN}(${NOTIFY_REMINDER_INTERVAL}s / $(( NOTIFY_REMINDER_INTERVAL / 60 ))m)${NC}" ;;
+                8) status_indicator=$([ "$NOTIFY_CONVERSION_PROGRESS" = "true" ] && echo "${GREEN}☑${NC}" || echo "${GRAY}☐${NC}"); [ "$NOTIFY_ENABLED" = "false" ] && status_indicator="${GRAY}☐${NC}" ;;
+                9) value_display="${CYAN}(${NOTIFY_PROGRESS_INTERVAL}s / $(( NOTIFY_PROGRESS_INTERVAL / 60 ))m)${NC}" ;;
+                10) status_indicator="🧪" ;;
+                11) status_indicator="" ;;
+            esac
+            
+            if [[ $i -eq $selected ]]; then
+                echo -e "  ${GREEN}${BOLD}❯ ${options[$i]}${NC} ${status_indicator} ${value_display}"
+            else
+                echo -e "  ${GRAY}  ${options[$i]}${NC} ${status_indicator} ${value_display}"
+            fi
+        done
+        
+        echo ""
+        echo -e "${CYAN}┌─────────────────────────────────────────────────────────────────┐${NC}"
+        
+        # Show help text for selected option
+        case $selected in
+            0) echo -e "${CYAN}│${NC} ${YELLOW}💡 Master switch - turns all notifications on/off at once${NC}                 ${CYAN}│${NC}" ;;
+            1) echo -e "${CYAN}│${NC} ${YELLOW}💡 Notify when tmux session starts (shows reconnect commands)${NC}             ${CYAN}│${NC}" ;;
+            2) echo -e "${CYAN}│${NC} ${YELLOW}💡 Notify when existing session found (persistent notification)${NC}          ${CYAN}│${NC}" ;;
+            3) echo -e "${CYAN}│${NC} ${YELLOW}💡 Notify when conversion finishes (success/failure)${NC}                   ${CYAN}│${NC}" ;;
+            4) echo -e "${CYAN}│${NC} ${YELLOW}💡 Notify when errors occur during conversion${NC}                          ${CYAN}│${NC}" ;;
+            5) echo -e "${CYAN}│${NC} ${YELLOW}💡 Alert when Konsole closes with active tmux session${NC}                 ${CYAN}│${NC}" ;;
+            6) echo -e "${CYAN}│${NC} ${YELLOW}💡 Send periodic \"still running\" reminders${NC}                            ${CYAN}│${NC}" ;;
+            7) echo -e "${CYAN}│${NC} ${YELLOW}💡 How often to send reminder notifications (in seconds)${NC}               ${CYAN}│${NC}" ;;
+            8) echo -e "${CYAN}│${NC} ${YELLOW}💡 Send periodic progress updates during conversion${NC}                   ${CYAN}│${NC}" ;;
+            9) echo -e "${CYAN}│${NC} ${YELLOW}💡 How often to send progress notifications (in seconds)${NC}              ${CYAN}│${NC}" ;;
+            10) echo -e "${CYAN}│${NC} ${YELLOW}💡 Send a test notification to see what they look like${NC}                ${CYAN}│${NC}" ;;
+            11) echo -e "${CYAN}│${NC} ${YELLOW}💡 Return to main menu${NC}                                               ${CYAN}│${NC}" ;;
+        esac
+        
+        echo -e "${CYAN}└─────────────────────────────────────────────────────────────────┘${NC}"
+        
+        show_tmux_controls
+        
+        echo -e "\n${CYAN}🎮 Controls: ${YELLOW}w/s${NC}=Navigate ${YELLOW}Enter/Space${NC}=Toggle/Select ${YELLOW}q${NC}=Back"
+        
+        # Read single key
+        read -rsn1 key 2>/dev/null
+        
+        case "$key" in
+            'w'|'W')
+                selected=$((selected - 1))
+                [[ $selected -lt 0 ]] && selected=$((${#options[@]}-1))
+                ;;
+            's'|'S')
+                selected=$((selected + 1))
+                [[ $selected -ge ${#options[@]} ]] && selected=0
+                ;;
+            ''|$'\n'|$'\r'|' ')
+                case $selected in
+                    0) # Master Toggle
+                        NOTIFY_ENABLED=$([ "$NOTIFY_ENABLED" = "true" ] && echo "false" || echo "true")
+                        save_settings --silent
+                        ;;
+                    1) # Session Start
+                        NOTIFY_SESSION_START=$([ "$NOTIFY_SESSION_START" = "true" ] && echo "false" || echo "true")
+                        save_settings --silent
+                        ;;
+                    2) # Session Found
+                        NOTIFY_SESSION_FOUND=$([ "$NOTIFY_SESSION_FOUND" = "true" ] && echo "false" || echo "true")
+                        save_settings --silent
+                        ;;
+                    3) # Conversion Complete
+                        NOTIFY_CONVERSION_COMPLETE=$([ "$NOTIFY_CONVERSION_COMPLETE" = "true" ] && echo "false" || echo "true")
+                        save_settings --silent
+                        ;;
+                    4) # Error Notifications
+                        NOTIFY_ERROR=$([ "$NOTIFY_ERROR" = "true" ] && echo "false" || echo "true")
+                        save_settings --silent
+                        ;;
+                    5) # Terminal Closed Detection
+                        NOTIFY_TERMINAL_CLOSED=$([ "$NOTIFY_TERMINAL_CLOSED" = "true" ] && echo "false" || echo "true")
+                        save_settings --silent
+                        ;;
+                    6) # Reminders
+                        NOTIFY_REMINDER_ENABLED=$([ "$NOTIFY_REMINDER_ENABLED" = "true" ] && echo "false" || echo "true")
+                        save_settings --silent
+                        ;;
+                    7) # Reminder Interval
+                        clear
+                        print_header
+                        echo -e "${CYAN}${BOLD}⏱️  SET REMINDER INTERVAL${NC}\n"
+                        echo -e "${BLUE}Current interval: ${BOLD}${NOTIFY_REMINDER_INTERVAL}s${NC} ($(( NOTIFY_REMINDER_INTERVAL / 60 )) minutes)\n"
+                        echo -e "${YELLOW}Presets:${NC}"
+                        echo -e "  ${GREEN}[1]${NC}  5 minutes (300s)"
+                        echo -e "  ${GREEN}[2]${NC} 10 minutes (600s) ${CYAN}[Current Default]${NC}"
+                        echo -e "  ${GREEN}[3]${NC} 15 minutes (900s)"
+                        echo -e "  ${GREEN}[4]${NC} 30 minutes (1800s)"
+                        echo -e "  ${GREEN}[5]${NC} Custom value"
+                        echo -ne "\n${CYAN}Choice [1-5]: ${NC}"
+                        read -r interval_choice
+                        case "$interval_choice" in
+                            1) NOTIFY_REMINDER_INTERVAL=300 ;;
+                            2) NOTIFY_REMINDER_INTERVAL=600 ;;
+                            3) NOTIFY_REMINDER_INTERVAL=900 ;;
+                            4) NOTIFY_REMINDER_INTERVAL=1800 ;;
+                            5)
+                                echo -ne "${YELLOW}Enter seconds: ${NC}"
+                                read -r custom_interval
+                                if [[ "$custom_interval" =~ ^[0-9]+$ ]] && [[ $custom_interval -gt 0 ]]; then
+                                    NOTIFY_REMINDER_INTERVAL=$custom_interval
+                                fi
+                                ;;
+                        esac
+                        save_settings --silent
+                        ;;
+                    8) # Progress Notifications
+                        NOTIFY_CONVERSION_PROGRESS=$([ "$NOTIFY_CONVERSION_PROGRESS" = "true" ] && echo "false" || echo "true")
+                        save_settings --silent
+                        ;;
+                    9) # Progress Interval
+                        clear
+                        print_header
+                        echo -e "${CYAN}${BOLD}⏲️  SET PROGRESS INTERVAL${NC}\n"
+                        echo -e "${BLUE}Current interval: ${BOLD}${NOTIFY_PROGRESS_INTERVAL}s${NC} ($(( NOTIFY_PROGRESS_INTERVAL / 60 )) minutes)\n"
+                        echo -e "${YELLOW}Presets:${NC}"
+                        echo -e "  ${GREEN}[1]${NC}  2 minutes (120s)"
+                        echo -e "  ${GREEN}[2]${NC}  5 minutes (300s) ${CYAN}[Current Default]${NC}"
+                        echo -e "  ${GREEN}[3]${NC} 10 minutes (600s)"
+                        echo -e "  ${GREEN}[4]${NC} Custom value"
+                        echo -ne "\n${CYAN}Choice [1-4]: ${NC}"
+                        read -r prog_choice
+                        case "$prog_choice" in
+                            1) NOTIFY_PROGRESS_INTERVAL=120 ;;
+                            2) NOTIFY_PROGRESS_INTERVAL=300 ;;
+                            3) NOTIFY_PROGRESS_INTERVAL=600 ;;
+                            4)
+                                echo -ne "${YELLOW}Enter seconds: ${NC}"
+                                read -r custom_prog
+                                if [[ "$custom_prog" =~ ^[0-9]+$ ]] && [[ $custom_prog -gt 0 ]]; then
+                                    NOTIFY_PROGRESS_INTERVAL=$custom_prog
+                                fi
+                                ;;
+                        esac
+                        save_settings --silent
+                        ;;
+                    10) # Test Notification
+                        if command -v notify-send >/dev/null 2>&1; then
+                            notify-send -u normal -t 5000 -i video-x-generic \
+                                "🧪 GIF Converter Test" \
+                                "This is a test notification!\n\nIf you can see this, notifications are working correctly. ✅" \
+                                2>/dev/null &
+                            echo -e "\n${GREEN}✓ Test notification sent!${NC}"
+                            sleep 2
+                        else
+                            echo -e "\n${RED}❌ notify-send not found!${NC}"
+                            echo -e "${YELLOW}Install with: sudo zypper install libnotify-tools${NC}"
+                            sleep 3
+                        fi
+                        ;;
+                    11) # Back
+                        return 0
+                        ;;
+                esac
+                ;;
+            'q'|'Q')
+                return 0
+                ;;
+        esac
+    done
 }
 
 # 📁 Configure output directory
@@ -16225,6 +16631,7 @@ show_main_menu() {
         "💾 Configure Output Directory"
         "📊 View Conversion Statistics"
         "🤖 AI System Status & Diagnostics"
+        "🔔 Notification Settings"
         "📁 Manage Log Files"
         "🔧 System Information"
         "🔫 Kill FFmpeg Processes"
@@ -16312,6 +16719,15 @@ show_main_menu() {
         
         echo -e "${CYAN}🔧 Mode: $dev_status | 🔄 Updates: $update_status${NC}\n"
         
+        # Check if notification settings need upgrade
+        local notify_count=$(grep "^NOTIFY_" "$SETTINGS_FILE" 2>/dev/null | wc -l | tr -d ' ')
+        [[ -z "$notify_count" ]] && notify_count=0
+        if [[ $notify_count -lt 10 ]]; then
+            echo -e "${YELLOW}⚠️  ${BOLD}SETTINGS UPGRADE AVAILABLE${NC}"
+            echo -e "${CYAN}🔄 Your notification settings need to be initialized ($notify_count/10 found)${NC}"
+            echo -e "${GREEN}➡️  Go to 'Notification Settings' menu to upgrade automatically${NC}\n"
+        fi
+        
         echo -e "${CYAN}${BOLD}🎯 MAIN MENU${NC}"
         echo -e "${YELLOW}🎹 Navigation: ${GREEN}w${NC}=Up ${GREEN}s${NC}=Down ${GREEN}Enter${NC}=Select ${GREEN}q${NC}=Quit ${GREEN}h${NC}=Help${NC}\n"
         
@@ -16354,12 +16770,14 @@ show_main_menu() {
             3) help_text=$(get_responsive_help_text "Choose output directory" "Set where GIFs are saved: current dir, Pictures, or custom path" $layout_mode) ;;
             4) help_text=$(get_responsive_help_text "View conversion stats" "View your conversion history and success rates with details" $layout_mode) ;;
             5) help_text=$(get_responsive_help_text "AI system diagnostics" "Check AI cache, training data, health status, and performance" $layout_mode) ;;
-            6) help_text=$(get_responsive_help_text "Manage log files" "Manage error logs and conversion history files safely" $layout_mode) ;;
-            7) help_text=$(get_responsive_help_text "System info" "Check CPU, GPU, and system capabilities for optimization" $layout_mode) ;;
-            8) help_text=$(get_responsive_help_text "Kill processes" "Stop any stuck or runaway FFmpeg processes safely" $layout_mode) ;;
-            9) help_text=$(get_responsive_help_text "Help & docs" "Complete usage guide with examples and feature docs" $layout_mode) ;;
-            10) help_text=$(get_responsive_help_text "Reset settings" "Reset all settings to factory defaults (files are safe)" $layout_mode) ;;
-            11) help_text=$(get_responsive_help_text "Exit" "Save your current settings and exit gracefully" $layout_mode) ;;
+            6) help_text=$(get_responsive_help_text "Notification settings" "Configure desktop notifications, reminders, and alerts" $layout_mode) ;;
+            7) help_text=$(get_responsive_help_text "Manage log files" "Manage error logs and conversion history files safely" $layout_mode) ;;
+            8) help_text=$(get_responsive_help_text "System info" "Check CPU, GPU, and system capabilities for optimization" $layout_mode) ;;
+            9) help_text=$(get_responsive_help_text "Kill processes" "Stop any stuck or runaway FFmpeg processes safely" $layout_mode) ;;
+            10) help_text=$(get_responsive_help_text "Help & docs" "Complete usage guide with examples and feature docs" $layout_mode) ;;
+            11) help_text=$(get_responsive_help_text "Check for updates" "Check for and install script updates from GitHub" $layout_mode) ;;
+            12) help_text=$(get_responsive_help_text "Reset settings" "Reset all settings to factory defaults (files are safe)" $layout_mode) ;;
+            13) help_text=$(get_responsive_help_text "Exit" "Save your current settings and exit gracefully" $layout_mode) ;;
         esac
         
         # Calculate actual content width by measuring the longest menu option
@@ -16485,6 +16903,9 @@ show_main_menu() {
             echo -e "${GRAY}Layout: $layout_mode | Terminal: ${term_width}x${term_height} | Menu: ${menu_width}${NC}"
         fi
         
+        # Show tmux controls at the bottom of main menu
+        show_tmux_controls
+        
         echo -e "\n${CYAN}🎮 Controls: ${YELLOW}w/s${NC}=Navigate ${YELLOW}Enter/Space${NC}=Select ${YELLOW}q${NC}=Quit ${YELLOW}h/?${NC}=Help"
         
         # True single-key input without Enter
@@ -16575,22 +16996,26 @@ execute_menu_option() {
             clear
             print_header
             show_ai_status
+            show_tmux_controls
             echo -e "\n${YELLOW}Press any key to return to main menu...${NC}"
             read -rsn1
             ;;
-        6) # Manage Logs
+        6) # Notification Settings
+            configure_notifications
+            ;;
+        7) # Manage Logs
             manage_log_files
             ;;
-        7) # System Info
+        8) # System Info
             show_system_info
             ;;
-        8) # Kill FFmpeg
+        9) # Kill FFmpeg
             kill_ffmpeg_processes
             ;;
-        9) # Help
+        10) # Help
             show_interactive_help
             ;;
-        10) # Check for Updates
+        11) # Check for Updates
             clear
             print_header
             echo -e "${CYAN}${BOLD}🔄 CHECKING FOR UPDATES${NC}\n"
@@ -16600,13 +17025,14 @@ execute_menu_option() {
             # Run manual update check
             manual_update
             
+            show_tmux_controls
             echo -e "\n${YELLOW}Press any key to return to main menu...${NC}"
             read -rsn1
             ;;
-        11) # Reset All Settings
+        12) # Reset All Settings
             reset_all_settings
             ;;
-        12) # Exit
+        13) # Exit
             echo -e "\n${YELLOW}👋 Goodbye!${NC}"
             exit 0
             ;;
@@ -16644,6 +17070,7 @@ quick_convert_mode() {
             echo -e "  ${CYAN}•${NC} Place video files in: ${BOLD}$(pwd)${NC}"
             echo -e "  ${CYAN}•${NC} Supported formats: ${GREEN}.mp4 .avi .mov .mkv .webm${NC}"
             echo -e "  ${CYAN}•${NC} Or use: ${YELLOW}--file /path/to/video.mp4${NC}"
+            show_tmux_controls
             echo -e "\n${YELLOW}Press any key to return to main menu...${NC}"
             read -rsn1
             return
@@ -19370,6 +19797,9 @@ start_conversion() {
         echo -e "${YELLOW}ℹ️  No files were processed${NC}"
     fi
     
+    # Show tmux controls footer
+    show_tmux_controls
+    
     # Check for any new files detected during conversion
     check_for_new_files
     
@@ -19389,7 +19819,7 @@ start_conversion() {
 show_welcome() {
     clear
     echo -e "${CYAN}${BOLD}╔═════════════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}${BOLD}║                      🎬 SMART GIF CONVERTER v7                      ║${NC}"
+echo -e "${CYAN}${BOLD}║                    🎬 SMART GIF CONVERTER v7.1                    ║${NC}"
     echo -e "${CYAN}${BOLD}║                  🤖 AI-Powered Video to GIF Magic                  ║${NC}"
     echo -e "${CYAN}${BOLD}╚═════════════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
@@ -19555,10 +19985,30 @@ get_responsive_help_text() {
     esac
 }
 
+# 📋 Show tmux controls footer (displays consistently across all screens)
+show_tmux_controls() {
+    # Only show if running in tmux
+    if [[ -n "$TMUX" ]]; then
+        echo ""
+        echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${CYAN}${BOLD}📋 TMUX SESSION CONTROLS${NC}"
+        echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${BLUE}Useful commands:${NC}"
+        echo -e "  ${GREEN}Ctrl+b then d${NC}     - Detach (keeps session running)"
+        echo -e "  ${GREEN}exit${NC}              - Close this pane/window"
+        echo -e "  ${GREEN}tmux ls${NC}           - List all sessions"
+        if [[ -n "$TMUX_PANE" ]]; then
+            local session_name=$(tmux display-message -p '#S' 2>/dev/null || echo "unknown")
+            echo -e "  ${GREEN}tmux attach -t ${session_name}${NC} - Reattach to this session"
+        fi
+        echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    fi
+}
+
 # 🎪 Function to print fancy headers (simplified for menus)
 print_header() {
     echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}${BOLD}║                  🎬 SMART GIF CONVERTER v7                  ║${NC}"
+echo -e "${CYAN}${BOLD}║                🎬 SMART GIF CONVERTER v7.1                ║${NC}"
     echo -e "${CYAN}${BOLD}║                AI-Powered Video to GIF Magic                  ║${NC}"
     echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
@@ -19684,6 +20134,18 @@ EOF
 load_config() {
     # First try to load saved settings from log directory
     if load_settings 2>/dev/null; then
+        # Check if settings file needs upgrade (missing notification settings or intervals)
+        # Count how many notification settings exist
+        local notify_count=$(grep "^NOTIFY_" "$SETTINGS_FILE" 2>/dev/null | wc -l | tr -d ' ')
+        [[ -z "$notify_count" ]] && notify_count=0
+        
+        # We should have 10 NOTIFY_ settings total
+        if [[ $notify_count -lt 10 ]]; then
+            echo -e "${YELLOW}🔄 Upgrading settings file with notification options... ($notify_count/10 found)${NC}"
+            save_settings --silent
+            echo -e "${GREEN}✓ Settings upgraded successfully! All notification options now available.${NC}"
+            sleep 2
+        fi
         return 0
     fi
     
@@ -19697,12 +20159,26 @@ load_config() {
     fi
     
     echo -e "${YELLOW}ℹ️ Using default settings (will be saved after first use)${NC}"
+    # Save defaults for first-time users
+    save_settings --silent
     return 1
 }
 
 # 💾 Save settings to log directory
 save_settings() {
-    local settings_file="${1:-$SETTINGS_FILE}"
+    # Properly handle flags and output path so we never write to a file named "--silent"
+    local silent=false
+    local settings_file="$SETTINGS_FILE"
+
+    # Support optional "--silent" flag as first arg
+    if [[ "$1" == "--silent" ]]; then
+        silent=true
+        shift
+    fi
+    # Optional explicit output path (rare; used by legacy save_config)
+    if [[ -n "$1" ]]; then
+        settings_file="$1"
+    fi
     
     cat > "$settings_file" << EOF
 # Smart GIF Converter Settings - Auto-saved $(date)
@@ -19755,9 +20231,19 @@ FFMPEG_THREADS="$FFMPEG_THREADS"
 PARALLEL_JOBS="$PARALLEL_JOBS"
 OUTPUT_DIRECTORY="$OUTPUT_DIRECTORY"
 OUTPUT_DIR_MODE="$OUTPUT_DIR_MODE"
+NOTIFY_ENABLED="$NOTIFY_ENABLED"
+NOTIFY_SESSION_START="$NOTIFY_SESSION_START"
+NOTIFY_SESSION_FOUND="$NOTIFY_SESSION_FOUND"
+NOTIFY_CONVERSION_COMPLETE="$NOTIFY_CONVERSION_COMPLETE"
+NOTIFY_CONVERSION_PROGRESS="$NOTIFY_CONVERSION_PROGRESS"
+NOTIFY_PROGRESS_INTERVAL="$NOTIFY_PROGRESS_INTERVAL"
+NOTIFY_ERROR="$NOTIFY_ERROR"
+NOTIFY_REMINDER_ENABLED="$NOTIFY_REMINDER_ENABLED"
+NOTIFY_REMINDER_INTERVAL="$NOTIFY_REMINDER_INTERVAL"
+NOTIFY_TERMINAL_CLOSED="$NOTIFY_TERMINAL_CLOSED"
 EOF
     
-    if [[ "$1" != "--silent" ]]; then
+    if [[ "$silent" != true ]]; then
         echo -e "${GREEN}💾 Settings saved to $settings_file${NC}"
     fi
 }
@@ -19821,6 +20307,16 @@ load_settings() {
                 OUTPUT_DIRECTORY) OUTPUT_DIRECTORY="$value" ;;
                 OUTPUT_DIR_MODE) OUTPUT_DIR_MODE="$value" ;;
                 FFMPEG_THREADS) FFMPEG_THREADS="$value" ;;
+                NOTIFY_ENABLED) NOTIFY_ENABLED="$value" ;;
+                NOTIFY_SESSION_START) NOTIFY_SESSION_START="$value" ;;
+                NOTIFY_SESSION_FOUND) NOTIFY_SESSION_FOUND="$value" ;;
+                NOTIFY_CONVERSION_COMPLETE) NOTIFY_CONVERSION_COMPLETE="$value" ;;
+                NOTIFY_CONVERSION_PROGRESS) NOTIFY_CONVERSION_PROGRESS="$value" ;;
+                NOTIFY_PROGRESS_INTERVAL) NOTIFY_PROGRESS_INTERVAL="$value" ;;
+                NOTIFY_ERROR) NOTIFY_ERROR="$value" ;;
+                NOTIFY_REMINDER_ENABLED) NOTIFY_REMINDER_ENABLED="$value" ;;
+                NOTIFY_REMINDER_INTERVAL) NOTIFY_REMINDER_INTERVAL="$value" ;;
+                NOTIFY_TERMINAL_CLOSED) NOTIFY_TERMINAL_CLOSED="$value" ;;
             esac
         done < "$settings_file"
         
@@ -19832,7 +20328,7 @@ load_settings() {
 
 # 💾 Save configuration (legacy function for backward compatibility)
 save_config() {
-    save_settings "$CONFIG_FILE"
+    save_settings
 }
 
 # 📐 Interactive aspect ratio selection
