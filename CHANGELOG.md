@@ -2,6 +2,95 @@
 
 All notable changes to Smart GIF Converter will be documented in this file.
 
+## [7.1.0] - 2025-01-22
+
+### 🔔 Desktop Notification System
+
+A comprehensive notification system that keeps you informed about conversion progress, session status, and terminal connectivity - even when the terminal is minimized or closed.
+
+#### Added
+- **7 Notification Types**:
+  - **Session Start Notifications**: Alerts when tmux session launches with reconnection commands
+  - **Session Found Notifications**: Persistent alert when existing conversion session detected (prevents duplicate sessions)
+  - **Conversion Complete Notifications**: Success/failure notifications with statistics
+  - **Progress Notifications**: Periodic updates during long conversions (configurable: 2, 5, 10 minutes)
+  - **Terminal Closed Detection** ⭐: Background monitor detects when terminal closes, sends persistent notification with reconnection instructions, works on ANY screen (main menu, converting, settings, etc.)
+  - **Periodic Reminders**: Configurable "still running" reminders (5, 10, 15, 30 minutes)
+  - **Error Notifications**: Immediate alerts when errors occur
+
+- **Advanced Notification Settings Menu**:
+  - Keyboard navigation with w/s/Enter/Space keys
+  - Master toggle to enable/disable all notifications
+  - Individual toggles for each notification type
+  - Customizable intervals with presets or custom values
+  - Test notification button
+  - Real-time status indicators (☑/☐)
+  - Auto-save: All settings persist across sessions
+  - Smart upgrade system detects and initializes settings automatically
+
+- **Terminal Closure Detection System**:
+  - Background monitor starts when tmux session launches
+  - Checks every 5 seconds if terminal process exists
+  - Sends persistent notification when terminal closes but tmux session is alive
+  - Periodic reminders every 10 minutes until reconnection
+  - Debug logging to `~/.smart-gif-converter/terminal_monitor.log`
+  - Works with Konsole, gnome-terminal, xterm, and all major terminals
+
+- **Settings Persistence**:
+  - Location: `~/.smart-gif-converter/settings.conf`
+  - 10 notification configuration variables
+  - Auto-upgrade system for existing installations
+  - Banner notification at main menu when settings need initialization
+
+#### Fixed
+- **Critical Bug**: `save_settings --silent` was creating a file named `--silent` instead of saving to settings file
+  - Updated `save_settings()` to properly parse the `--silent` flag as a boolean parameter
+  - Fixed parameter handling: `--silent` now correctly sets `silent=true` without creating file
+- **Notification settings not persisting** across tmux session restarts
+  - Added all 10 NOTIFY_ variables to `save_settings()` and `load_settings()` functions
+  - Settings now properly persist in `~/.smart-gif-converter/settings.conf`
+- **Settings upgrade banner** not displaying at main menu
+  - Fixed detection logic to count notification settings: `grep "^NOTIFY_" | wc -l`
+  - Changed from `grep -c` to `wc -l` to avoid double "0 0" output
+- **Notification interval values** reverting to defaults after session restart
+  - Now properly saved and loaded: `NOTIFY_REMINDER_INTERVAL`, `NOTIFY_PROGRESS_INTERVAL`
+
+#### Changed
+- Updated version from 7.0 to 7.1
+- Updated welcome screen and main menu to display "v7.1"
+- Set `NOTIFY_CONVERSION_PROGRESS=true` by default (changed from false)
+- Set `NOTIFY_REMINDER_ENABLED=true` by default (changed from false)
+
+#### Technical Details
+- **Dependencies**: `notify-send` (from `libnotify-tools`)
+  - Auto-detects on startup
+  - Prompts to install if missing: `sudo zypper install libnotify-tools`
+  - Compatible with all major desktop environments (KDE, GNOME, XFCE)
+- **Terminal Monitor**: Runs as background process via `nohup`
+  - Walks process tree to find terminal (Konsole, gnome-terminal, xterm, etc.)
+  - Independent of main script - survives session detachment
+  - Automatically stops when tmux session ends
+- **Notification Variables** (lines 633-643):
+  - `NOTIFY_ENABLED` - Master toggle
+  - `NOTIFY_SESSION_START` - Session start notifications
+  - `NOTIFY_SESSION_FOUND` - Existing session alerts
+  - `NOTIFY_CONVERSION_COMPLETE` - Completion notifications
+  - `NOTIFY_CONVERSION_PROGRESS` - Progress updates (default: true)
+  - `NOTIFY_PROGRESS_INTERVAL` - Progress interval (default: 300s / 5m)
+  - `NOTIFY_ERROR` - Error notifications
+  - `NOTIFY_REMINDER_ENABLED` - Periodic reminders (default: true)
+  - `NOTIFY_REMINDER_INTERVAL` - Reminder interval (default: 600s / 10m)
+  - `NOTIFY_TERMINAL_CLOSED` - Terminal closure detection
+
+#### Performance & User Experience
+- **Terminal Closure Protection**: Never lose track of running conversions
+- **Persistent Notifications**: Critical alerts stay visible until clicked
+- **Configurable Intervals**: Balance between staying informed and avoiding spam
+- **Background Monitoring**: Zero performance impact on main conversion process
+- **Smart Defaults**: Sensible presets work out of the box
+
+---
+
 ## [7.0.0] - 2025-01-19
 
 ### 🛡️ Major Update: Automatic Terminal Crash Protection
