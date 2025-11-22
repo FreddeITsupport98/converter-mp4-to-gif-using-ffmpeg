@@ -47,6 +47,12 @@ start_terminal_monitor() {
     local session_name="$1"
     local monitor_log="$HOME/.smart-gif-converter/terminal_monitor.log"
     
+    # Verify notify-send is available
+    if ! command -v notify-send >/dev/null 2>&1; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARNING: notify-send not found, notifications disabled" >> "$monitor_log" 2>/dev/null
+        return 1
+    fi
+    
     # Create monitor script that will run independently
     local monitor_script="/tmp/gif_terminal_monitor_$$.sh"
     
@@ -54,33 +60,44 @@ start_terminal_monitor() {
 #!/bin/bash
 SESSION_NAME="__SESSION_NAME__"
 MONITOR_LOG="__MONITOR_LOG__"
-MONITOR_INTERVAL=5  # Check every 5 seconds
+DBUS_SESSION="__DBUS_SESSION__"
+DISPLAY_VAR="__DISPLAY_VAR__"
+
+# Export DBUS and DISPLAY for notify-send to work from background
+export DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION"
+export DISPLAY="$DISPLAY_VAR"
 
 # Create log directory
 mkdir -p "$(dirname "$MONITOR_LOG")" 2>/dev/null
 
-# Log start
+# Log start with environment info
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Monitor started for session: $SESSION_NAME" >> "$MONITOR_LOG"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] DISPLAY: $DISPLAY_VAR" >> "$MONITOR_LOG"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] DBUS: ${DBUS_SESSION:0:50}..." >> "$MONITOR_LOG"
 
-# Find the Konsole process - walk up the process tree
+# Find the terminal process - improved detection including fish shell
 find_terminal_pid() {
     local current_pid=$$
-    local max_depth=20
+    local max_depth=30  # Increased depth for fish shell
     local depth=0
+    
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting terminal PID search from PID: $current_pid" >> "$MONITOR_LOG"
     
     while [[ $depth -lt $max_depth ]]; do
         # Get parent PID
         local parent_pid=$(ps -o ppid= -p $current_pid 2>/dev/null | tr -d ' ')
-        [[ -z "$parent_pid" || "$parent_pid" == "1" ]] && break
+        [[ -z "$parent_pid" || "$parent_pid" == "1" || "$parent_pid" == "0" ]] && break
         
-        # Get process name
-        local proc_name=$(ps -o comm= -p $parent_pid 2>/dev/null)
+        # Get process name and command line
+        local proc_name=$(ps -o comm= -p $parent_pid 2>/dev/null | tr -d ' ')
+        local proc_cmd=$(ps -o args= -p $parent_pid 2>/dev/null)
         
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Checking PID $parent_pid: $proc_name" >> "$MONITOR_LOG"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [Depth $depth] PID $parent_pid: $proc_name ($proc_cmd)" >> "$MONITOR_LOG"
         
-        # Check if this is Konsole or another terminal
-        if [[ "$proc_name" =~ ^(konsole|gnome-terminal|xterm|alacritty|kitty|wezterm|warp)$ ]]; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Found terminal: $proc_name (PID: $parent_pid)" >> "$MONITOR_LOG"
+        # Check if this is a terminal emulator (expanded list)
+        if [[ "$proc_name" =~ ^(konsole|gnome-terminal|xterm|alacritty|kitty|wezterm|warp|tilix|terminator|st|urxvt|rxvt|foot|contour)$ ]] || \
+           [[ "$proc_cmd" =~ (konsole|gnome-terminal|xterm|alacritty|kitty|wezterm|warp|tilix|terminator) ]]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ Found terminal: $proc_name (PID: $parent_pid)" >> "$MONITOR_LOG"
             echo "$parent_pid"
             return 0
         fi
@@ -89,7 +106,20 @@ find_terminal_pid() {
         ((depth++))
     done
     
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] No terminal found in process tree" >> "$MONITOR_LOG"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ No terminal found in process tree after $depth iterations" >> "$MONITOR_LOG"
+    
+    # Fallback: try to find terminal by session leader
+    local session_leader=$(ps -o sid= -p $$ 2>/dev/null | tr -d ' ')
+    if [[ -n "$session_leader" ]]; then
+        local leader_name=$(ps -o comm= -p $session_leader 2>/dev/null)
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Session leader: PID $session_leader ($leader_name)" >> "$MONITOR_LOG"
+        if [[ "$leader_name" =~ (konsole|gnome-terminal|xterm|alacritty|kitty|wezterm|warp|tilix|terminator) ]]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ Using session leader as terminal PID" >> "$MONITOR_LOG"
+            echo "$session_leader"
+            return 0
+        fi
+    fi
+    
     return 1
 }
 
@@ -97,75 +127,124 @@ find_terminal_pid() {
 TERMINAL_PID=$(find_terminal_pid)
 
 if [[ -z "$TERMINAL_PID" ]]; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Could not find terminal PID" >> "$MONITOR_LOG"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Could not find terminal PID - notifications will not work" >> "$MONITOR_LOG"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Process tree:" >> "$MONITOR_LOG"
+    ps -ef --forest 2>/dev/null | grep -A 10 -B 5 "$$" >> "$MONITOR_LOG" 2>&1
     exit 1
 fi
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Monitoring terminal PID: $TERMINAL_PID" >> "$MONITOR_LOG"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ Monitoring terminal PID: $TERMINAL_PID" >> "$MONITOR_LOG"
 
 NOTIFICATION_SENT=false
 
-# Monitoring loop
-while true; do
-    sleep $MONITOR_INTERVAL
+# Test notification immediately to ensure notify-send works
+if command -v notify-send >/dev/null 2>&1; then
+    notify-send -u low -t 3000 -i info \
+        "🔔 Terminal Monitor Active" \
+        "Monitoring session: $SESSION_NAME\nWill notify INSTANTLY if terminal closes." \
+        2>>"$MONITOR_LOG" &
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Test notification sent" >> "$MONITOR_LOG"
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: notify-send not available" >> "$MONITOR_LOG"
+    exit 1
+fi
+
+# INSTANT monitoring: wait for terminal process to exit (no polling delay!)
+# Background loop that checks tmux session periodically
+(
+    while tmux has-session -t "$SESSION_NAME" 2>/dev/null; do
+        sleep 60  # Check tmux session every minute
+    done
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Tmux session ended naturally" >> "$MONITOR_LOG"
+) &
+TMUX_MONITOR_PID=$!
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting INSTANT terminal exit monitoring..." >> "$MONITOR_LOG"
+
+# Main monitoring: Use tail --pid to wait for terminal process exit
+# This returns INSTANTLY when the terminal closes (no polling delay)
+if command -v tail >/dev/null 2>&1; then
+    # tail --pid waits until the process exits, then returns immediately
+    tail --pid="$TERMINAL_PID" -f /dev/null 2>/dev/null
+    TERMINAL_EXIT_CODE=$?
+else
+    # Fallback: poll with kill -0 (very fast polling)
+    while kill -0 "$TERMINAL_PID" 2>/dev/null; do
+        sleep 0.1  # Poll every 100ms for near-instant detection
+    done
+    TERMINAL_EXIT_CODE=0
+fi
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠️  Terminal closed INSTANTLY! Checking tmux session..." >> "$MONITOR_LOG"
+
+# Terminal closed - check if tmux session still exists
+if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ Session still active, sending INSTANT notification" >> "$MONITOR_LOG"
     
-    # Check if terminal still exists
-    if ! kill -0 "$TERMINAL_PID" 2>/dev/null; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Terminal closed! Checking tmux session..." >> "$MONITOR_LOG"
+    # Send persistent notification with urgency
+    if notify-send -u critical -t 0 -i video-x-generic \
+        "💻 Terminal Closed - Conversion Still Running!" \
+        "Your GIF conversion is still active in tmux!\n\n📍 Session: $SESSION_NAME\n\n🔗 To reconnect:\n• Open terminal and run: ./convert.sh\n• Or use: tmux attach -t $SESSION_NAME\n\n✅ Your work is safe!" \
+        2>>"$MONITOR_LOG"; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ Initial notification sent successfully" >> "$MONITOR_LOG"
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ Failed to send notification (exit code: $?)" >> "$MONITOR_LOG"
+    fi
+    
+    NOTIFICATION_SENT=true
+    
+    # Send periodic reminders
+    while tmux has-session -t "$SESSION_NAME" 2>/dev/null; do
+        sleep 600  # 10 minutes
         
-        # Terminal closed - check if tmux session still exists
         if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Session still active, sending notification" >> "$MONITOR_LOG"
-            
-            if ! $NOTIFICATION_SENT; then
-                # Send persistent notification
-                notify-send -u critical -t 0 -i video-x-generic \
-                    "💻 Terminal Closed - Conversion Still Running!" \
-                    "Your GIF conversion is still active in tmux!\n\n📍 Session: $SESSION_NAME\n\n🔗 To reconnect:\n• Open terminal and run: ./convert.sh\n• Or use: tmux attach -t $SESSION_NAME\n\n✅ Your work is safe!" \
-                    2>>"$MONITOR_LOG" &
-                
-                NOTIFICATION_SENT=true
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] Initial notification sent" >> "$MONITOR_LOG"
-                
-                # Send periodic reminders
-                while tmux has-session -t "$SESSION_NAME" 2>/dev/null; do
-                    sleep 600  # 10 minutes
-                    
-                    if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-                        notify-send -u normal -t 0 -i video-x-generic \
-                            "⏰ Reminder: Conversion Still Running" \
-                            "Session: $SESSION_NAME is still active.\n\nReconnect with: tmux attach -t $SESSION_NAME" \
-                            2>>"$MONITOR_LOG" &
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Reminder sent" >> "$MONITOR_LOG"
-                    fi
-                done
+            if notify-send -u normal -t 0 -i video-x-generic \
+                "⏰ Reminder: Conversion Still Running" \
+                "Session: $SESSION_NAME is still active.\n\nReconnect with: tmux attach -t $SESSION_NAME" \
+                2>>"$MONITOR_LOG"; then
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ Reminder notification sent" >> "$MONITOR_LOG"
+            else
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ Failed to send reminder" >> "$MONITOR_LOG"
             fi
         fi
-        
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Monitor exiting" >> "$MONITOR_LOG"
-        exit 0
-    fi
-    
-    # Check if tmux session still exists
-    if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Session ended, monitor exiting" >> "$MONITOR_LOG"
-        exit 0
-    fi
-done
+    done
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Session has ended (normal completion)" >> "$MONITOR_LOG"
+fi
+
+# Clean up background tmux monitor
+kill $TMUX_MONITOR_PID 2>/dev/null
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Monitor exiting" >> "$MONITOR_LOG"
+exit 0
 MONITOR_EOF
 
-    # Substitute variables
+    # Substitute variables including DBUS session for notifications
+    local dbus_session="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}"
+    local display_var="${DISPLAY:-:0}"
+    
     sed -i "s|__SESSION_NAME__|$session_name|g" "$monitor_script"
     sed -i "s|__MONITOR_LOG__|$monitor_log|g" "$monitor_script"
+    sed -i "s|__DBUS_SESSION__|$dbus_session|g" "$monitor_script"
+    sed -i "s|__DISPLAY_VAR__|$display_var|g" "$monitor_script"
     
     chmod +x "$monitor_script"
     
-    # Launch monitor in background, completely detached
-    nohup "$monitor_script" &>/dev/null &
-    disown
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting terminal monitor for session: $session_name" >> "$monitor_log" 2>/dev/null
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Monitor script: $monitor_script" >> "$monitor_log" 2>/dev/null
     
-    # Clean up the script after a delay
-    (sleep 2; rm -f "$monitor_script" 2>/dev/null) &
+    # Launch monitor in background WITHOUT setsid to preserve session context
+    # This allows notifications to work by keeping DBUS and DISPLAY access
+    # Just background it and disown to prevent it from being killed with the parent
+    "$monitor_script" </dev/null &>/dev/null &
+    local monitor_pid=$!
+    disown 2>/dev/null || true
+    
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Monitor launched with PID: $monitor_pid" >> "$monitor_log" 2>/dev/null
+    
+    # Don't clean up the script immediately - let it run
+    # Clean up old monitor scripts only
+    (sleep 5; find /tmp -name "gif_terminal_monitor_*.sh" -mmin +60 -delete 2>/dev/null) &
 }
 
 # ============================================================================
