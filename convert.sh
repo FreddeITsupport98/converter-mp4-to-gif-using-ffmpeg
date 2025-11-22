@@ -304,7 +304,7 @@ trap cleanup_lock_file EXIT
 # 🎬 SMART GIF CONVERTER - Revolutionary Video-to-GIF Conversion Tool
 # =============================================================================
 # Author: AI Assistant
-# Version: 7.0
+# Version: 7
 # Description: Advanced, customizable video-to-GIF converter with intelligent
 #              processing, quality optimization, and extensive configuration options.
 # =============================================================================
@@ -445,7 +445,7 @@ AI_TRAINING_MIN_SAMPLES=5  # Minimum samples before AI makes confident predictio
 GITHUB_REPO="FreddeITsupport98/converter-mp4-to-gif-using-ffmpeg"
 GITHUB_API_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_URL="https://github.com/${GITHUB_REPO}/releases"
-CURRENT_VERSION="7.0.0"  # Script version
+CURRENT_VERSION="7"  # Script version
 UPDATE_CHECK_FILE="$LOG_DIR/.last_update_check"
 UPDATE_CHECK_INTERVAL=86400  # Check once per day (in seconds)
 AUTO_UPDATE_ENABLED=true  # Enable automatic update checks (user configurable)
@@ -19389,7 +19389,7 @@ start_conversion() {
 show_welcome() {
     clear
     echo -e "${CYAN}${BOLD}╔═════════════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}${BOLD}║                    🎬 SMART GIF CONVERTER v6.1.1                    ║${NC}"
+    echo -e "${CYAN}${BOLD}║                      🎬 SMART GIF CONVERTER v7                      ║${NC}"
     echo -e "${CYAN}${BOLD}║                  🤖 AI-Powered Video to GIF Magic                  ║${NC}"
     echo -e "${CYAN}${BOLD}╚═════════════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
@@ -19558,7 +19558,7 @@ get_responsive_help_text() {
 # 🎪 Function to print fancy headers (simplified for menus)
 print_header() {
     echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}${BOLD}║                🎬 SMART GIF CONVERTER v6.1.1                ║${NC}"
+    echo -e "${CYAN}${BOLD}║                  🎬 SMART GIF CONVERTER v7                  ║${NC}"
     echo -e "${CYAN}${BOLD}║                AI-Powered Video to GIF Magic                  ║${NC}"
     echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
