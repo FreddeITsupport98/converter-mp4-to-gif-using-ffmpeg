@@ -94,9 +94,9 @@ find_terminal_pid() {
         
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] [Depth $depth] PID $parent_pid: $proc_name ($proc_cmd)" >> "$MONITOR_LOG"
         
-        # Check if this is a terminal emulator (expanded list)
-        if [[ "$proc_name" =~ ^(konsole|gnome-terminal|xterm|alacritty|kitty|wezterm|warp|tilix|terminator|st|urxvt|rxvt|foot|contour)$ ]] || \
-           [[ "$proc_cmd" =~ (konsole|gnome-terminal|xterm|alacritty|kitty|wezterm|warp|tilix|terminator) ]]; then
+        # Check if this is a terminal emulator (expanded list including warp-terminal)
+        if [[ "$proc_name" =~ ^(konsole|gnome-terminal|xterm|alacritty|kitty|wezterm|warp|warp-terminal|tilix|terminator|st|urxvt|rxvt|foot|contour)$ ]] || \
+           [[ "$proc_cmd" =~ (konsole|gnome-terminal|xterm|alacritty|kitty|wezterm|warp|warp-terminal|tilix|terminator) ]]; then
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ Found terminal: $proc_name (PID: $parent_pid)" >> "$MONITOR_LOG"
             echo "$parent_pid"
             return 0
@@ -113,7 +113,7 @@ find_terminal_pid() {
     if [[ -n "$session_leader" ]]; then
         local leader_name=$(ps -o comm= -p $session_leader 2>/dev/null)
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Session leader: PID $session_leader ($leader_name)" >> "$MONITOR_LOG"
-        if [[ "$leader_name" =~ (konsole|gnome-terminal|xterm|alacritty|kitty|wezterm|warp|tilix|terminator) ]]; then
+        if [[ "$leader_name" =~ (konsole|gnome-terminal|xterm|alacritty|kitty|wezterm|warp|warp-terminal|tilix|terminator) ]]; then
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ Using session leader as terminal PID" >> "$MONITOR_LOG"
             echo "$session_leader"
             return 0
@@ -257,6 +257,12 @@ MONITOR_EOF
 TMUX_PROTECTION_ENABLED=true  # Set to false to disable auto-tmux
 TMUX_MIN_VERSION="1.8"        # Minimum tmux version required
 
+# 🔔 Notification Configuration (needed by tmux wrapper)
+NOTIFY_ENABLED=true
+NOTIFY_SESSION_START=true
+NOTIFY_SESSION_FOUND=true
+NOTIFY_TERMINAL_CLOSED=true
+
 # Check if tmux protection should run
 if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != *"--no-tmux"* ]]; then
     
@@ -386,16 +392,52 @@ if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != 
                 2>/dev/null &
         fi
         
-        # Start background terminal closure monitor
-        if [[ "$NOTIFY_ENABLED" == "true" && "$NOTIFY_TERMINAL_CLOSED" == "true" ]] && command -v notify-send >/dev/null 2>&1; then
-            start_terminal_monitor "$SESSION_NAME" &
-        fi
-        
         sleep 1
+        
+        # Detect terminal PID NOW (before entering tmux where we can't see it)
+        MONITOR_DEBUG_LOG="$LOG_DIR/terminal-detect-debug.log"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] === Terminal Detection (BEFORE tmux) ===" > "$MONITOR_DEBUG_LOG"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Current PID: $$" >> "$MONITOR_DEBUG_LOG"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] NOTIFY_ENABLED: $NOTIFY_ENABLED" >> "$MONITOR_DEBUG_LOG"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] NOTIFY_TERMINAL_CLOSED: $NOTIFY_TERMINAL_CLOSED" >> "$MONITOR_DEBUG_LOG"
+        
+        TERMINAL_PID=""
+        current_pid=$$
+        depth=0
+        while [[ $depth -lt 30 ]]; do
+            parent_pid=$(ps -o ppid= -p $current_pid 2>/dev/null | tr -d ' ')
+            [[ -z "$parent_pid" || "$parent_pid" == "1" || "$parent_pid" == "0" ]] && break
+            
+            proc_name=$(ps -o comm= -p $current_pid 2>/dev/null | tr -d ' ')
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Depth $depth: PID $current_pid = $proc_name" >> "$MONITOR_DEBUG_LOG"
+            
+            if [[ "$proc_name" =~ ^(konsole|gnome-terminal|xterm|alacritty|kitty|wezterm|warp|warp-terminal|tilix|terminator|st|urxvt|rxvt|foot|contour)$ ]]; then
+                TERMINAL_PID=$current_pid
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ Found terminal: $proc_name (PID: $TERMINAL_PID)" >> "$MONITOR_DEBUG_LOG"
+                break
+            fi
+            
+            current_pid=$parent_pid
+            ((depth++))
+        done
+        
+        if [[ -z "$TERMINAL_PID" ]]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ No terminal found" >> "$MONITOR_DEBUG_LOG"
+        fi
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] DISPLAY: ${DISPLAY:-NOT SET}" >> "$MONITOR_DEBUG_LOG"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] DBUS: ${DBUS_SESSION_BUS_ADDRESS:-NOT SET}" >> "$MONITOR_DEBUG_LOG"
         
         # Prepare script path and arguments
         SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
         SCRIPT_ARGS="$*"
+        
+        # Export notification settings and terminal PID for tmux wrapper to use
+        export NOTIFY_ENABLED
+        export NOTIFY_TERMINAL_CLOSED
+        export SESSION_NAME
+        export TERMINAL_PID
+        export DISPLAY
+        export DBUS_SESSION_BUS_ADDRESS
         
         # Create robust tmux wrapper script to avoid quoting issues and keep session open
         TMUX_WRAPPER="$(mktemp -t smart_gif_tmux_XXXXXX.sh)"
@@ -405,6 +447,244 @@ if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != 
 # Make the current pane remain on exit as a safety net (won't hurt if unsupported)
 if [ -n "$TMUX_PANE" ]; then
   tmux set-option -pt "$TMUX_PANE" remain-on-exit on >/dev/null 2>&1 || true
+fi
+
+# Start terminal monitor NOW (inside tmux session)
+# TERMINAL_PID was detected BEFORE entering tmux and passed via environment
+MONITOR_LOG="$HOME/.smart-gif-converter/monitor-inside-tmux.log"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] === Monitor Start (INSIDE tmux) ===" > "$MONITOR_LOG"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] NOTIFY_ENABLED: $NOTIFY_ENABLED" >> "$MONITOR_LOG"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] NOTIFY_TERMINAL_CLOSED: $NOTIFY_TERMINAL_CLOSED" >> "$MONITOR_LOG"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] TERMINAL_PID: ${TERMINAL_PID:-NOT SET}" >> "$MONITOR_LOG"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] SESSION_NAME: $SESSION_NAME" >> "$MONITOR_LOG"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] DISPLAY: ${DISPLAY:-NOT SET}" >> "$MONITOR_LOG"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] DBUS: ${DBUS_SESSION_BUS_ADDRESS:-NOT SET}" >> "$MONITOR_LOG"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] notify-send available: $(command -v notify-send || echo 'NO')" >> "$MONITOR_LOG"
+
+if [[ "$NOTIFY_ENABLED" == "true" && "$NOTIFY_TERMINAL_CLOSED" == "true" ]] && \
+   [[ -n "$TERMINAL_PID" ]] && command -v notify-send >/dev/null 2>&1; then
+    
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ All checks passed, starting monitor" >> "$MONITOR_LOG"
+    
+    # Start monitor in background
+    (
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Monitor subprocess started, waiting for PID $TERMINAL_PID to exit" >> "$MONITOR_LOG"
+        
+        # Wait for terminal to close
+        tail --pid="$TERMINAL_PID" -f /dev/null 2>/dev/null || while kill -0 "$TERMINAL_PID" 2>/dev/null; do sleep 0.5; done
+        
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Terminal $TERMINAL_PID has exited!" >> "$MONITOR_LOG"
+        
+        # Terminal closed - send notification if tmux session still exists
+        if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Tmux session still active, starting reminder loop" >> "$MONITOR_LOG"
+            
+            # Create helper script for reconnecting
+            RECONNECT_SCRIPT="$HOME/.smart-gif-converter/reconnect-tmux.sh"
+            cat > "$RECONNECT_SCRIPT" << 'RECONNECT_EOF'
+#!/bin/bash
+# Ensure DISPLAY is set for GUI applications
+export DISPLAY="__DISPLAY__"
+export DBUS_SESSION_BUS_ADDRESS="__DBUS__"
+
+SESSION="__SESSION_NAME__"
+
+# Log the attempt
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Reconnect script called for session: $SESSION" >> "$HOME/.smart-gif-converter/reconnect.log"
+
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Session exists, launching terminal" >> "$HOME/.smart-gif-converter/reconnect.log"
+    
+    # Create restart-monitor script that will run inside tmux after reconnecting
+    RESTART_MONITOR="$HOME/.smart-gif-converter/restart-monitor-$$\.sh"
+    cat > "$RESTART_MONITOR" << 'RESTART_EOF'
+#!/bin/bash
+# Restart terminal monitor with NEW terminal PID
+MONITOR_LOG="$HOME/.smart-gif-converter/monitor-inside-tmux.log"
+SESSION="__SESSION__"
+
+# Preserve display and dbus for notifications
+export DISPLAY="__DISPLAY__"
+export DBUS_SESSION_BUS_ADDRESS="__DBUS__"
+
+# Find the NEW terminal PID (the one we just opened)
+TERMINAL_PID=""
+current_pid=$$
+depth=0
+while [[ $depth -lt 30 ]]; do
+    parent_pid=$(ps -o ppid= -p $current_pid 2>/dev/null | tr -d ' ')
+    [[ -z "$parent_pid" || "$parent_pid" == "1" || "$parent_pid" == "0" ]] && break
+    
+    proc_name=$(ps -o comm= -p $current_pid 2>/dev/null | tr -d ' ')
+    
+    if [[ "$proc_name" =~ ^(konsole|gnome-terminal|xterm|alacritty|kitty|wezterm|warp|warp-terminal|tilix|terminator|st|urxvt|rxvt|foot|contour)$ ]]; then
+        TERMINAL_PID=$current_pid
+        break
+    fi
+    
+    current_pid=$parent_pid
+    ((depth++))
+done
+
+if [[ -n "$TERMINAL_PID" ]]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Restarting monitor for new terminal PID: $TERMINAL_PID" >> "$MONITOR_LOG"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] DISPLAY: ${DISPLAY:-NOT SET}" >> "$MONITOR_LOG"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] DBUS: ${DBUS_SESSION_BUS_ADDRESS:-NOT SET}" >> "$MONITOR_LOG"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] notify-send: $(command -v notify-send || echo 'NOT FOUND')" >> "$MONITOR_LOG"
+    
+    # Kill any existing monitor
+    pkill -f "tail --pid=.* -f /dev/null" 2>>"$MONITOR_LOG"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Old monitors killed" >> "$MONITOR_LOG"
+    
+    # Start new monitor with double-fork to survive parent exit
+    # Use nohup to ensure it persists even if parent shell exits
+    (
+        # Double fork and disown to detach completely
+        nohup bash -c '
+            MONITOR_LOG="'"$MONITOR_LOG"'"
+            TERMINAL_PID="'"$TERMINAL_PID"'"
+            SESSION="'"$SESSION"'"
+            export DISPLAY="'"$DISPLAY"'"
+            export DBUS_SESSION_BUS_ADDRESS="'"$DBUS_SESSION_BUS_ADDRESS"'"
+            
+            echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Monitor subprocess PID: $$ starting to watch terminal $TERMINAL_PID" >> "$MONITOR_LOG"
+            
+            tail --pid="$TERMINAL_PID" -f /dev/null 2>/dev/null || while kill -0 "$TERMINAL_PID" 2>/dev/null; do sleep 0.5; done
+            
+            echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] New terminal $TERMINAL_PID has exited!" >> "$MONITOR_LOG"
+            
+            if tmux has-session -t "$SESSION" 2>/dev/null; then
+                echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Tmux session still exists, starting reminder loop" >> "$MONITOR_LOG"
+                
+                # Start reminder loop
+                REMINDER_COUNT=0
+                while tmux has-session -t "$SESSION" 2>/dev/null; do
+                    REMINDER_COUNT=$((REMINDER_COUNT + 1))
+                    
+                    if [ $REMINDER_COUNT -eq 1 ]; then
+                        REMINDER_MSG="Your GIF conversion is still active in tmux!"
+                    else
+                        REMINDER_MSG="Reminder #$REMINDER_COUNT: Your GIF conversion is still active in tmux!"
+                    fi
+                    
+                    echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Sending notification #$REMINDER_COUNT" >> "$MONITOR_LOG"
+                    
+                    notify-send -u critical -t 0 -i video-x-generic \
+                        -a "GIF Converter" \
+                        --action="reconnect=Reconnect Now" \
+                        "💻 Terminal Closed Again - Conversion Still Running!" \
+                        "$REMINDER_MSG\n\n📍 Session: $SESSION\n\nClick '"'Reconnect Now'"' to open a new terminal." \
+                        2>>"$MONITOR_LOG" | \
+                        while read action; do
+                            echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Action received: $action" >> "$MONITOR_LOG"
+                            if [ "$action" = "reconnect" ]; then
+                                echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] User clicked reconnect again" >> "$MONITOR_LOG"
+                                "$HOME/.smart-gif-converter/reconnect-tmux.sh" 2>>"$MONITOR_LOG" &
+                                exit 0  # Exit loop when user reconnects
+                            fi
+                        done
+                    
+                    # If notification was dismissed or ignored, wait 1 minute before next reminder
+                    echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Waiting 60 seconds for next reminder" >> "$MONITOR_LOG"
+                    sleep 60
+                done
+                
+                echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Reminder loop ended - tmux session no longer exists" >> "$MONITOR_LOG"
+            else
+                echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Tmux session ended, no notification needed" >> "$MONITOR_LOG"
+            fi
+        ' >>"$MONITOR_LOG" 2>&1 &
+    ) &
+    
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Monitor restarted successfully" >> "$MONITOR_LOG"
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Failed to find new terminal PID" >> "$MONITOR_LOG"
+fi
+
+# Clean up this script
+rm -f "$0"
+RESTART_EOF
+    sed -i "s|__SESSION__|$SESSION|g" "$RESTART_MONITOR"
+    sed -i "s|__DISPLAY__|${DISPLAY:-:0}|g" "$RESTART_MONITOR"
+    sed -i "s|__DBUS__|${DBUS_SESSION_BUS_ADDRESS}|g" "$RESTART_MONITOR"
+    chmod +x "$RESTART_MONITOR"
+    
+    # Find available terminal and open it with restart-monitor script sourced BEFORE tmux attach
+    # This ensures the monitor restarts in the new terminal's context
+    if command -v konsole >/dev/null 2>&1; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching konsole" >> "$HOME/.smart-gif-converter/reconnect.log"
+        konsole -e bash -c "source '$RESTART_MONITOR'; exec tmux attach-session -t '$SESSION'" >> "$HOME/.smart-gif-converter/reconnect.log" 2>&1 &
+    elif command -v gnome-terminal >/dev/null 2>&1; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching gnome-terminal" >> "$HOME/.smart-gif-converter/reconnect.log"
+        gnome-terminal -- bash -c "source '$RESTART_MONITOR'; exec tmux attach-session -t '$SESSION'" >> "$HOME/.smart-gif-converter/reconnect.log" 2>&1 &
+    elif command -v xterm >/dev/null 2>&1; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching xterm" >> "$HOME/.smart-gif-converter/reconnect.log"
+        xterm -e bash -c "source '$RESTART_MONITOR'; exec tmux attach-session -t '$SESSION'" >> "$HOME/.smart-gif-converter/reconnect.log" 2>&1 &
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] No terminal found" >> "$HOME/.smart-gif-converter/reconnect.log"
+        notify-send "Cannot reconnect" "No terminal emulator found. Run: tmux attach -t $SESSION"
+    fi
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Session does not exist" >> "$HOME/.smart-gif-converter/reconnect.log"
+    notify-send "Session ended" "The tmux session has already completed."
+fi
+RECONNECT_EOF
+            sed -i "s|__SESSION_NAME__|$SESSION_NAME|g" "$RECONNECT_SCRIPT"
+            sed -i "s|__DISPLAY__|${DISPLAY:-:0}|g" "$RECONNECT_SCRIPT"
+            sed -i "s|__DBUS__|${DBUS_SESSION_BUS_ADDRESS}|g" "$RECONNECT_SCRIPT"
+            chmod +x "$RECONNECT_SCRIPT"
+            
+            # Send clickable notification with 1-minute reminder loop
+            # Note: Actions work in KDE Plasma, GNOME, etc.
+            # Run action handler in background
+            (
+                REMINDER_COUNT=0
+                while tmux has-session -t "$SESSION_NAME" 2>/dev/null; do
+                    REMINDER_COUNT=$((REMINDER_COUNT + 1))
+                    
+                    if [ $REMINDER_COUNT -eq 1 ]; then
+                        REMINDER_MSG="Your GIF conversion is still active in tmux!"
+                    else
+                        REMINDER_MSG="Reminder #$REMINDER_COUNT: Your GIF conversion is still active in tmux!"
+                    fi
+                    
+                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Sending notification #$REMINDER_COUNT" >> "$MONITOR_LOG"
+                    
+                    notify-send -u critical -t 0 -i video-x-generic \
+                        -a "GIF Converter" \
+                        --action="reconnect=Reconnect Now" \
+                        "💻 Terminal Closed - Conversion Still Running!" \
+                        "$REMINDER_MSG\n\n📍 Session: $SESSION_NAME\n\nClick 'Reconnect Now' to open a new terminal." \
+                        2>>"$MONITOR_LOG" | \
+                        while read action; do
+                            if [ "$action" = "reconnect" ]; then
+                                echo "[$(date '+%Y-%m-%d %H:%M:%S')] User clicked reconnect" >> "$MONITOR_LOG"
+                                "$RECONNECT_SCRIPT" 2>>"$MONITOR_LOG" &
+                                exit 0  # Exit loop when user reconnects
+                            fi
+                        done
+                    
+                    # If notification was dismissed or ignored, wait 1 minute before next reminder
+                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waiting 60 seconds for next reminder" >> "$MONITOR_LOG"
+                    sleep 60
+                done
+                
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] Reminder loop ended - tmux session no longer exists" >> "$MONITOR_LOG"
+            ) &
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ Reminder loop started" >> "$MONITOR_LOG"
+        else
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Tmux session ended, no notification needed" >> "$MONITOR_LOG"
+        fi
+    ) &
+    
+    MONITOR_BG_PID=$!
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Monitor background PID: $MONITOR_BG_PID" >> "$MONITOR_LOG"
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ Monitor NOT started - checks failed" >> "$MONITOR_LOG"
+    [[ "$NOTIFY_ENABLED" != "true" ]] && echo "  - NOTIFY_ENABLED is not true" >> "$MONITOR_LOG"
+    [[ "$NOTIFY_TERMINAL_CLOSED" != "true" ]] && echo "  - NOTIFY_TERMINAL_CLOSED is not true" >> "$MONITOR_LOG"
+    [[ -z "$TERMINAL_PID" ]] && echo "  - TERMINAL_PID is not set" >> "$MONITOR_LOG"
+    ! command -v notify-send >/dev/null 2>&1 && echo "  - notify-send not found" >> "$MONITOR_LOG"
 fi
 
 cd "$(pwd)" || exit 1
@@ -447,6 +727,11 @@ TMUX_EOF
         # Substitute variables into the wrapper
         sed -i "s|\$SCRIPT_PATH|$SCRIPT_PATH|g" "$TMUX_WRAPPER"
         sed -i "s|\$SCRIPT_ARGS|$SCRIPT_ARGS|g" "$TMUX_WRAPPER"
+        
+        # Add environment variable exports at the beginning of the script
+        # Insert after the shebang line
+        sed -i "2i\\# Environment variables passed from parent\\nexport NOTIFY_ENABLED='$NOTIFY_ENABLED'\\nexport NOTIFY_TERMINAL_CLOSED='$NOTIFY_TERMINAL_CLOSED'\\nexport SESSION_NAME='$SESSION_NAME'\\nexport TERMINAL_PID='$TERMINAL_PID'\\nexport DISPLAY='$DISPLAY'\\nexport DBUS_SESSION_BUS_ADDRESS='$DBUS_SESSION_BUS_ADDRESS'\\n" "$TMUX_WRAPPER"
+        
         chmod +x "$TMUX_WRAPPER"
         exec tmux new-session -s "$SESSION_NAME" "$TMUX_WRAPPER"
     fi
@@ -3663,6 +3948,15 @@ init_log_directory() {
     if [[ -f "$CONVERSION_LOG" ]] && [[ $(wc -l < "$CONVERSION_LOG") -gt 1000 ]]; then
         tail -800 "$CONVERSION_LOG" > "${CONVERSION_LOG}.tmp" && mv "${CONVERSION_LOG}.tmp" "$CONVERSION_LOG"
     fi
+    
+    # Clean up old validation cache corrupt backups (keep only last 5, delete the rest)
+    # Do this in background to not slow down startup
+    (
+        local corrupt_count=$(ls -1 "$LOG_DIR/validation_cache.db.corrupt."* 2>/dev/null | wc -l)
+        if [[ $corrupt_count -gt 5 ]]; then
+            ls -t "$LOG_DIR/validation_cache.db.corrupt."* 2>/dev/null | tail -n +6 | xargs -r rm -f 2>/dev/null
+        fi
+    ) &
 }
 
 # 🔒 Check and fix file/directory permissions
@@ -15659,12 +15953,15 @@ validate_video_file() {
     # Validate cache integrity on first access (silent rebuild)
     if [[ -f "$validation_cache" ]]; then
         # Check if cache is corrupted (malformed entries)
-        if ! head -1 "$validation_cache" 2>/dev/null | grep -qE '^.+\|[0-9]+\|[0-9]+\|(VALID|INVALID)$'; then
+        if ! head -1 "$validation_cache" 2>/dev/null | grep -qE '^.+\\|[0-9]+\\|[0-9]+\\|(VALID|INVALID)$'; then
             # First line is corrupted or invalid format
             if [[ $(wc -l < "$validation_cache" 2>/dev/null || echo 0) -gt 0 ]]; then
                 # Silently rebuild cache
                 mv "$validation_cache" "${validation_cache}.corrupt.$(date +%s)" 2>/dev/null
                 echo "# Validation Cache v1.0 - $(date)" > "$validation_cache"
+                
+                # Clean up old corrupt backups (keep only last 5)
+                ( ls -t "${validation_cache}.corrupt."* 2>/dev/null | tail -n +6 | xargs -r rm -f ) &
             fi
         fi
         
