@@ -472,10 +472,11 @@ if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != 
         
         # Detect terminal PID NOW (before entering tmux where we can't see it)
         MONITOR_DEBUG_LOG="$LOG_DIR/terminal-detect-debug.log"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] === Terminal Detection (BEFORE tmux) ===" > "$MONITOR_DEBUG_LOG"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Current PID: $$" >> "$MONITOR_DEBUG_LOG"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] NOTIFY_ENABLED: $NOTIFY_ENABLED" >> "$MONITOR_DEBUG_LOG"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] NOTIFY_TERMINAL_CLOSED: $NOTIFY_TERMINAL_CLOSED" >> "$MONITOR_DEBUG_LOG"
+        mkdir -p "$LOG_DIR" 2>/dev/null || true
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] === Terminal Detection (BEFORE tmux) ===" > "$MONITOR_DEBUG_LOG" 2>/dev/null || true
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Current PID: $$" >> "$MONITOR_DEBUG_LOG" 2>/dev/null || true
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] NOTIFY_ENABLED: $NOTIFY_ENABLED" >> "$MONITOR_DEBUG_LOG" 2>/dev/null || true
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] NOTIFY_TERMINAL_CLOSED: $NOTIFY_TERMINAL_CLOSED" >> "$MONITOR_DEBUG_LOG" 2>/dev/null || true
         
         TERMINAL_PID=""
         current_pid=$$
@@ -484,12 +485,13 @@ if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != 
             parent_pid=$(ps -o ppid= -p $current_pid 2>/dev/null | tr -d ' ')
             [[ -z "$parent_pid" || "$parent_pid" == "1" || "$parent_pid" == "0" ]] && break
             
-            proc_name=$(ps -o comm= -p $current_pid 2>/dev/null | tr -d ' ')
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Depth $depth: PID $current_pid = $proc_name" >> "$MONITOR_DEBUG_LOG"
+            # Check the PARENT process (moving up the tree)
+            proc_name=$(ps -o comm= -p $parent_pid 2>/dev/null | tr -d ' ')
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Depth $depth: PID $parent_pid = $proc_name" >> "$MONITOR_DEBUG_LOG" 2>/dev/null || true
             
             if [[ "$proc_name" =~ ^(konsole|gnome-terminal|xterm|alacritty|kitty|wezterm|warp|warp-terminal|tilix|terminator|st|urxvt|rxvt|foot|contour)$ ]]; then
-                TERMINAL_PID=$current_pid
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ Found terminal: $proc_name (PID: $TERMINAL_PID)" >> "$MONITOR_DEBUG_LOG"
+                TERMINAL_PID=$parent_pid
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ Found terminal: $proc_name (PID: $TERMINAL_PID)" >> "$MONITOR_DEBUG_LOG" 2>/dev/null || true
                 break
             fi
             
@@ -498,10 +500,10 @@ if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != 
         done
         
         if [[ -z "$TERMINAL_PID" ]]; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ No terminal found" >> "$MONITOR_DEBUG_LOG"
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ No terminal found" >> "$MONITOR_DEBUG_LOG" 2>/dev/null || true
         fi
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] DISPLAY: ${DISPLAY:-NOT SET}" >> "$MONITOR_DEBUG_LOG"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] DBUS: ${DBUS_SESSION_BUS_ADDRESS:-NOT SET}" >> "$MONITOR_DEBUG_LOG"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] DISPLAY: ${DISPLAY:-NOT SET}" >> "$MONITOR_DEBUG_LOG" 2>/dev/null || true
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] DBUS: ${DBUS_SESSION_BUS_ADDRESS:-NOT SET}" >> "$MONITOR_DEBUG_LOG" 2>/dev/null || true
         
         # Prepare script path and arguments
         SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
@@ -540,16 +542,39 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] notify-send available: $(command -v notify-
 if [[ "$NOTIFY_ENABLED" == "true" && "$NOTIFY_TERMINAL_CLOSED" == "true" ]] && \
    [[ -n "$TERMINAL_PID" ]] && command -v notify-send >/dev/null 2>&1; then
     
+    # Kill any existing monitor for this session using PID file
+    MONITOR_PID_FILE="$HOME/.smart-gif-converter/monitor-${SESSION_NAME}.pid"
+    if [[ -f "$MONITOR_PID_FILE" ]]; then
+        OLD_MONITOR_PID=$(cat "$MONITOR_PID_FILE" 2>/dev/null)
+        if [[ -n "$OLD_MONITOR_PID" ]] && kill -0 "$OLD_MONITOR_PID" 2>/dev/null; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Found old monitor PID: $OLD_MONITOR_PID, killing it" >> "$MONITOR_LOG"
+            kill -9 "$OLD_MONITOR_PID" 2>/dev/null || true
+            # Also kill any child processes
+            pkill -P "$OLD_MONITOR_PID" 2>/dev/null || true
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Old monitor killed" >> "$MONITOR_LOG"
+        else
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Old monitor PID file exists but process not running" >> "$MONITOR_LOG"
+        fi
+        rm -f "$MONITOR_PID_FILE" 2>/dev/null || true
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] No old monitor PID file found (first run or clean exit)" >> "$MONITOR_LOG"
+    fi
+    
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ All checks passed, starting monitor" >> "$MONITOR_LOG"
     
     # Start monitor in background
     (
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Monitor subprocess started, waiting for PID $TERMINAL_PID to exit" >> "$MONITOR_LOG"
+        # Save monitor PID to file immediately
+        echo $$ > "$MONITOR_PID_FILE"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Monitor subprocess PID $$ started, waiting for PID $TERMINAL_PID to exit" >> "$MONITOR_LOG"
         
         # Wait for terminal to close
         tail --pid="$TERMINAL_PID" -f /dev/null 2>/dev/null || while kill -0 "$TERMINAL_PID" 2>/dev/null; do sleep 0.5; done
         
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Terminal $TERMINAL_PID has exited!" >> "$MONITOR_LOG"
+        
+        # Clean up our PID file since we're the active monitor that detected terminal exit
+        rm -f "$MONITOR_PID_FILE" 2>/dev/null || true
         
         # Terminal closed - send notification if tmux session still exists
         if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
@@ -608,9 +633,22 @@ if [[ -n "$TERMINAL_PID" ]]; then
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] DBUS: ${DBUS_SESSION_BUS_ADDRESS:-NOT SET}" >> "$MONITOR_LOG"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] notify-send: $(command -v notify-send || echo 'NOT FOUND')" >> "$MONITOR_LOG"
     
-    # Kill any existing monitor
-    pkill -f "tail --pid=.* -f /dev/null" 2>>"$MONITOR_LOG"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Old monitors killed" >> "$MONITOR_LOG"
+    # Kill any existing monitor using PID file
+    MONITOR_PID_FILE="$HOME/.smart-gif-converter/monitor-$SESSION.pid"
+    if [[ -f "$MONITOR_PID_FILE" ]]; then
+        OLD_MONITOR_PID=$(cat "$MONITOR_PID_FILE" 2>/dev/null)
+        if [[ -n "$OLD_MONITOR_PID" ]] && kill -0 "$OLD_MONITOR_PID" 2>/dev/null; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Found old monitor PID: $OLD_MONITOR_PID, killing it" >> "$MONITOR_LOG"
+            kill -9 "$OLD_MONITOR_PID" 2>/dev/null || true
+            pkill -P "$OLD_MONITOR_PID" 2>/dev/null || true
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Old monitor killed" >> "$MONITOR_LOG"
+        else
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Old monitor PID file exists but process not running" >> "$MONITOR_LOG"
+        fi
+        rm -f "$MONITOR_PID_FILE" 2>/dev/null || true
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] No old monitor PID file found (first run or clean exit)" >> "$MONITOR_LOG"
+    fi
     
     # Start new monitor with double-fork to survive parent exit
     # Use nohup to ensure it persists even if parent shell exits
@@ -618,16 +656,22 @@ if [[ -n "$TERMINAL_PID" ]]; then
         # Double fork and disown to detach completely
         nohup bash -c '
             MONITOR_LOG="'"$MONITOR_LOG"'"
+            MONITOR_PID_FILE="'"$MONITOR_PID_FILE"'"
             TERMINAL_PID="'"$TERMINAL_PID"'"
             SESSION="'"$SESSION"'"
             export DISPLAY="'"$DISPLAY"'"
             export DBUS_SESSION_BUS_ADDRESS="'"$DBUS_SESSION_BUS_ADDRESS"'"
             
+            # Save monitor PID to file immediately
+            echo $$ > "$MONITOR_PID_FILE"
             echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Monitor subprocess PID: $$ starting to watch terminal $TERMINAL_PID" >> "$MONITOR_LOG"
             
             tail --pid="$TERMINAL_PID" -f /dev/null 2>/dev/null || while kill -0 "$TERMINAL_PID" 2>/dev/null; do sleep 0.5; done
             
             echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] New terminal $TERMINAL_PID has exited!" >> "$MONITOR_LOG"
+            
+            # Clean up our PID file since we detected terminal exit
+            rm -f "$MONITOR_PID_FILE" 2>/dev/null || true
             
             if tmux has-session -t "$SESSION" 2>/dev/null; then
                 echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Tmux session still exists, starting reminder loop" >> "$MONITOR_LOG"
@@ -1275,6 +1319,12 @@ update_file_progress() {
     # Show full filename without truncation
     local display_file="$current_file"
     
+    # Truncate long filenames to prevent line wrapping
+    local max_filename_length=50
+    if [[ ${#display_file} -gt $max_filename_length ]]; then
+        display_file="${display_file:0:47}..."
+    fi
+    
     # Clear the entire line first to prevent display corruption
     printf "\r\033[K"  # Clear from cursor to end of line
     printf "  ${CYAN}%s [${NC}" "$operation"
@@ -1282,10 +1332,7 @@ update_file_progress() {
     for ((i=0; i<empty; i++)); do printf "${GRAY}░${NC}"; done
     printf "${CYAN}] ${BOLD}%3d%%${NC} (${BOLD}%d${NC}/${BOLD}%d${NC})" "$progress" "$current" "$total"
     if [[ -n "$current_file" ]]; then
-        printf "\n\033[K"  # New line and clear it
-        printf "  ${GRAY}📄 Analyzing: ${BOLD}%s${NC}" "$display_file"
-        printf "\033[K"  # Clear rest of line to remove any leftover characters
-        printf "\r\033[1A"  # Move cursor back up to progress line
+        printf " ${GRAY}%s${NC}" "$display_file"
     fi
 }
 
@@ -9576,17 +9623,15 @@ detect_corrupted_videos() {
         [[ ! -f "$video_file" ]] && continue
         ((scanned_count++))
         
-        # Show progress
-        if [[ $((scanned_count % 10)) -eq 0 || $scanned_count -eq $total_videos ]]; then
-            local progress=$((scanned_count * 100 / total_videos))
-            local filled=$((progress * 30 / 100))
-            local empty=$((30 - filled))
-            
-            printf "\r  ${CYAN}["
-            for ((k=0; k<filled; k++)); do printf "${GREEN}█${NC}"; done
-            for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
-            printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d/%d)${NC}" "$progress" "$scanned_count" "$total_videos"
-        fi
+        # Show progress (update on every file)
+        local progress=$((scanned_count * 100 / total_videos))
+        local filled=$((progress * 30 / 100))
+        local empty=$((30 - filled))
+        
+        printf "\r  ${CYAN}["
+        for ((k=0; k<filled; k++)); do printf "${GREEN}█${NC}"; done
+        for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
+        printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d/%d)${NC}" "$progress" "$scanned_count" "$total_videos"
         
         # Multi-layer corruption validation (bulletproof)
         local is_corrupted=false
@@ -9604,7 +9649,7 @@ detect_corrupted_videos() {
         # Layer 2: Basic codec detection with ffprobe
         if command -v ffprobe >/dev/null 2>&1; then
             if ! timeout 5 ffprobe -v error -select_streams v:0 -show_entries stream=codec_name \
-                -of csv=p=0 "$video_file" >/dev/null 2>&1; then
+                -of csv=p=0 -- "$video_file" >/dev/null 2>&1; then
                 ((failed_checks++))
                 failure_reasons+=("No video codec detected")
             fi
@@ -9613,9 +9658,9 @@ detect_corrupted_videos() {
         # Layer 3: Try to read video duration and resolution
         if command -v ffprobe >/dev/null 2>&1; then
             local duration=$(timeout 5 ffprobe -v error -show_entries format=duration \
-                -of csv=p=0 "$video_file" 2>/dev/null | cut -d'.' -f1)
+                -of csv=p=0 -- "$video_file" 2>/dev/null | cut -d'.' -f1)
             local width=$(timeout 5 ffprobe -v error -select_streams v:0 -show_entries stream=width \
-                -of csv=p=0 "$video_file" 2>/dev/null)
+                -of csv=p=0 -- "$video_file" 2>/dev/null)
             
             if [[ -z "$duration" || "$duration" == "0" || -z "$width" || "$width" == "0" ]]; then
                 ((failed_checks++))
@@ -9626,11 +9671,11 @@ detect_corrupted_videos() {
         # Layer 4: Attempt to extract a frame (ultimate test)
         if command -v ffmpeg >/dev/null 2>&1; then
             local test_frame="/tmp/corruption_test_${RANDOM}.jpg"
-            if ! timeout 8 ffmpeg -i "$video_file" -vframes 1 -f image2 "$test_frame" >/dev/null 2>&1; then
+            if ! timeout 8 ffmpeg -i -- "$video_file" -vframes 1 -f image2 -- "$test_frame" >/dev/null 2>&1; then
                 ((failed_checks++))
                 failure_reasons+=("Cannot extract frames")
             fi
-            rm -f "$test_frame" 2>/dev/null
+            rm -f -- "$test_frame" 2>/dev/null
         fi
         
         # Mark as corrupted only if multiple checks failed (at least 2)
@@ -13070,12 +13115,12 @@ detect_duplicate_gifs() {
             local remove_source_ctime=$(stat -c%Z "$remove_source" 2>/dev/null || echo "0")
             
             # Get source video properties
-            local source_duration=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$remove_source" 2>/dev/null | cut -d'.' -f1 || echo "0")
-            local source_frames=$(ffprobe -v error -select_streams v:0 -show_entries stream=nb_frames -of default=noprint_wrappers=1:nokey=1 "$remove_source" 2>/dev/null || echo "0")
+            local source_duration=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 -- "$remove_source" 2>/dev/null | cut -d'.' -f1 || echo "0")
+            local source_frames=$(ffprobe -v error -select_streams v:0 -show_entries stream=nb_frames -of default=noprint_wrappers=1:nokey=1 -- "$remove_source" 2>/dev/null || echo "0")
             
             # If source frames not available, estimate from duration and fps
             if [[ "$source_frames" == "0" || "$source_frames" == "N/A" ]]; then
-                local source_fps=$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=noprint_wrappers=1:nokey=1 "$remove_source" 2>/dev/null | head -1 || echo "0/1")
+                local source_fps=$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=noprint_wrappers=1:nokey=1 -- "$remove_source" 2>/dev/null | head -1 || echo "0/1")
                 if [[ "$source_fps" =~ ^([0-9]+)/([0-9]+)$ ]]; then
                     local fps_num="${BASH_REMATCH[1]}"
                     local fps_den="${BASH_REMATCH[2]}"
@@ -13154,12 +13199,12 @@ detect_duplicate_gifs() {
             local keep_source_mtime=$(stat -c%Y -- "$keep_source" 2>/dev/null || echo "0")
             local keep_source_ctime=$(stat -c%Z "$keep_source" 2>/dev/null || echo "0")
             
-            local keep_source_duration=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$keep_source" 2>/dev/null | cut -d'.' -f1 || echo "0")
-            local keep_source_frames=$(ffprobe -v error -select_streams v:0 -show_entries stream=nb_frames -of default=noprint_wrappers=1:nokey=1 "$keep_source" 2>/dev/null || echo "0")
+            local keep_source_duration=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 -- "$keep_source" 2>/dev/null | cut -d'.' -f1 || echo "0")
+            local keep_source_frames=$(ffprobe -v error -select_streams v:0 -show_entries stream=nb_frames -of default=noprint_wrappers=1:nokey=1 -- "$keep_source" 2>/dev/null || echo "0")
             
             # Estimate frames if not available
             if [[ "$keep_source_frames" == "0" || "$keep_source_frames" == "N/A" ]]; then
-                local keep_source_fps=$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=noprint_wrappers=1:nokey=1 "$keep_source" 2>/dev/null | head -1 || echo "0/1")
+                local keep_source_fps=$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=noprint_wrappers=1:nokey=1 -- "$keep_source" 2>/dev/null | head -1 || echo "0/1")
                 if [[ "$keep_source_fps" =~ ^([0-9]+)/([0-9]+)$ ]]; then
                     local fps_num="${BASH_REMATCH[1]}"
                     local fps_den="${BASH_REMATCH[2]}"
@@ -16258,7 +16303,7 @@ detect_video_corruption() {
     fi
     
     # Test 2: Basic metadata check (less strict)
-    if ! ffprobe -v quiet -show_entries format=duration -of csv=p=0 "$file" 2>"$temp_error" >/dev/null; then
+    if ! ffprobe -v quiet -show_entries format=duration -of csv=p=0 -- "$file" 2>"$temp_error" >/dev/null; then
         local error_msg="Cannot read basic metadata"
         [[ -s "$temp_error" ]] && error_msg="$(head -3 "$temp_error" | tr '\n' ' ')"
         log_error "Corrupt video file - metadata unreadable" "$file" "$error_msg" "${BASH_LINENO[0]}" "detect_video_corruption"
@@ -16356,7 +16401,7 @@ validate_output_file() {
     fi
     
     # Test 4: Basic GIF format check with FFprobe (simplified)
-    if ! ffprobe -v quiet -show_entries format=format_name -of csv=p=0 "$output_file" 2>/dev/null | grep -q "gif\|image2"; then
+    if ! ffprobe -v quiet -show_entries format=format_name -of csv=p=0 -- "$output_file" 2>/dev/null | grep -q "gif\\|image2"; then
         local error_msg="Not recognized as GIF format"
         log_error "Invalid GIF format" "$source_file" "Output: $output_file" "${BASH_LINENO[0]}" "validate_output_file"
         echo -e "  ${RED}❌ Invalid GIF format${NC}"
@@ -21230,7 +21275,7 @@ convert_video() {
     show_file_progress 1 "Analyzing video & generating palette..."
     local filter_chain=$(build_filter_chain "$file")
     
-    if ! ffmpeg -i "$file" -vf "$filter_chain" -y "$palette_file" -loglevel error 2>/dev/null; then
+    if ! ffmpeg -i -- "$file" -vf "$filter_chain" -y -- "$palette_file" -loglevel error 2>/dev/null; then
         log_error "Failed to generate palette" "$file"
         echo -e "\n  ${RED}❌ Failed to generate palette${NC}"
         cleanup_temp_files "${file%.*}"
@@ -21251,7 +21296,7 @@ convert_video() {
     
     local conversion_filter="fps=${FRAMERATE},scale=${RESOLUTION}:force_original_aspect_ratio=decrease:flags=${SCALING_ALGO},pad=${RESOLUTION}:(ow-iw)/2:(oh-ih)/2:black[x];[x][1:v]paletteuse=$dither_option"
     
-    if ! ffmpeg -i "$file" -i "$palette_file" -lavfi "$conversion_filter" -y "$output_file" -loglevel error 2>/dev/null; then
+    if ! ffmpeg -i -- "$file" -i -- "$palette_file" -lavfi "$conversion_filter" -y -- "$output_file" -loglevel error 2>/dev/null; then
         log_error "Failed to convert to GIF" "$file"
         echo -e "\n  ${RED}❌ Conversion failed${NC}"
         cleanup_temp_files "${file%.*}"
@@ -21376,7 +21421,7 @@ apply_preset() {
 # 🧠 Auto-detect optimal settings based on input video
 auto_detect_settings() {
     local file="$1"
-    local info=$(ffprobe -v quiet -print_format json -show_format -show_streams "$file" 2>/dev/null)
+    local info=$(ffprobe -v quiet -print-format json -show_format -show_streams -- "$file" 2>/dev/null)
     
     if [[ $? -eq 0 ]]; then
         local width=$(echo "$info" | jq -r '.streams[0].width // empty')
