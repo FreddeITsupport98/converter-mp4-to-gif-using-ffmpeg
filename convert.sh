@@ -220,7 +220,54 @@ exit 0
 MONITOR_EOF
 
     # Substitute variables including DBUS session for notifications
-    local dbus_session="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}"
+    # Try multiple methods to detect DBUS session (works across all major desktop environments)
+    local dbus_session="$DBUS_SESSION_BUS_ADDRESS"
+    
+    if [[ -z "$dbus_session" ]]; then
+        # Method 1: Standard user bus (works on most modern systems)
+        if [[ -S "/run/user/$(id -u)/bus" ]]; then
+            dbus_session="unix:path=/run/user/$(id -u)/bus"
+        # Method 2: Extract from desktop environment session processes
+        # Ordered by popularity/likelihood
+        elif [[ -n "$(pgrep -u $(id -u) 'plasmashell|kded5|kded6')" ]]; then
+            # KDE Plasma
+            dbus_session=$(grep -z '^DBUS_SESSION_BUS_ADDRESS=' /proc/$(pgrep -u $(id -u) plasmashell | head -1)/environ 2>/dev/null | tr -d '\0' | cut -d'=' -f2-)
+        elif [[ -n "$(pgrep -u $(id -u) gnome-session)" ]]; then
+            # GNOME
+            dbus_session=$(grep -z '^DBUS_SESSION_BUS_ADDRESS=' /proc/$(pgrep -u $(id -u) gnome-session | head -1)/environ 2>/dev/null | tr -d '\0' | cut -d'=' -f2-)
+        elif [[ -n "$(pgrep -u $(id -u) cinnamon-session)" ]]; then
+            # Cinnamon (Linux Mint)
+            dbus_session=$(grep -z '^DBUS_SESSION_BUS_ADDRESS=' /proc/$(pgrep -u $(id -u) cinnamon-session | head -1)/environ 2>/dev/null | tr -d '\0' | cut -d'=' -f2-)
+        elif [[ -n "$(pgrep -u $(id -u) xfce4-session)" ]]; then
+            # XFCE
+            dbus_session=$(grep -z '^DBUS_SESSION_BUS_ADDRESS=' /proc/$(pgrep -u $(id -u) xfce4-session | head -1)/environ 2>/dev/null | tr -d '\0' | cut -d'=' -f2-)
+        elif [[ -n "$(pgrep -u $(id -u) mate-session)" ]]; then
+            # MATE
+            dbus_session=$(grep -z '^DBUS_SESSION_BUS_ADDRESS=' /proc/$(pgrep -u $(id -u) mate-session | head -1)/environ 2>/dev/null | tr -d '\0' | cut -d'=' -f2-)
+        elif [[ -n "$(pgrep -u $(id -u) budgie-panel)" ]]; then
+            # Budgie
+            dbus_session=$(grep -z '^DBUS_SESSION_BUS_ADDRESS=' /proc/$(pgrep -u $(id -u) budgie-panel | head -1)/environ 2>/dev/null | tr -d '\0' | cut -d'=' -f2-)
+        elif [[ -n "$(pgrep -u $(id -u) lxqt-session)" ]]; then
+            # LXQt
+            dbus_session=$(grep -z '^DBUS_SESSION_BUS_ADDRESS=' /proc/$(pgrep -u $(id -u) lxqt-session | head -1)/environ 2>/dev/null | tr -d '\0' | cut -d'=' -f2-)
+        elif [[ -n "$(pgrep -u $(id -u) lxsession)" ]]; then
+            # LXDE
+            dbus_session=$(grep -z '^DBUS_SESSION_BUS_ADDRESS=' /proc/$(pgrep -u $(id -u) lxsession | head -1)/environ 2>/dev/null | tr -d '\0' | cut -d'=' -f2-)
+        elif [[ -n "$(pgrep -u $(id -u) gala)" ]]; then
+            # Pantheon (elementary OS)
+            dbus_session=$(grep -z '^DBUS_SESSION_BUS_ADDRESS=' /proc/$(pgrep -u $(id -u) gala | head -1)/environ 2>/dev/null | tr -d '\0' | cut -d'=' -f2-)
+        elif [[ -n "$(pgrep -u $(id -u) deepin-wm)" ]]; then
+            # Deepin
+            dbus_session=$(grep -z '^DBUS_SESSION_BUS_ADDRESS=' /proc/$(pgrep -u $(id -u) deepin-wm | head -1)/environ 2>/dev/null | tr -d '\0' | cut -d'=' -f2-)
+        # Method 3: Try dbus-daemon directly
+        elif [[ -n "$(pgrep -u $(id -u) dbus-daemon)" ]]; then
+            dbus_session=$(grep -z '^DBUS_SESSION_BUS_ADDRESS=' /proc/$(pgrep -u $(id -u) dbus-daemon | head -1)/environ 2>/dev/null | tr -d '\0' | cut -d'=' -f2-)
+        # Method 4: Default fallback
+        else
+            dbus_session="unix:path=/run/user/$(id -u)/bus"
+        fi
+    fi
+    
     local display_var="${DISPLAY:-:0}"
     
     sed -i "s|__SESSION_NAME__|$session_name|g" "$monitor_script"
