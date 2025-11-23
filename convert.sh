@@ -2008,8 +2008,8 @@ manual_update() {
         return 0
     fi
     
-    local remote_tag=$(echo "$release_json" | grep -o '"tag_name":"[^"]*"' | cut -d'"' -f4)
-    local release_name=$(echo "$release_json" | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
+    local remote_tag=$(echo "$release_json" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
+    local release_name=$(echo "$release_json" | sed -n 's/.*"name": *"\([^"]*\)".*/\1/p' | head -1)
     
     # Debug: show what tag we got
     if [[ -z "$remote_tag" ]]; then
@@ -2021,11 +2021,16 @@ manual_update() {
     fi
     
     # Try to extract version from tag first, then from release name
-    local remote_version=$(echo "$remote_tag" | grep -oE '[0-9]+\\.[0-9]+' | head -1)
+    # Bulletproof: remove all non-digit/non-dot characters (handles v8.0, 8.0, v8.0.1, etc)
+    local remote_version=$(echo "$remote_tag" | sed 's/[^0-9.]//g' | grep -E '^[0-9]' || echo "")
+    
+    # If tag doesn't have version, try release name
     if [[ -z "$remote_version" && -n "$release_name" ]]; then
-        # Tag doesn't have version, try release name
-        remote_version=$(echo "$release_name" | grep -oE '[0-9]+\\.[0-9]+' | head -1)
+        remote_version=$(echo "$release_name" | sed 's/[^0-9.]//g' | grep -E '^[0-9]' || echo "")
     fi
+    
+    # Clean up version (remove leading/trailing dots, multiple dots)
+    remote_version=$(echo "$remote_version" | sed 's/^\.\+//;s/\.\+$//;s/\.\+/./g')
     
     local release_body=$(echo "$release_json" | grep -o '"body":"[^"]*"' | cut -d'"' -f4 | sed 's/\\\\n/\\n/g' | sed 's/\\\\r//g')
     
