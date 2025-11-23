@@ -1411,8 +1411,9 @@ check_for_updates() {
     fi
     
     # Validate update URL is reachable with HTTPS certificate verification
-    if ! curl -sI --ssl-reqd --cacert /etc/ssl/certs/ca-certificates.crt "$GITHUB_API_URL" -m 5 2>/dev/null || \
-       ! curl -sI --ssl-reqd "$GITHUB_API_URL" -m 5 2>/dev/null; then
+    # Use HEAD request but suppress output completely - we only care about exit code
+    if ! curl -sI --ssl-reqd --cacert /etc/ssl/certs/ca-certificates.crt "$GITHUB_API_URL" -m 5 >/dev/null 2>&1 && \
+       ! curl -sI --ssl-reqd "$GITHUB_API_URL" -m 5 >/dev/null 2>&1; then
         return 0  # Silently fail if GitHub unreachable or SSL verification fails
     fi
     
@@ -15825,11 +15826,29 @@ check_dependencies() {
         if ! command -v "$tool" >/dev/null 2>&1; then
             missing_required+=("$tool")
         else
-            local version=$("$tool" -version 2>/dev/null | head -1 | cut -d' ' -f1-3 2>/dev/null || echo "unknown version")
+            # Get version info based on tool-specific flags
+            local version=""
+            case "$tool" in
+                "git")
+                    version=$(git --version 2>/dev/null | head -1 || echo "unknown version")
+                    ;;
+                "curl")
+                    version=$(curl --version 2>/dev/null | head -1 || echo "unknown version")
+                    ;;
+                "ffmpeg")
+                    version=$(ffmpeg -version 2>/dev/null | head -1 | cut -d' ' -f1-3 || echo "unknown version")
+                    ;;
+                "tmux")
+                    version=$(tmux -V 2>/dev/null || echo "unknown version")
+                    ;;
+                *)
+                    version=$("$tool" -version 2>/dev/null | head -1 | cut -d' ' -f1-3 2>/dev/null || echo "unknown version")
+                    ;;
+            esac
             echo -e "  ${GREEN}✓ $tool: $version${NC}"
             
             # Check if package is up-to-date (all distros)
-            check_package_update_available "$tool"
+            check_package_update_available "$tool" 2>/dev/null
         fi
     done
     
@@ -15838,11 +15857,26 @@ check_dependencies() {
         if ! command -v "$tool" >/dev/null 2>&1; then
             missing_optional+=("$tool")
         else
-            local version=$("$tool" --version 2>/dev/null | head -1 2>/dev/null || echo "available")
+            # Get version info for optional tools
+            local version=""
+            case "$tool" in
+                "gifsicle")
+                    version=$(gifsicle --version 2>/dev/null | head -1 || echo "available")
+                    ;;
+                "jq")
+                    version=$(jq --version 2>/dev/null || echo "available")
+                    ;;
+                "convert")
+                    version=$(convert -version 2>/dev/null | head -1 | sed 's/Version: ImageMagick /ImageMagick /' || echo "available")
+                    ;;
+                *)
+                    version=$("$tool" --version 2>/dev/null | head -1 2>/dev/null || echo "available")
+                    ;;
+            esac
             echo -e "  ${GREEN}✓ $tool: $version${NC}"
             
             # Check if package is up-to-date (all distros)
-            check_package_update_available "$tool"
+            check_package_update_available "$tool" 2>/dev/null
         fi
     done
     
@@ -15882,7 +15916,8 @@ check_dependencies() {
             esac
         done
         
-        echo -ne "\n${CYAN}Would you like to install optional dependencies? [y/N]:${NC} "
+        echo ""
+        echo -ne "${CYAN}Would you like to install optional dependencies? [y/N]:${NC} "
         read -r optional_choice
         
         if [[ "$optional_choice" =~ ^[Yy]$ ]]; then
@@ -15926,8 +15961,6 @@ check_dependencies() {
         fi
     fi
     
-    echo -e "\n${GREEN}✅ Dependency check completed${NC}"
-    
     # Save successful check to cache if all required tools are present
     if [[ ${#missing_required[@]} -eq 0 ]]; then
         cat > "$cache_file" << 'EOF'
@@ -15935,7 +15968,10 @@ check_dependencies() {
 # Generated: $(date)
 # All required dependencies verified
 EOF
-        echo -e "${GRAY}  ℹ️  Cached for faster startup next time${NC}"
+        echo -e "\n${GREEN}✅ All dependencies verified successfully${NC}"
+        echo -e "${GRAY}  💾 Cached for faster startup next time${NC}"
+    else
+        echo -e "\n${YELLOW}⚠️  Dependency check completed with warnings${NC}"
     fi
 }
 
@@ -22458,6 +22494,18 @@ main() {
     
     print_header
     
+    # 🔍 Syntax validation check - verify script integrity
+    echo -e "${BLUE}🔍 Validating script syntax...${NC}"
+    if bash -n "$script_path" 2>/dev/null; then
+        echo -e "  ${GREEN}✓ Syntax check passed${NC}"
+    else
+        echo -e "  ${RED}❌ SYNTAX ERROR DETECTED!${NC}"
+        echo -e "  ${YELLOW}Running detailed check...${NC}"
+        bash -n "$script_path" 2>&1 | head -20
+        echo -e "\n${RED}Script contains syntax errors. Please fix before continuing.${NC}"
+        exit 1
+    fi
+    
     # 🛠️ Detect development mode (Git repository detection)
     detect_dev_mode 2>/dev/null || true
     
@@ -22466,12 +22514,13 @@ main() {
     
     # Automatic update check (silent, runs in background)
     # Automatically skipped if DEV_MODE=true
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BLUE}🔍 Performing system checks...${NC}"
     check_for_updates &
     
-    # System checks
-    echo -e "${BLUE}🔍 Performing system checks...${NC}"
     check_dependencies
     validate_environment
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     
     # GPU acceleration and parallel processing setup
     detect_gpu_acceleration
