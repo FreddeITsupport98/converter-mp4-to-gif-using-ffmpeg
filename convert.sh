@@ -6731,7 +6731,20 @@ compute_ratio_percent() {
     if [[ "$src_bytes" -eq 0 ]]; then
         echo "n/a"; return
     fi
-    awk "BEGIN { printf \"%.1f\", ($out_bytes*100.0)/$src_bytes }"
+    
+    # Calculate percentage difference
+    if [[ "$out_bytes" -gt "$src_bytes" ]]; then
+        # GIF is larger than original
+        local percent_increase=$(awk "BEGIN { printf \"%.1f\", (($out_bytes-$src_bytes)*100.0)/$src_bytes }")
+        echo "↑ ${percent_increase}% larger"
+    elif [[ "$out_bytes" -lt "$src_bytes" ]]; then
+        # GIF is smaller than original
+        local percent_decrease=$(awk "BEGIN { printf \"%.1f\", (($src_bytes-$out_bytes)*100.0)/$src_bytes }")
+        echo "↓ ${percent_decrease}% smaller"
+    else
+        # Same size
+        echo "same size"
+    fi
 }
 
 # 🩺 Summarize ffmpeg stderr into a concise diagnosis
@@ -16433,18 +16446,14 @@ validate_output_file() {
     # If we got this far, the GIF is likely valid
     
     # Test 7: Check for reasonable file size ratio (not too big or suspiciously small)
-    # NOTE: Video→GIF conversion typically results in 100-50000% ratio depending on quality settings
+    # NOTE: Video→GIF conversion typically results in larger files depending on quality settings
     # This is NORMAL and expected behavior - don't warn unless truly anomalous
     local source_size=$(stat -c%s -- "$source_file" 2>/dev/null || echo "1")
     local ratio=$((file_size * 100 / source_size))
     
     # Only warn if GIF is EXTREMELY large (100,000%+ = 1000x source) which might indicate issues
-    local ratio_pct_str=$(compute_ratio_percent "$file_size" "$source_size")
-    if [[ "$ratio_pct_str" != "n/a" ]]; then
-        # Compare using integer part only for threshold logic
-        local ratio_int=${ratio_pct_str%.*}
-        # Only warn if over 100,000% (1000x source) - typical GIFs are 100-30000%
-        if [[ ${ratio_int:-0} -gt 100000 ]]; then  # More than 1000x the source size
+    # Check raw ratio instead of using compute_ratio_percent since we need numeric comparison
+    if [[ $ratio -gt 100000 ]]; then  # More than 1000x the source size
             # Convert sizes to MB for readability
             local source_size_mb=$(echo "scale=2; $source_size / 1024 / 1024" | bc 2>/dev/null || echo "0.00")
             local output_size_mb=$(echo "scale=2; $file_size / 1024 / 1024" | bc 2>/dev/null || echo "0.00")
@@ -16454,7 +16463,6 @@ validate_output_file() {
             echo -e "  ${YELLOW}⚠️ Warning: Output GIF is extremely large (${multiplier}x source size)${NC}"
             log_warning "Extremely large output file" "$source_file" "Output: $output_file, Source: ${source_size_mb}MB, Output: ${output_size_mb}MB, Multiplier: ${multiplier}x" "${BASH_LINENO[0]}" "validate_output_file"
             # Don't fail, just warn
-        fi
     fi
     
     # Cleanup and success
@@ -21359,10 +21367,10 @@ convert_video() {
         fi
     fi
     
-    printf "\r  ${GREEN}✓ Completed: ${BOLD}$(basename \"$output_file\")${NC} ${MAGENTA}($(numfmt --to=iec $converted_size) - ${ratio_pct_str}% of original)${NC}\n"
+    printf "\r  ${GREEN}✓ Completed: ${BOLD}$(basename \"$output_file\")${NC} ${MAGENTA}($(numfmt --to=iec $converted_size) - ${ratio_pct_str})${NC}\n"
     
     # Log successful conversion
-    log_conversion "SUCCESS" "$file" "$output_file" "($(numfmt --to=iec $converted_size) - ${ratio_pct_str}% of original)"
+    log_conversion "SUCCESS" "$file" "$output_file" "($(numfmt --to=iec $converted_size) - ${ratio_pct_str})"
     
     ((converted_files++))
     
