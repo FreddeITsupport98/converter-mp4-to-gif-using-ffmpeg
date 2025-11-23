@@ -572,8 +572,9 @@ if [[ -n "$TERMINAL_PID" ]]; then
                     notify-send -u critical -t 0 -i video-x-generic \
                         -a "GIF Converter" \
                         --action="reconnect=Reconnect Now" \
+                        --action="kill=Kill Session" \
                         "💻 Terminal Closed Again - Conversion Still Running!" \
-                        "$REMINDER_MSG\n\n📍 Session: $SESSION\n\nClick '"'Reconnect Now'"' to open a new terminal." \
+                        "$REMINDER_MSG\n\n📍 Session: $SESSION\n\nClick '"'Reconnect Now'"' to open a new terminal or '"'Kill Session'"' to stop." \
                         2>>"$MONITOR_LOG" | \
                         while read action; do
                             echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Action received: $action" >> "$MONITOR_LOG"
@@ -581,6 +582,39 @@ if [[ -n "$TERMINAL_PID" ]]; then
                                 echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] User clicked reconnect again" >> "$MONITOR_LOG"
                                 "$HOME/.smart-gif-converter/reconnect-tmux.sh" 2>>"$MONITOR_LOG" &
                                 exit 0  # Exit loop when user reconnects
+                            elif [ "$action" = "kill" ]; then
+                                echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] User clicked kill session" >> "$MONITOR_LOG"
+                                
+                                # Run kill action in background to avoid blocking
+                                (
+                                    # Get tmux server PID before killing
+                                    TMUX_PID=$(tmux list-sessions -F '"'#{session_name} #{pane_pid}'"' 2>/dev/null | grep "^$SESSION " | awk '"'{print $2}'"')
+                                    echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Tmux PID: $TMUX_PID" >> "$MONITOR_LOG"
+                                    
+                                    tmux kill-session -t "$SESSION" 2>>"$MONITOR_LOG"
+                                    echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Tmux session killed" >> "$MONITOR_LOG"
+                                    
+                                    # Send confirmation notification
+                                    if [ -n "$TMUX_PID" ]; then
+                                        echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Sending kill confirmation with PID" >> "$MONITOR_LOG"
+                                        DISPLAY="${DISPLAY}" DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS}" \
+                                        notify-send -u normal -t 8000 -i dialog-information \
+                                            "✓ GIF Converter Session Terminated" \
+                                            "Session: $SESSION\nTmux Process PID: $TMUX_PID\n\nThe session and all its processes have been killed." \
+                                            2>>"$MONITOR_LOG"
+                                    else
+                                        echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Sending kill confirmation without PID" >> "$MONITOR_LOG"
+                                        DISPLAY="${DISPLAY}" DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS}" \
+                                        notify-send -u normal -t 5000 -i dialog-information \
+                                            "✓ GIF Converter Session Terminated" \
+                                            "Session '"'$SESSION'"' has been terminated." \
+                                            2>>"$MONITOR_LOG"
+                                    fi
+                                    
+                                    echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Kill notification sent" >> "$MONITOR_LOG"
+                                ) &
+                                
+                                exit 0  # Exit loop when session killed
                             fi
                         done
                     
@@ -653,14 +687,51 @@ RECONNECT_EOF
                     notify-send -u critical -t 0 -i video-x-generic \
                         -a "GIF Converter" \
                         --action="reconnect=Reconnect Now" \
+                        --action="kill=Kill Session" \
                         "💻 Terminal Closed - Conversion Still Running!" \
-                        "$REMINDER_MSG\n\n📍 Session: $SESSION_NAME\n\nClick 'Reconnect Now' to open a new terminal." \
+                        "$REMINDER_MSG\n\n📍 Session: $SESSION_NAME\n\nClick 'Reconnect Now' to open a new terminal or 'Kill Session' to stop." \
                         2>>"$MONITOR_LOG" | \
                         while read action; do
                             if [ "$action" = "reconnect" ]; then
                                 echo "[$(date '+%Y-%m-%d %H:%M:%S')] User clicked reconnect" >> "$MONITOR_LOG"
                                 "$RECONNECT_SCRIPT" 2>>"$MONITOR_LOG" &
                                 exit 0  # Exit loop when user reconnects
+                            elif [ "$action" = "kill" ]; then
+                                echo "[$(date '+%Y-%m-%d %H:%M:%S')] User clicked kill session" >> "$MONITOR_LOG"
+                                
+                                # Run kill action with nohup to ensure it completes even after parent exits
+                                nohup bash -c '
+                                    MONITOR_LOG="'"$MONITOR_LOG"'"
+                                    SESSION_NAME="'"$SESSION_NAME"'"
+                                    export DISPLAY="'"${DISPLAY}"'"
+                                    export DBUS_SESSION_BUS_ADDRESS="'"${DBUS_SESSION_BUS_ADDRESS}"'"
+                                    
+                                    # Get tmux server PID before killing
+                                    TMUX_PID=$(tmux list-sessions -F '"'#{session_name} #{pane_pid}'"' 2>/dev/null | grep "^$SESSION_NAME " | awk '"'{print $2}'"')
+                                    echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Kill handler: Tmux PID: $TMUX_PID" >> "$MONITOR_LOG"
+                                    
+                                    tmux kill-session -t "$SESSION_NAME" 2>>"$MONITOR_LOG"
+                                    echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Kill handler: Tmux session killed" >> "$MONITOR_LOG"
+                                    
+                                    # Send confirmation notification
+                                    if [ -n "$TMUX_PID" ]; then
+                                        echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Kill handler: Sending notification with PID" >> "$MONITOR_LOG"
+                                        notify-send -u normal -t 8000 -i dialog-information \
+                                            "✓ GIF Converter Session Terminated" \
+                                            "Session: $SESSION_NAME\nTmux Process PID: $TMUX_PID\n\nThe session and all its processes have been killed." \
+                                            2>>"$MONITOR_LOG"
+                                    else
+                                        echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Kill handler: Sending notification without PID" >> "$MONITOR_LOG"
+                                        notify-send -u normal -t 5000 -i dialog-information \
+                                            "✓ GIF Converter Session Terminated" \
+                                            "Session $SESSION_NAME has been terminated." \
+                                            2>>"$MONITOR_LOG"
+                                    fi
+                                    
+                                    echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Kill handler: Notification sent successfully" >> "$MONITOR_LOG"
+                                ' >>"$MONITOR_LOG" 2>&1 &
+                                
+                                exit 0  # Exit loop when session killed
                             fi
                         done
                     
