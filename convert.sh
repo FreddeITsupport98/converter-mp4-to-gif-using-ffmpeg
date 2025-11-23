@@ -310,6 +310,9 @@ NOTIFY_SESSION_START=true
 NOTIFY_SESSION_FOUND=true
 NOTIFY_TERMINAL_CLOSED=true
 
+# 🚨 Log directory (needed by terminal detection)
+LOG_DIR="$HOME/.smart-gif-converter"
+
 # Check if tmux protection should run
 if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != *"--no-tmux"* ]]; then
     
@@ -412,7 +415,8 @@ if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != 
                 notify-send -u critical -t 0 -i video-x-generic \
                     "🎬 GIF Converter Still Running" \
                     "Your conversion session is active!\n\nSession: $SESSION_NAME\n\nClick here or run the script again to reconnect." \
-                    2>/dev/null &
+                    2>/dev/null
+                sleep 0.5
             fi
             
             echo -ne "\n\033[0;36mChoice [1/2/3, default=1]: \033[0m"
@@ -461,14 +465,15 @@ if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != 
         echo -ne "\r\033[0;32m✓ Starting tmux session now!          \033[0m\n\n"
         
         # Send desktop notification about tmux session starting
+        echo -e "\033[0;33mDEBUG: NOTIFY_ENABLED=$NOTIFY_ENABLED, NOTIFY_SESSION_START=$NOTIFY_SESSION_START\033[0m" >&2
         if [[ "$NOTIFY_ENABLED" == "true" && "$NOTIFY_SESSION_START" == "true" ]] && command -v notify-send >/dev/null 2>&1; then
+            echo -e "\033[0;32mDEBUG: Sending notification now...\033[0m" >&2
             notify-send -u normal -t 8000 -i video-x-generic \
                 "🛡️ GIF Converter Running in tmux" \
                 "Session: $SESSION_NAME\n\nYour conversion is protected from crashes!\n\nTo reconnect if disconnected:\n• Run ./convert.sh again, or\n• Use: tmux attach -t $SESSION_NAME" \
-                2>/dev/null &
+                2>/dev/null
+            sleep 0.5
         fi
-        
-        sleep 1
         
         # Detect terminal PID NOW (before entering tmux where we can't see it)
         MONITOR_DEBUG_LOG="$LOG_DIR/terminal-detect-debug.log"
@@ -676,24 +681,29 @@ if [[ -n "$TERMINAL_PID" ]]; then
             if tmux has-session -t "$SESSION" 2>/dev/null; then
                 echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Tmux session still exists, starting reminder loop" >> "$MONITOR_LOG"
                 
-                # Start reminder loop
+                # Start reminder loop with fixed notification ID to replace instead of stacking
+                # Use session name hash as unique notification ID
+                NOTIF_ID=$(echo "$SESSION" | md5sum | cut -d' ' -f1 | tr -d '[:alpha:]' | cut -c1-8)
                 REMINDER_COUNT=0
                 while tmux has-session -t "$SESSION" 2>/dev/null; do
                     REMINDER_COUNT=$((REMINDER_COUNT + 1))
                     
                     if [ $REMINDER_COUNT -eq 1 ]; then
                         REMINDER_MSG="Your GIF conversion is still active in tmux!"
+                        TITLE="💻 Terminal Closed - Conversion Still Running!"
                     else
                         REMINDER_MSG="Reminder #$REMINDER_COUNT: Your GIF conversion is still active in tmux!"
+                        TITLE="💻 Terminal Closed - Conversion Still Running!"
                     fi
                     
-                    echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Sending notification #$REMINDER_COUNT" >> "$MONITOR_LOG"
+                    echo "[$(date '"'+%Y-%m-%d %H:%M:%S'"')] Sending/updating notification #$REMINDER_COUNT (ID: $NOTIF_ID)" >> "$MONITOR_LOG"
                     
                     notify-send -u critical -t 0 -i video-x-generic \
+                        -r "$NOTIF_ID" \
                         -a "GIF Converter" \
                         --action="reconnect=Reconnect Now" \
                         --action="kill=Kill Session" \
-                        "💻 Terminal Closed Again - Conversion Still Running!" \
+                        "$TITLE" \
                         "$REMINDER_MSG\n\n📍 Session: $SESSION\n\nClick '"'Reconnect Now'"' to open a new terminal or '"'Kill Session'"' to stop." \
                         2>>"$MONITOR_LOG" | \
                         while read action; do
@@ -791,24 +801,30 @@ RECONNECT_EOF
             # Send clickable notification with 1-minute reminder loop
             # Note: Actions work in KDE Plasma, GNOME, etc.
             # Run action handler in background
+            # Use fixed notification ID to replace instead of stacking
             (
+                # Use session name hash as unique notification ID
+                NOTIF_ID=$(echo "$SESSION_NAME" | md5sum | cut -d' ' -f1 | tr -d '[:alpha:]' | cut -c1-8)
                 REMINDER_COUNT=0
                 while tmux has-session -t "$SESSION_NAME" 2>/dev/null; do
                     REMINDER_COUNT=$((REMINDER_COUNT + 1))
                     
                     if [ $REMINDER_COUNT -eq 1 ]; then
                         REMINDER_MSG="Your GIF conversion is still active in tmux!"
+                        TITLE="💻 Terminal Closed - Conversion Still Running!"
                     else
                         REMINDER_MSG="Reminder #$REMINDER_COUNT: Your GIF conversion is still active in tmux!"
+                        TITLE="💻 Terminal Closed - Conversion Still Running!"
                     fi
                     
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Sending notification #$REMINDER_COUNT" >> "$MONITOR_LOG"
+                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Sending/updating notification #$REMINDER_COUNT (ID: $NOTIF_ID)" >> "$MONITOR_LOG"
                     
                     notify-send -u critical -t 0 -i video-x-generic \
+                        -r "$NOTIF_ID" \
                         -a "GIF Converter" \
                         --action="reconnect=Reconnect Now" \
                         --action="kill=Kill Session" \
-                        "💻 Terminal Closed - Conversion Still Running!" \
+                        "$TITLE" \
                         "$REMINDER_MSG\n\n📍 Session: $SESSION_NAME\n\nClick 'Reconnect Now' to open a new terminal or 'Kill Session' to stop." \
                         2>>"$MONITOR_LOG" | \
                         while read action; do
