@@ -15713,6 +15713,15 @@ get_package_name() {
                 *) echo "imagemagick" ;;
             esac
             ;;
+        "git")
+            echo "git"
+            ;;
+        "curl")
+            echo "curl"
+            ;;
+        "tmux")
+            echo "tmux"
+            ;;
         *)
             echo "$tool"
             ;;
