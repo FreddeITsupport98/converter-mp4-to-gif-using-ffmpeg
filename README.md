@@ -7,16 +7,41 @@
 [![FFmpeg](https://img.shields.io/badge/Powered%20by-FFmpeg-007808?logo=ffmpeg&logoColor=white)](https://ffmpeg.org/)
 [![AI](https://img.shields.io/badge/AI-Powered-FF6B6B?logo=brain&logoColor=white)](#ai-features)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-7.1-brightgreen.svg)](#latest-updates)
+[![Version](https://img.shields.io/badge/Version-8.0-brightgreen.svg)](#latest-updates)
 
 ---
 
-## 🆕 Latest Updates (Version 7.1)
+## 🆕 Latest Updates (Version 8.0)
 
-### **🚀 What's New in v7.1**
+### **🚀 What's New in v8.0**
 
-#### **🔔 Desktop Notification System** (NEW!)
-**Stay informed about your conversions** - Comprehensive desktop notification system integrated!
+#### **🔍 Automatic Syntax Validation** (NEW!)
+**Bulletproof script integrity** - Never run broken code again!
+
+- **✅ Every Startup**: Automatic `bash -n` syntax check before execution
+- **🚨 Instant Detection**: Shows "✓ Syntax check passed" or detailed error messages
+- **🛑 Safe Guard**: Script exits immediately if syntax errors detected
+- **📝 Debug Info**: First 20 lines of parser output for quick fixes
+
+#### **🔄 Enhanced Update System** (NEW!)
+**Professional update checks** - Clean, informative, and helpful!
+
+- **🎯 Visual Progress**: "Fetching... ✓" or "✗" for immediate feedback
+- **📊 API Transparency**: Shows endpoint being queried
+- **🆕 Better "No Releases" Handling**:
+  - Clear message: "This appears to be the first version (v8.0)"
+  - Helpful tip to create GitHub release for version checking
+  - GitHub Releases link displayed prominently
+  - Distinguishes between connection failure vs no releases
+
+#### **🧹 Clean Output & Polish** (NEW!)
+**Professional startup experience** - No more technical clutter!
+
+- **🚀 HTTP Headers Suppressed**: All curl output properly silenced
+- **🎯 Tool Version Detection**: Improved with tool-specific flags (git --version, curl --version, tmux -V)
+- **✨ Visual Separators**: Clean separator lines before/after system checks
+- **💾 Cache Status**: "Cached for faster startup next time" message
+- **🎨 Better Spacing**: Improved spacing around all prompts
 
 - **📢 Notification Types**:
   - ✅ **Session Start**: Notified when tmux session launches with reconnection commands
@@ -77,6 +102,25 @@
 - **Fixed**: Notification settings not persisting across tmux session restarts
 - **Fixed**: Settings upgrade banner not showing at main menu
 - **Improved**: Settings file now properly handles all notification configuration options
+
+---
+
+## 📜 Previous Updates (Version 7.1)
+
+### **🚀 What's New in v7.1**
+
+#### **🔔 Desktop Notification System**
+**Stay informed about your conversions** - Comprehensive desktop notification system integrated!
+
+- **📢 Notification Types**: Session start, session found, conversion complete, progress updates, terminal closed detection, periodic reminders, error notifications
+- **⚙️ Advanced Settings Menu**: Navigate with `w`/`s` keys, individual toggles, customizable intervals
+- **💻 Terminal Closure Detection**: Background monitor detects when terminal closes
+- **💾 Settings Persistence**: All settings saved in `~/.smart-gif-converter/settings.conf`
+
+#### **🐛 Bug Fixes**
+- Fixed `save_settings --silent` creating wrong file
+- Fixed notification settings not persisting across sessions
+- Fixed settings upgrade banner display
 
 ---
 

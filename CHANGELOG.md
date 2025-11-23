@@ -2,6 +2,59 @@
 
 All notable changes to Smart GIF Converter will be documented in this file.
 
+## [8.0.0] - 2025-11-23
+
+### 🔧 Enhanced Update System & Quality of Life Improvements
+
+#### Added
+- **Automatic Syntax Validation**: Script now performs `bash -n` syntax check on every startup
+  - Shows "✓ Syntax check passed" or detailed error messages
+  - Prevents running broken scripts with corrupted syntax
+  - Exits immediately if syntax errors detected with first 20 lines of parser output
+  
+- **Improved Update Check Display**:
+  - Cleaner output with visual progress indicators
+  - Shows "Fetching... ✓" or "✗" for immediate feedback
+  - Displays API endpoint being queried
+  - Better handling of repositories with no releases
+  - Professional error messages with helpful tips
+  
+- **Better "No Releases" Handling**:
+  - Clear message: "This appears to be the first version (v8.0)"
+  - Helpful tip to create GitHub release for version checking
+  - GitHub Releases link displayed prominently
+  - Distinguishes between connection failure vs no releases
+
+#### Fixed
+- **HTTP Headers in Output**: Suppressed raw HTTP headers from curl commands
+  - All curl output properly redirected to `/dev/null`
+  - Clean, professional startup experience
+  - No more cluttered GitHub API headers visible to users
+  
+- **Tool Version Detection**: Improved version checking for dependencies
+  - Tool-specific version flags (git --version, curl --version, tmux -V)
+  - Better handling of different tool output formats
+  - ImageMagick version parsing improved
+  
+- **Dependency Check Polish**:
+  - Added visual separator lines before/after system checks
+  - Better completion messages with emojis
+  - Improved spacing around prompts
+  - Cache status displayed ("Cached for faster startup next time")
+
+#### Changed
+- Updated version from 7.1 to 8.0
+- Enhanced startup sequence with cleaner visual design
+- Update check now runs silently in background with better error handling
+
+#### Technical Details
+- Syntax check uses `bash -n` validation before script execution
+- Update check validates HTTPS connections with proper SSL certificate verification
+- All background processes properly silenced (stderr and stdout to /dev/null)
+- Professional status indicators throughout startup sequence
+
+---
+
 ## [7.1.0] - 2025-01-22
 
 ### 🔔 Desktop Notification System

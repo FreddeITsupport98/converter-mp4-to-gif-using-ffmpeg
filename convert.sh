@@ -1042,7 +1042,7 @@ AI_TRAINING_MIN_SAMPLES=5  # Minimum samples before AI makes confident predictio
 GITHUB_REPO="FreddeITsupport98/converter-mp4-to-gif-using-ffmpeg"
 GITHUB_API_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_URL="https://github.com/${GITHUB_REPO}/releases"
-CURRENT_VERSION="7.1"  # Script version
+CURRENT_VERSION="8.0"  # Script version
 UPDATE_CHECK_FILE="$LOG_DIR/.last_update_check"
 UPDATE_CHECK_INTERVAL=86400  # Check once per day (in seconds)
 AUTO_UPDATE_ENABLED=true  # Enable automatic update checks (user configurable)
@@ -1943,13 +1943,30 @@ manual_update() {
     fi
     
     echo -e "${CYAN}🔄 Checking GitHub Releases for stable versions...${NC}"
+    echo -e "${GRAY}   API Endpoint: ${GITHUB_API_URL}${NC}"
+    echo -ne "${BLUE}   Fetching... ${NC}"
     
     local release_json=$(curl -s --ssl-reqd --tlsv1.2 "$GITHUB_API_URL" 2>/dev/null)
     
-    if [[ -z "$release_json" ]] || [[ "$release_json" == *"Not Found"* ]]; then
-        echo -e "${RED}❌ Cannot fetch releases${NC}"
+    if [[ -n "$release_json" ]]; then
+        echo -e "${GREEN}✓${NC}"
+    else
+        echo -e "${RED}✗${NC}"
+    fi
+    
+    # Check if request failed or no releases exist
+    if [[ -z "$release_json" ]]; then
+        echo -e "${RED}❌ Cannot connect to GitHub${NC}"
         echo -e "${BLUE}Visit: ${GITHUB_RELEASES_URL}${NC}"
         return 1
+    fi
+    
+    if [[ "$release_json" == *"Not Found"* ]]; then
+        echo -e "${YELLOW}⚠️  No releases found in repository${NC}"
+        echo -e "${GRAY}📊 This appears to be the first version (v${CURRENT_VERSION})${NC}"
+        echo -e "${BLUE}📝 GitHub Releases: ${CYAN}${GITHUB_RELEASES_URL}${NC}"
+        echo -e "${GRAY}💡 Tip: Create a release on GitHub to enable version checking${NC}"
+        return 0
     fi
     
     # Verify this is a stable release (not pre-release or draft)
@@ -20491,7 +20508,7 @@ show_tmux_controls() {
 # 🎪 Function to print fancy headers (simplified for menus)
 print_header() {
     echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}${BOLD}║                🎬 SMART GIF CONVERTER v7.1                ║${NC}"
+    echo -e "${CYAN}${BOLD}║                🎬 SMART GIF CONVERTER v8.0                 ║${NC}"
     echo -e "${CYAN}${BOLD}║                AI-Powered Video to GIF Magic                  ║${NC}"
     echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
