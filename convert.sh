@@ -275,7 +275,33 @@ if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != 
         echo -e "\033[0;33m\nThis script produces large output that may crash some terminals (like Konsole).\033[0m" >&2
         echo -e "\033[0;36m\n💡 tmux provides automatic crash protection and session persistence.\033[0m" >&2
         echo -e "\033[0;36m   Your conversions will survive terminal crashes and disconnects!\033[0m" >&2
-        echo -e "\033[0;32m\n📦 Install command: sudo zypper install tmux\033[0m" >&2
+        
+        # Detect package manager and show appropriate install command
+        pkg_mgr="unknown"
+        install_cmd=""
+        if command -v apt >/dev/null 2>&1; then
+            pkg_mgr="apt"
+            install_cmd="sudo apt update && sudo apt install -y tmux"
+        elif command -v dnf >/dev/null 2>&1; then
+            pkg_mgr="dnf"
+            install_cmd="sudo dnf install -y tmux"
+        elif command -v pacman >/dev/null 2>&1; then
+            pkg_mgr="pacman"
+            install_cmd="sudo pacman -S --needed tmux"
+        elif command -v zypper >/dev/null 2>&1; then
+            pkg_mgr="zypper"
+            install_cmd="sudo zypper install -y tmux"
+        elif command -v yum >/dev/null 2>&1; then
+            pkg_mgr="yum"
+            install_cmd="sudo yum install -y tmux"
+        elif command -v apk >/dev/null 2>&1; then
+            pkg_mgr="apk"
+            install_cmd="sudo apk add tmux"
+        else
+            install_cmd="sudo <package-manager> install tmux"
+        fi
+        
+        echo -e "\033[0;32m\n📦 Install command: $install_cmd\033[0m" >&2
         echo -e "\033[0;36m\nAlternatively, use a more stable terminal (xterm, warp, alacritty)\033[0m" >&2
         echo -ne "\n\033[0;33mWould you like to install tmux now? [Y/n]: \033[0m" >&2
         read -r tmux_install_choice
@@ -283,7 +309,10 @@ if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != 
         if [[ ! "$tmux_install_choice" =~ ^[Nn]$ ]]; then
             # User wants to install (default is Yes)
             echo -e "\n\033[0;36m🚀 Installing tmux...\033[0m" >&2
-            if sudo zypper install -y tmux; then
+            if [[ "$pkg_mgr" == "unknown" ]]; then
+                echo -e "\n\033[1;31m❌ Cannot detect package manager!\033[0m" >&2
+                echo -e "\033[0;33m📝 Please install tmux manually\033[0m" >&2
+            elif eval "$install_cmd"; then
                 echo -e "\n\033[0;32m✅ tmux installed successfully!\033[0m" >&2
                 echo -e "\033[0;36m🔄 Restarting script with tmux protection...\033[0m" >&2
                 sleep 2
