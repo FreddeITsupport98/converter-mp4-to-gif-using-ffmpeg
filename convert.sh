@@ -1464,11 +1464,11 @@ check_for_updates() {
     fi
     
     # Extract version tag and release timestamp
-    local remote_tag=$(echo "$release_json" | grep -o '"tag_name":"[^"]*"' | cut -d'"' -f4)
-    local remote_version=$(echo "$remote_tag" | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    local remote_tag=$(echo "$release_json" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
+    local remote_version=$(echo "$remote_tag" | sed 's/[^0-9.]//g' | sed 's/^[.]\+\|[.]\+$//g' | cut -d'.' -f1-2)
     
     # Extract GitHub release published_at timestamp (ISO 8601 format)
-    local remote_timestamp_iso=$(echo "$release_json" | grep -o '"published_at":"[^"]*"' | cut -d'"' -f4)
+    local remote_timestamp_iso=$(echo "$release_json" | sed -n 's/.*"published_at": *"\([^"]*\)".*/\1/p')
     local remote_timestamp=0
     
     # Convert ISO 8601 to Unix epoch timestamp for comparison
@@ -1518,7 +1518,7 @@ check_for_updates() {
     fi
     
     if [[ "$needs_update" == "true" ]]; then
-        local release_body=$(echo "$release_json" | grep -o '"body":"[^"]*"' | cut -d'"' -f4 | sed 's/\\n/\n/g' | sed 's/\\r//g')
+        local release_body=$(echo "$release_json" | sed -n 's/.*"body": *"\([^"]*\)".*/\1/p' | sed 's/\\n/\n/g' | sed 's/\\r//g')
         
         # Save update info to file for main menu display
         local update_info_file="$LOG_DIR/.update_available"
@@ -1697,17 +1697,17 @@ extract_sha256_from_release() {
     local sha256=""
     
     # Method 1: Try to fetch SHA256 from release assets with SSL verification
-    local assets_url=$(echo "$release_json" | grep -o '"assets_url":"[^"]*"' | cut -d'"' -f4)
+    local assets_url=$(echo "$release_json" | sed -n 's/.*"assets_url": *"\([^"]*\)".*/\1/p')
     if [[ -n "$assets_url" ]]; then
         local assets_json=$(curl -sL --ssl-reqd --tlsv1.2 "$assets_url" -m 10 2>/dev/null)
         
         # Look for .sha256 or .checksum file
-        local sha256_url=$(echo "$assets_json" | grep -o '"browser_download_url":"[^"]*\\.sha256"' | cut -d'"' -f4 | head -1)
+        local sha256_url=$(echo "$assets_json" | sed -n 's/.*"browser_download_url": *"\([^"]*\\.sha256\)".*/\1/p' | head -1)
         if [[ -z "$sha256_url" ]]; then
-            sha256_url=$(echo "$assets_json" | grep -o '"browser_download_url":"[^"]*convert\\.sh\\.sha256"' | cut -d'"' -f4 | head -1)
+            sha256_url=$(echo "$assets_json" | sed -n 's/.*"browser_download_url": *"\([^"]*convert\\.sh\\.sha256\)".*/\1/p' | head -1)
         fi
         if [[ -z "$sha256_url" ]]; then
-            sha256_url=$(echo "$assets_json" | grep -o '"browser_download_url":"[^"]*checksum"' | cut -d'"' -f4 | head -1)
+            sha256_url=$(echo "$assets_json" | sed -n 's/.*"browser_download_url": *"\([^"]*checksum\)".*/\1/p' | head -1)
         fi
         
         if [[ -n "$sha256_url" ]]; then
@@ -1720,7 +1720,7 @@ extract_sha256_from_release() {
     fi
     
     # Method 2: Extract from release body
-    local release_body=$(echo "$release_json" | grep -o '"body":"[^"]*"' | cut -d'"' -f4 | sed 's/\\n/\n/g' | sed 's/\\r//g')
+    local release_body=$(echo "$release_json" | sed -n 's/.*"body": *"\([^"]*\)".*/\1/p' | sed 's/\\n/\n/g' | sed 's/\\r//g')
     sha256=$(echo "$release_body" | grep -iE '(sha256|checksum)' | grep -oE '[a-f0-9]{64}' | head -1)
     
     if [[ -n "$sha256" ]]; then
@@ -1767,7 +1767,7 @@ perform_update() {
     fi
     
     # Extract release timestamp for fingerprint tracking
-    local release_timestamp_iso=$(echo "$release_json" | grep -o '"published_at":"[^"]*"' | cut -d'"' -f4)
+    local release_timestamp_iso=$(echo "$release_json" | sed -n 's/.*"published_at": *"\([^"]*\)".*/\1/p')
     local release_timestamp=0
     if [[ -n "$release_timestamp_iso" ]]; then
         release_timestamp=$(date -d "$release_timestamp_iso" +%s 2>/dev/null || echo "0")
@@ -1885,8 +1885,8 @@ perform_update() {
     echo -e "${CYAN}[3/6] Checking GPG signature...${NC}"
     local sig_url=""
     if [[ -n "$assets_url" ]]; then
-        local assets_json=$(curl -sL --ssl-reqd --tlsv1.2 "$(echo "$release_json" | grep -o '"assets_url":"[^"]*"' | cut -d'"' -f4)" -m 10 2>/dev/null)
-        sig_url=$(echo "$assets_json" | grep -o '"browser_download_url":"[^"]*\\.sig"' | cut -d'"' -f4 | head -1)
+        local assets_json=$(curl -sL --ssl-reqd --tlsv1.2 "$(echo "$release_json" | sed -n 's/.*"assets_url": *"\([^"]*\)".*/\1/p')" -m 10 2>/dev/null)
+        sig_url=$(echo "$assets_json" | sed -n 's/.*"browser_download_url": *"\([^"]*\\.sig\)".*/\1/p' | head -1)
     fi
     
     if ! verify_gpg_signature "convert.sh.new" "$sig_url"; then
@@ -2032,10 +2032,10 @@ manual_update() {
     # Clean up version (remove leading/trailing dots, multiple dots)
     remote_version=$(echo "$remote_version" | sed 's/^\.\+//;s/\.\+$//;s/\.\+/./g')
     
-    local release_body=$(echo "$release_json" | grep -o '"body":"[^"]*"' | cut -d'"' -f4 | sed 's/\\\\n/\\n/g' | sed 's/\\\\r//g')
+    local release_body=$(echo "$release_json" | sed -n 's/.*"body": *"\([^"]*\)".*/\1/p' | sed 's/\\r//g; s/\\n/\n/g')
     
     # Extract release timestamp for validation
-    local remote_timestamp_iso=$(echo "$release_json" | grep -o '"published_at":"[^"]*"' | cut -d'"' -f4)
+    local remote_timestamp_iso=$(echo "$release_json" | sed -n 's/.*"published_at": *"\([^"]*\)".*/\1/p')
     local remote_timestamp=0
     if [[ -n "$remote_timestamp_iso" ]]; then
         remote_timestamp=$(date -d "$remote_timestamp_iso" +%s 2>/dev/null || echo "0")
@@ -15712,6 +15712,12 @@ detect_package_manager() {
         echo "yum"
     elif command -v pacman >/dev/null 2>&1; then
         echo "pacman"
+    elif command -v apk >/dev/null 2>&1; then
+        echo "apk"
+    elif command -v emerge >/dev/null 2>&1; then
+        echo "emerge"
+    elif command -v xbps-install >/dev/null 2>&1; then
+        echo "xbps"
     else
         echo "unknown"
     fi
@@ -15729,6 +15735,9 @@ get_package_name() {
                 "apt") echo "ffmpeg" ;;
                 "dnf"|"yum") echo "ffmpeg" ;;
                 "pacman") echo "ffmpeg" ;;
+                "apk") echo "ffmpeg" ;;
+                "emerge") echo "media-video/ffmpeg" ;;
+                "xbps") echo "ffmpeg" ;;
                 *) echo "ffmpeg" ;;
             esac
             ;;
@@ -15744,6 +15753,9 @@ get_package_name() {
                 "apt") echo "imagemagick" ;;
                 "dnf"|"yum") echo "ImageMagick" ;;
                 "pacman") echo "imagemagick" ;;
+                "apk") echo "imagemagick" ;;
+                "emerge") echo "media-gfx/imagemagick" ;;
+                "xbps") echo "ImageMagick" ;;
                 *) echo "imagemagick" ;;
             esac
             ;;
@@ -15755,6 +15767,18 @@ get_package_name() {
             ;;
         "tmux")
             echo "tmux"
+            ;;
+        "notify-send")
+            case "$pkg_manager" in
+                "zypper") echo "libnotify-tools" ;;
+                "apt") echo "libnotify-bin" ;;
+                "dnf"|"yum") echo "libnotify" ;;
+                "pacman") echo "libnotify" ;;
+                "apk") echo "libnotify" ;;
+                "emerge") echo "libnotify" ;;
+                "xbps") echo "libnotify" ;;
+                *) echo "libnotify" ;;
+            esac
             ;;
         *)
             echo "$tool"
@@ -15872,7 +15896,7 @@ check_dependencies() {
     # Perform full check if needed
     echo -e "${CYAN}🔍 Checking system dependencies...${NC}"
     
-    local required_tools=("ffmpeg" "git" "curl" "tmux")
+    local required_tools=("ffmpeg" "git" "curl" "tmux" "notify-send")
     local optional_tools=("gifsicle" "jq" "convert")  # convert is from ImageMagick
     local missing_required=()
     local missing_optional=()
@@ -15900,6 +15924,9 @@ check_dependencies() {
                     ;;
                 "tmux")
                     version=$(tmux -V 2>/dev/null || echo "unknown version")
+                    ;;
+                "notify-send")
+                    version=$(notify-send --version 2>/dev/null | head -1 || echo "available")
                     ;;
                 *)
                     version=$("$tool" -version 2>/dev/null | head -1 | cut -d' ' -f1-3 2>/dev/null || echo "unknown version")
