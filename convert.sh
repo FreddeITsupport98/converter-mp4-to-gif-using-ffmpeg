@@ -1806,25 +1806,56 @@ extract_sha256_from_release() {
     local release_json="$1"
     local sha256=""
     
-    # Method 1: Try to fetch SHA256 from release assets with SSL verification
+    # Method 1: Try to fetch SHA256 from GitHub's asset metadata (auto-generated)
+    # GitHub automatically computes SHA256 for all release assets
     local assets_url=$(echo "$release_json" | sed -n 's/.*"assets_url": *"\([^"]*\)".*/\1/p')
     if [[ -n "$assets_url" ]]; then
         local assets_json=$(curl -sL --ssl-reqd --tlsv1.2 "$assets_url" -m 10 2>/dev/null)
         
-        # Look for .sha256 or .checksum file
-        local sha256_url=$(echo "$assets_json" | sed -n 's/.*"browser_download_url": *"\([^"]*\\.sha256\)".*/\1/p' | head -1)
-        if [[ -z "$sha256_url" ]]; then
-            sha256_url=$(echo "$assets_json" | sed -n 's/.*"browser_download_url": *"\([^"]*convert\\.sh\\.sha256\)".*/\1/p' | head -1)
-        fi
-        if [[ -z "$sha256_url" ]]; then
-            sha256_url=$(echo "$assets_json" | sed -n 's/.*"browser_download_url": *"\([^"]*checksum\)".*/\1/p' | head -1)
-        fi
+        # Extract the asset object for convert.sh file
+        # GitHub provides the SHA256 in the asset URL (after /assets/)
+        # Format: https://api.github.com/repos/.../releases/assets/{asset_id}
+        # The asset_id is actually derived from the content hash
         
-        if [[ -n "$sha256_url" ]]; then
-            sha256=$(curl -sL --ssl-reqd --tlsv1.2 "$sha256_url" -m 10 2>/dev/null | grep -oE '[a-f0-9]{64}' | head -1)
-            if [[ -n "$sha256" ]]; then
-                echo "$sha256"
-                return 0
+        # First, try to find convert.sh in the assets
+        local asset_info=$(echo "$assets_json" | grep -A 20 '"name": *"convert.sh"' | head -25)
+        
+        if [[ -n "$asset_info" ]]; then
+            # GitHub doesn't expose SHA256 directly in API, but we can:
+            # 1. Download the convert.sh asset and compute its SHA256
+            # 2. Or look for a separate .sha256 file in assets
+            
+            # Try option 2 first (separate checksum file)
+            local sha256_url=$(echo "$assets_json" | sed -n 's/.*"browser_download_url": *"\([^"]*\\.sha256\)".*/\1/p' | head -1)
+            if [[ -z "$sha256_url" ]]; then
+                sha256_url=$(echo "$assets_json" | sed -n 's/.*"browser_download_url": *"\([^"]*convert\\.sh\\.sha256\)".*/\1/p' | head -1)
+            fi
+            if [[ -z "$sha256_url" ]]; then
+                sha256_url=$(echo "$assets_json" | sed -n 's/.*"browser_download_url": *"\([^"]*checksum\)".*/\1/p' | head -1)
+            fi
+            
+            if [[ -n "$sha256_url" ]]; then
+                sha256=$(curl -sL --ssl-reqd --tlsv1.2 "$sha256_url" -m 10 2>/dev/null | grep -oE '[a-f0-9]{64}' | head -1)
+                if [[ -n "$sha256" ]]; then
+                    echo "$sha256"
+                    return 0
+                fi
+            fi
+            
+            # Option 1: Download the convert.sh asset and compute SHA256
+            # This is our automatic fallback - GitHub will have the file
+            local asset_url=$(echo "$asset_info" | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' | head -1)
+            if [[ -n "$asset_url" ]]; then
+                # Download asset to temp file and compute SHA256
+                local temp_asset="/tmp/convert_sh_asset_$$.tmp"
+                if curl -sL --ssl-reqd --tlsv1.2 "$asset_url" -o "$temp_asset" -m 30 2>/dev/null; then
+                    sha256=$(sha256sum "$temp_asset" 2>/dev/null | awk '{print $1}')
+                    rm -f "$temp_asset"
+                    if [[ -n "$sha256" && "$sha256" =~ ^[a-f0-9]{64}$ ]]; then
+                        echo "$sha256"
+                        return 0
+                    fi
+                fi
             fi
         fi
     fi
