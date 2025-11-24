@@ -1178,7 +1178,7 @@ AI_TRAINING_MIN_SAMPLES=5  # Minimum samples before AI makes confident predictio
 GITHUB_REPO="FreddeITsupport98/converter-mp4-to-gif-using-ffmpeg"
 GITHUB_API_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_URL="https://github.com/${GITHUB_REPO}/releases"
-CURRENT_VERSION="8.0"  # Script version
+CURRENT_VERSION="8.1"  # Script version
 UPDATE_CHECK_FILE="$LOG_DIR/.last_update_check"
 UPDATE_CHECK_INTERVAL=86400  # Check once per day (in seconds)
 AUTO_UPDATE_ENABLED=true  # Enable automatic update checks (user configurable)
@@ -2131,7 +2131,7 @@ manual_update() {
     fi
     
     # Try to extract version from tag first, then from release name
-    # Bulletproof: remove all non-digit/non-dot characters (handles v8.0, 8.0, v8.0.1, etc)
+    # Bulletproof: remove all non-digit/non-dot characters (handles v8.1, 8.1, v8.1.1, etc)
     local remote_version=$(echo "$remote_tag" | sed 's/[^0-9.]//g' | grep -E '^[0-9]' || echo "")
     
     # If tag doesn't have version, try release name
@@ -6719,6 +6719,529 @@ explain_exit_code() {
         2) echo "Misuse of shell builtins / usage error";;
         *) echo "Exited with code $code";;
     esac
+}
+
+# Global array to store problematic filenames found during scan
+declare -a PROBLEMATIC_FILENAMES_FOUND=()
+
+# 📝 Fix problematic filenames (starting with - or other symbols)
+fix_problematic_filenames() {
+    local -n files_array=$1
+    local problematic_files=()
+    local renamed_count=0
+    local scan_mode=false
+    
+    # If files_array is empty or named "dummy_array", we're in scan-only mode
+    if [[ ${#files_array[@]} -eq 0 ]] || [[ "$1" == "dummy_array" ]]; then
+        scan_mode=true
+    fi
+    local cache_file="$LOG_DIR/filename_scan_cache.db"
+    local cache_version="1.0"
+    local scan_start_time=$(date +%s%3N)
+    
+    # Create cache directory if needed
+    mkdir -p "$LOG_DIR" 2>/dev/null
+    
+    # Ask user if they want to scan for problematic filenames
+    if [[ -z "${FILENAME_SCAN_CONFIRMED:-}" ]]; then
+        echo ""
+        echo -e "${YELLOW}${BOLD}⚠️  PROBLEMATIC FILENAME DETECTION${NC}"
+        echo ""
+        echo -e "${CYAN}📊 What is Problematic Filename Detection?${NC}"
+        echo -e "  Scan for files with names that start with '-' or special characters."
+        echo -e "  This helps you:"
+        echo -e "    ${GREEN}✓${NC} Avoid ffmpeg processing errors"
+        echo -e "    ${GREEN}✓${NC} Fix files that cause 'command not found' issues"
+        echo -e "    ${GREEN}✓${NC} Keep your file collection clean and compatible"
+        echo ""
+        echo -e "${CYAN}⏱️  Time Investment:${NC}"
+        echo -e "  • First run: ~10-30 seconds (builds cache)"
+        echo -e "  • Subsequent runs: ~1-5 seconds (uses cached data)"
+        echo -e "  • Scans current directory + output directory recursively"
+        echo ""
+        echo -e "${CYAN}🎯 When to run:${NC}"
+        echo -e "  ${GREEN}✓${NC} Files downloaded with timestamps (like -1761587022680.mp4)"
+        echo -e "  ${GREEN}✓${NC} Files with special characters at the start"
+        echo -e "  ${GREEN}✓${NC} You've seen 'file not found' errors during conversion"
+        echo ""
+        echo -e "${CYAN}⚡ When to skip:${NC}"
+        echo -e "  ${YELLOW}→${NC} All your files have clean alphanumeric names"
+        echo -e "  ${YELLOW}→${NC} You want to convert immediately"
+        echo ""
+        echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${GREEN}💡 Press 'Y' to start the scan now${NC} ${GRAY}(or 'N' to skip)${NC}"
+        echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        echo -ne "${BOLD}${GREEN}▶${NC}  Scan for problematic filenames? ${BOLD}(y/N):${NC} "
+        read -r filename_scan_response
+        
+        if [[ "$filename_scan_response" =~ ^[Yy]$ ]]; then
+            FILENAME_SCAN_CONFIRMED="yes"
+            echo ""
+            echo -e "${GREEN}${BOLD}✓ Starting filename scan...${NC}"
+            echo ""
+        else
+            FILENAME_SCAN_CONFIRMED="no"
+            echo -e "${YELLOW}⏩ Skipping filename scan${NC}"
+            echo ""
+            return 0
+        fi
+    fi
+    
+    # If user skipped, return
+    if [[ "${FILENAME_SCAN_CONFIRMED}" == "no" ]]; then
+        return 0
+    fi
+    
+    # If not in scan mode and we already have problematic files, skip scanning and go straight to rename
+    if [[ "$scan_mode" == false && ${#PROBLEMATIC_FILENAMES_FOUND[@]} -gt 0 ]]; then
+        problematic_files=("${PROBLEMATIC_FILENAMES_FOUND[@]}")
+        # Jump directly to rename prompt (skip all the scanning)
+        # Set dummy values for statistics
+        local checked=${#PROBLEMATIC_FILENAMES_FOUND[@]}
+        local cache_hits=0
+        local cache_misses=0
+        local scan_start_time=$(date +%s%3N)
+        local scan_end_time=$scan_start_time
+        local scan_duration_ms=0
+        local scan_duration_sec=0
+        
+        # Skip to rename section
+        # (We'll use a goto-like approach by jumping to after the scan)
+        goto_rename=true
+    else
+        goto_rename=false
+    fi
+    
+    if [[ "$goto_rename" == false ]]; then
+    echo -e "${BLUE}🔍 Scanning for problematic filenames...${NC}"
+    
+    # Collect all directories to scan (current + output)
+    local scan_dirs=()
+    scan_dirs+=("$(pwd)")
+    
+    # Add output directory if it's different and exists
+    if [[ -n "$OUTPUT_DIRECTORY" && -d "$OUTPUT_DIRECTORY" ]]; then
+        local output_abs=$(cd "$OUTPUT_DIRECTORY" 2>/dev/null && pwd)
+        local current_abs=$(pwd)
+        if [[ "$output_abs" != "$current_abs" ]]; then
+            scan_dirs+=("$OUTPUT_DIRECTORY")
+        fi
+    fi
+    
+    # Load cache
+    declare -A file_cache
+    if [[ -f "$cache_file" ]]; then
+        local cache_ver=$(head -1 "$cache_file" 2>/dev/null)
+        if [[ "$cache_ver" == "VERSION=$cache_version" ]]; then
+            while IFS='|' read -r filepath mtime status; do
+                file_cache["$filepath"]="$mtime|$status"
+            done < <(tail -n +2 "$cache_file")
+        fi
+    fi
+    
+    # Find all video and GIF files recursively
+    local all_files=()
+    local total_found=0
+    
+    echo -e "${CYAN}📂 Discovering files in directories...${NC}"
+    local dir_word="directories"
+    [[ ${#scan_dirs[@]} -eq 1 ]] && dir_word="directory"
+    echo -e "  ${GRAY}Found ${BOLD}${#scan_dirs[@]}${NC}${GRAY} $dir_word to scan${NC}"
+    echo ""
+    for dir in "${scan_dirs[@]}"; do
+        local dir_display="$(basename "$dir")"
+        [[ "$dir" == "." || "$dir" == "$(pwd)" ]] && dir_display="current directory"
+        echo -e "  ${GREEN}▶${NC} ${BOLD}$dir_display${NC}"
+        echo -e "    ${GRAY}$dir${NC}"
+        
+        # Use find for fast recursive search
+        while IFS= read -r -d '' file; do
+            all_files+=("$file")
+            ((total_found++))
+        done < <(find "$dir" -type f \( -name '*.mp4' -o -name '*.avi' -o -name '*.mov' -o -name '*.mkv' -o -name '*.webm' -o -name '*.gif' \) -print0 2>/dev/null)
+    done
+    
+    if [[ $total_found -eq 0 ]]; then
+        echo -e "${YELLOW}No video or GIF files found${NC}"
+        return 0
+    fi
+    
+    echo -e "${GREEN}✓ Found $total_found files to check${NC}"
+    echo -e ""
+    
+    # Scan files with progress bar
+    local checked=0
+    local cache_hits=0
+    local cache_misses=0
+    local interrupted=false
+    
+    # Enable Ctrl+C handling
+    trap 'interrupted=true' INT
+    
+    for file in "${all_files[@]}"; do
+        # Check for interruption
+        if [[ "$interrupted" == "true" ]]; then
+            echo -e "\n  ${YELLOW}⏸️  Scan interrupted by user${NC}"
+            break
+        fi
+        
+        ((checked++))
+        
+        local basename=$(basename -- "$file")
+        local file_mtime=$(stat -c %Y "$file" 2>/dev/null || echo "0")
+        
+        # Check cache first
+        local cached_data="${file_cache[$file]:-}"
+        local use_cache=false
+        
+        if [[ -n "$cached_data" ]]; then
+            local cached_mtime="${cached_data%%|*}"
+            local cached_status="${cached_data##*|}"
+            
+            if [[ "$cached_mtime" == "$file_mtime" ]]; then
+                use_cache=true
+                ((cache_hits++))
+                
+                # Use cached result (check for both old format "problematic" and new "problematic:type")
+                if [[ "$cached_status" =~ ^problematic ]]; then
+                    problematic_files+=("$file")
+                fi
+            fi
+        fi
+        
+        # If not in cache or outdated, check the file
+        if [[ "$use_cache" == false ]]; then
+            ((cache_misses++))
+            
+            # 🔍 MULTI-LAYER DETECTION (Bulletproof Concept)
+            local is_problematic=false
+            local issue_type=""
+            local detection_level=0
+            
+            # Remove extension for analysis
+            local name_no_ext="${basename%.*}"
+            
+            # ═══════════════════════════════════════════════════════════════
+            # LAYER 1: Pattern-Based Detection (Fast, heuristic)
+            # ═══════════════════════════════════════════════════════════════
+            
+            # RULE 1.1: Starts with dash (most common issue)
+            # FALSE POSITIVE CHECK: Ignore if it's a common pattern like "file-name" with text before dash
+            if [[ "$basename" =~ ^- ]]; then
+                # Check if it's JUST a dash followed by numbers/timestamp (problematic)
+                # OR if it's a dash with special chars (problematic)
+                if [[ "$name_no_ext" =~ ^-[0-9]+$ ]] || [[ "$name_no_ext" =~ ^--+ ]]; then
+                    is_problematic=true
+                    issue_type="dash-prefix"
+                    detection_level=1
+                    
+                    # FILES STARTING WITH -- ARE ALWAYS PROBLEMATIC (no need for Layer 2)
+                    # They work with ffprobe in quotes but break shell commands
+                    if [[ "$basename" =~ ^-- ]]; then
+                        detection_level=2  # Skip to confirmed level
+                        issue_type="double-dash-prefix"
+                    fi
+                fi
+            fi
+            
+            # RULE 1.2: Starts with other option-like patterns that break ffmpeg
+            if [[ "$basename" =~ ^\+[0-9] ]]; then
+                is_problematic=true
+                issue_type="plus-prefix"
+                detection_level=1
+            fi
+            
+            # RULE 1.3: Starts with equals (rare but breaks some tools)
+            if [[ "$basename" =~ ^= ]]; then
+                is_problematic=true
+                issue_type="equals-prefix"
+                detection_level=1
+            fi
+            
+            # RULE 1.4: Contains only special characters before first alphanumeric
+            # This catches weird edge cases like "---file.mp4" or "_.mp4"
+            if [[ "$name_no_ext" =~ ^[^a-zA-Z0-9]+$ ]] && [[ ${#name_no_ext} -lt 5 ]]; then
+                is_problematic=true
+                issue_type="special-only"
+                detection_level=1
+            fi
+            
+            # ═══════════════════════════════════════════════════════════════
+            # LAYER 2: FFmpeg Verification (Definitive proof)
+            # Only run on files flagged by Layer 1 to confirm (skip if already confirmed)
+            # ═══════════════════════════════════════════════════════════════
+            if [[ "$is_problematic" == true && "$detection_level" -lt 2 ]]; then
+                # Test if ffprobe can actually read the file with its current name
+                # If it fails due to name, it's confirmed problematic
+                if ffprobe -v quiet -show_entries format=duration "$file" 2>/dev/null >/dev/null; then
+                    # FFprobe succeeded - file is actually OK despite pattern match
+                    # This is a FALSE POSITIVE from Layer 1
+                    is_problematic=false
+                    issue_type="false-positive-layer1"
+                    detection_level=0
+                else
+                    # Check if failure is due to filename vs file corruption
+                    # Try with -- separator (proper way to handle special names)
+                    if ffprobe -v quiet -show_entries format=duration -- "$file" 2>/dev/null >/dev/null; then
+                        # Works with -- but not without = name is the problem
+                        # CONFIRMED PROBLEMATIC by Layer 2
+                        detection_level=2
+                        issue_type="${issue_type}-verified"
+                    else
+                        # Doesn't work even with -- = file might be corrupted, not name issue
+                        is_problematic=false
+                        issue_type="corrupted-not-name-issue"
+                        detection_level=0
+                    fi
+                fi
+            fi
+            
+            # ═══════════════════════════════════════════════════════════════
+            # LAYER 3: Cross-Tool Verification (Extra paranoid)
+            # Verify with both ffprobe AND ffmpeg to be absolutely certain
+            # ═══════════════════════════════════════════════════════════════
+            if [[ "$is_problematic" == true && "$detection_level" -eq 2 ]]; then
+                # Try a null conversion test with ffmpeg (no output, just parse)
+                if ! ffmpeg -v quiet -i "$file" -f null - 2>/dev/null; then
+                    # Also fails with ffmpeg without --
+                    if ffmpeg -v quiet -i -- "$file" -f null - 2>/dev/null; then
+                        # Works with --, confirmed by both tools
+                        detection_level=3
+                        issue_type="${issue_type%-verified}-triple-verified"
+                    fi
+                fi
+            fi
+            
+            # Add to problematic list only if confirmed
+            if [[ "$is_problematic" == true && "$detection_level" -ge 2 ]]; then
+                problematic_files+=("$file")
+            fi
+            
+            # Update cache with detection level
+            local status="ok"
+            if [[ "$is_problematic" == true && "$detection_level" -ge 2 ]]; then
+                status="problematic:$issue_type:L$detection_level"
+            elif [[ "$detection_level" -eq 1 ]]; then
+                # Cache as "suspected" if Layer 1 only (for statistics)
+                status="ok:suspected-false-positive"
+            fi
+            file_cache["$file"]="$file_mtime|$status"
+        fi
+        
+        # Show progress bar
+        local percent=$((checked * 100 / total_found))
+        local filled=$((checked * 50 / total_found))
+        local empty=$((50 - filled))
+        
+        # Build progress bar
+        local bar=""
+        for ((i=0; i<filled; i++)); do bar+="█"; done
+        for ((i=0; i<empty; i++)); do bar+="░"; done
+        
+        # Truncate filename if too long
+        local display_name="$basename"
+        if [[ ${#display_name} -gt 35 ]]; then
+            display_name="${display_name:0:32}..."
+        fi
+        
+        # Show cache status
+        local cache_indicator=""
+        if [[ "$use_cache" == true ]]; then
+            cache_indicator="${GREEN}⚡${NC}"
+        else
+            cache_indicator="${YELLOW}🔍${NC}"
+        fi
+        
+        printf "\r\033[K${BLUE}[${GREEN}%s${GRAY}%s${BLUE}] ${YELLOW}%3d%%${NC} ${GRAY}(%d/%d)${NC} %b ${GRAY}%s${NC}" "${bar:0:filled}" "${bar:filled:empty}" "$percent" "$checked" "$total_found" "$cache_indicator" "$display_name"
+    done
+    
+    # Clear progress bar and add newline
+    printf "\r\033[K"
+    echo ""  # Ensure newline after progress bar
+    
+    # Restore INT trap
+    trap - INT
+    
+    # Save cache
+    {
+        echo "VERSION=$cache_version"
+        for filepath in "${!file_cache[@]}"; do
+            echo "$filepath|${file_cache[$filepath]}"
+        done
+    } > "$cache_file" 2>/dev/null
+    
+    # Calculate scan time
+    local scan_end_time=$(date +%s%3N)
+    local scan_duration_ms=$((scan_end_time - scan_start_time))
+    local scan_duration_sec=$((scan_duration_ms / 1000))
+    
+    # Show detailed statistics
+    echo -e "${CYAN}${BOLD}╭────────────────────────────────────────────────────────────╮${NC}"
+    echo -e "${CYAN}${BOLD}  📊 FILENAME SCAN SUMMARY${NC}"
+    echo -e "${CYAN}${BOLD}╰────────────────────────────────────────────────────────────╯${NC}"
+    echo -e ""
+    echo -e "  ${BLUE}${BOLD}🔍 Scan Statistics:${NC}"
+    echo -e "    ${CYAN}• Total files scanned:     ${BOLD}$checked${NC} ${GRAY}(videos + GIFs)${NC}"
+    echo -e "    ${CYAN}• Problematic files found: ${BOLD}${#problematic_files[@]}${NC}"
+    echo -e "    ${CYAN}• Scan duration:           ${BOLD}${scan_duration_sec}s${NC}"
+    echo -e ""
+    echo -e "  ${MAGENTA}${BOLD}⚡ Performance:${NC}"
+    echo -e "    ${CYAN}• Cache hits:              ${BOLD}$cache_hits${NC} ${GREEN}(fast)${NC}"
+    echo -e "    ${CYAN}• Cache misses:            ${BOLD}$cache_misses${NC} ${YELLOW}(analyzed)${NC}"
+    if [[ $cache_hits -gt 0 ]]; then
+        local cache_efficiency=$((cache_hits * 100 / (cache_hits + cache_misses)))
+        echo -e "    ${CYAN}• Cache efficiency:        ${BOLD}${cache_efficiency}%${NC}"
+    fi
+    echo -e ""
+    
+    # If no problematic files, return
+    if [[ ${#problematic_files[@]} -eq 0 ]]; then
+        echo -e "  ${GREEN}${BOLD}✓ Result: No problematic filenames found${NC}"
+        echo -e "  ${GRAY}All files have clean, compatible names${NC}"
+        echo -e ""
+        echo -e "${CYAN}${BOLD}╰────────────────────────────────────────────────────────────╯${NC}"
+        return 0
+    fi
+    
+    # Show list of problematic files
+    echo -e "  ${YELLOW}${BOLD}⚠️  Problematic Files Found:${NC}"
+    echo -e ""
+    
+    # Group and display files clearly
+    local dash_count=0
+    local dash_files=()
+    
+    for file in "${problematic_files[@]}"; do
+        local bn=$(basename -- "$file")
+        if [[ "$bn" =~ ^- ]]; then
+            ((dash_count++))
+            dash_files+=("$file")
+        fi
+    done
+    
+    # Show files starting with dash
+    if [[ $dash_count -gt 0 ]]; then
+        echo -e "  ${RED}${BOLD}🔴 Files starting with '-' (${dash_count} files):${NC}"
+        if [[ $dash_count -eq ${#problematic_files[@]} ]]; then
+            echo -e "     ${GRAY}→ These likely have timestamp prefixes${NC}"
+        fi
+        echo -e ""
+        
+        # Show up to 10 files, then summarize
+        local show_count=$dash_count
+        [[ $show_count -gt 10 ]] && show_count=10
+        
+        for ((i=0; i<show_count; i++)); do
+            local file="${dash_files[$i]}"
+            local bn=$(basename -- "$file")
+            local dir=$(dirname -- "$file")
+            local dir_display="$(basename "$dir")"
+            [[ "$dir" == "." ]] && dir_display="current dir"
+            
+            echo -e "     ${YELLOW}•${NC} ${BOLD}$bn${NC} ${GRAY}($dir_display)${NC}"
+        done
+        
+        if [[ $dash_count -gt 10 ]]; then
+            echo -e "     ${GRAY}... and $((dash_count - 10)) more files${NC}"
+        fi
+    fi
+    echo -e ""
+    echo -e "${CYAN}${BOLD}╰────────────────────────────────────────────────────────────╯${NC}"
+    echo ""
+    
+    # Store found problematic files globally
+    PROBLEMATIC_FILENAMES_FOUND=("${problematic_files[@]}")
+    
+    fi  # End of "if goto_rename == false" block
+    
+    # RENAME MODE: Show warning and offer to rename
+    echo -e "${YELLOW}⚠️  Warning: Found ${#problematic_files[@]} file(s) with problematic names${NC}"
+    echo -e "${YELLOW}Files starting with '-' can cause issues with ffmpeg${NC}"
+    echo -e ""
+    
+    # Show list of problematic files with rename preview
+    echo -e "${RED}Problematic files and proposed renames:${NC}"
+    echo -e ""
+    for file in "${problematic_files[@]}"; do
+        local bn=$(basename -- "$file")
+        
+        # Calculate what the new name would be (same logic as actual rename)
+        local new_basename="$bn"
+        if [[ "$bn" =~ ^[-] ]]; then
+            new_basename="${bn#[-]}"
+            while [[ "$new_basename" =~ ^[^a-zA-Z0-9_] ]] && [[ -n "$new_basename" ]]; do
+                new_basename="${new_basename:1}"
+            done
+            if [[ -z "$new_basename" ]]; then
+                new_basename="video_TIMESTAMP.${bn##*.}"
+            fi
+        fi
+        
+        echo -e "  ${RED}🔴${NC} ${BOLD}$bn${NC}"
+        echo -e "     ${GREEN}→${NC} ${GREEN}$new_basename${NC}"
+        echo -e ""
+    done
+    
+    # Ask user if they want to rename
+    echo -ne "${CYAN}${BOLD}Do you want to rename these files as shown above?${NC} ${CYAN}[Y/n]:${NC} "
+    read -r response
+    
+    if [[ "$response" =~ ^[Nn]$ ]]; then
+        echo -e "${YELLOW}Skipping rename. Files will be processed with '--' workaround.${NC}"
+        echo -e ""
+        return 0
+    fi
+    
+    echo -e "${GREEN}Renaming files...${NC}"
+    echo ""
+    
+    # Rename each problematic file directly
+    for file in "${problematic_files[@]}"; do
+        local basename=$(basename -- "$file")
+        local dirname=$(dirname -- "$file")
+        
+        if [[ "$basename" =~ ^[-] ]]; then
+            # Remove leading dash and any other leading special chars
+            local new_basename="${basename#[-]}"
+            
+            # Keep removing until first character is alphanumeric or underscore
+            while [[ "$new_basename" =~ ^[^a-zA-Z0-9_] ]] && [[ -n "$new_basename" ]]; do
+                new_basename="${new_basename:1}"
+            done
+            
+            # If we removed everything, use a default name
+            if [[ -z "$new_basename" ]]; then
+                local timestamp=$(date +%s)
+                new_basename="video_${timestamp}.${basename##*.}"
+            fi
+            
+            local new_file="$dirname/$new_basename"
+            
+            # Make sure new name doesn't already exist
+            local counter=1
+            local base_no_ext="${new_basename%.*}"
+            local extension="${new_basename##*.}"
+            while [[ -e "$new_file" ]]; do
+                new_basename="${base_no_ext}_${counter}.$extension"
+                new_file="$dirname/$new_basename"
+                ((counter++))
+            done
+            
+            # Perform the rename
+            if mv -- "$file" "$new_file" 2>/dev/null; then
+                echo -e "  ${GREEN}✓ Renamed:${NC} $basename → $new_basename"
+                ((renamed_count++))
+            else
+                echo -e "  ${RED}✗ Failed to rename:${NC} $basename"
+            fi
+        fi
+    done
+    
+    if [[ $renamed_count -gt 0 ]]; then
+        echo -e "${GREEN}✓ Successfully renamed $renamed_count file(s)${NC}"
+    fi
+    echo -e ""
 }
 
 # 📐 Compute percentage (output vs source) with one decimal; returns 'n/a' if invalid
@@ -13509,7 +14032,18 @@ show_duplicate_detection_statistics() {
 
 # 🔍 Advanced pre-conversion validation with intelligent duplicate prevention
 perform_pre_conversion_validation() {
-    echo -e "${CYAN}${BOLD}🔍 ADVANCED PRE-CONVERSION VALIDATION${NC}\\n"
+    echo -e "${CYAN}${BOLD}🔍 ADVANCED PRE-CONVERSION VALIDATION${NC}\\\\n"
+    
+    # 📝 STEP -1: Filename scan (runs first, fastest check)
+    # This must run before everything else to ensure files can be processed
+    local dummy_array=()
+    fix_problematic_filenames dummy_array
+    
+    # Check for interrupt after filename scan
+    if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
+        echo -e "\\\\n  ${YELLOW}⏸️  Validation interrupted by user${NC}"
+        return 1
+    fi
     
     # ⚠️ USER PROMPT 1: Ask about VIDEO duplicate detection
     if [[ -z "${VIDEO_DUPLICATE_DETECTION_CONFIRMED:-}" ]]; then
@@ -20694,7 +21228,7 @@ show_tmux_controls() {
 # 🎪 Function to print fancy headers (simplified for menus)
 print_header() {
     echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}${BOLD}║                🎬 SMART GIF CONVERTER v8.0                 ║${NC}"
+    echo -e "${CYAN}${BOLD}║                🎬 SMART GIF CONVERTER v8.1                 ║${NC}"
     echo -e "${CYAN}${BOLD}║                AI-Powered Video to GIF Magic                  ║${NC}"
     echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
