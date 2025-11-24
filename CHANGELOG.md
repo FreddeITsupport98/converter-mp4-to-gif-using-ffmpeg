@@ -2,6 +2,69 @@
 
 All notable changes to Smart GIF Converter will be documented in this file.
 
+## [8.1.0] - 2025-11-24
+
+### 🔍 Enhanced Problematic Filename Detection & Workflow Improvements
+
+#### Added
+- **Comprehensive Filename Scanner**: Multi-layer detection system for problematic filenames
+  - Detects files starting with `--`, `-`, `+`, `=`, and other special characters
+  - Layer 1: Pattern-based detection (fast heuristic)
+  - Layer 2: FFmpeg verification (definitive proof)
+  - Layer 3: Cross-tool verification (extra paranoid mode)
+  - Smart cache system stores scan results for instant subsequent scans
+  
+- **Detailed Scan Summary**:
+  - Total files scanned with video + GIF count
+  - Problematic files found with full list
+  - Scan duration and performance metrics
+  - Cache efficiency percentage (hits vs misses)
+  - Up to 10 problematic files shown with directory context
+  
+- **Rename Preview System**:
+  - Shows exact proposed rename for each problematic file
+  - Format: `🔴 original-file.gif → renamed-file.gif`
+  - Clear "before and after" preview before user confirmation
+  - Handles edge cases (duplicate names, empty names, etc.)
+  
+- **User-Friendly Output**:
+  - Directory discovery shows full paths and counts
+  - Progress bar with cache indicators (⚡ fast, 🔍 analyzing)
+  - Clear prompts: "Press 'Y' to start the scan now"
+  - Visual separators and organized sections
+
+#### Changed
+- **Improved Workflow Timing**:
+  - Rename prompt now appears immediately after scan completes
+  - Previously appeared after validation stage (too late)
+  - Two-stage process: Scan → Report → Rename prompt → Continue
+  - Removed duplicate scanning when rename is triggered
+  
+- **Optimized Scan Performance**:
+  - Skip Layer 2/3 verification for files already confirmed at Layer 1
+  - Files starting with `--` are immediately flagged (no FFmpeg test needed)
+  - Cache system prevents re-scanning unchanged files
+  - Detection level stored in cache for smarter future scans
+
+#### Fixed
+- **Detection Logic**: Files starting with `--` were being missed by FFmpeg verification
+  - Layer 2 was marking them as false positives because ffprobe could read them with quotes
+  - Now immediately confirmed as problematic at Layer 1 (detection_level=2)
+  - Skips FFmpeg verification if already confirmed
+  
+- **Cache Invalidation**: Scan now properly rebuilds when problematic files are renamed
+  - Deleted cache after rename to force fresh scan
+  - Ensures renamed files don't appear in subsequent scans
+
+#### Technical Details
+- Global array `PROBLEMATIC_FILENAMES_FOUND` stores scan results
+- Scan mode detection: `scan_mode=true` for initial scan with dummy_array
+- Rename mode: Direct file renaming when called with actual file list
+- Cache format: `filepath|mtime|status` with detection level tracking
+- Pattern detection handles: `-[0-9]+`, `--+`, `\+[0-9]`, `^=`, special-only names
+
+---
+
 ## [8.0.0] - 2025-11-23
 
 ### 🔧 Enhanced Update System & Quality of Life Improvements

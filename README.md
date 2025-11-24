@@ -7,11 +7,35 @@
 [![FFmpeg](https://img.shields.io/badge/Powered%20by-FFmpeg-007808?logo=ffmpeg&logoColor=white)](https://ffmpeg.org/)
 [![AI](https://img.shields.io/badge/AI-Powered-FF6B6B?logo=brain&logoColor=white)](#ai-features)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-8.0-brightgreen.svg)](#latest-updates)
+[![Version](https://img.shields.io/badge/Version-8.1-brightgreen.svg)](#latest-updates)
 
 ---
 
-## 🆕 Latest Updates (Version 8.0)
+## 🆕 Latest Updates (Version 8.1)
+
+### **🚀 What's New in v8.1**
+
+#### **🔍 Enhanced Problematic Filename Detection** (NEW!)
+**Bulletproof filename scanning** - Catch and fix problematic filenames before conversion!
+
+- **✅ Comprehensive Scan**: Detects files starting with `--`, `-`, `+`, `=`, and other problematic characters
+- **🎯 Smart Detection**: Multi-layer verification system (pattern → FFmpeg → cross-tool)
+- **📊 Detailed Summary**: Shows scan statistics, cache efficiency, and problematic file list
+- **🔄 Rename Preview**: Shows exactly what files will be renamed to before applying changes
+- **⚡ Fast Cache**: Smart caching system makes subsequent scans instant
+- **👁️ User-Friendly**: Clear directory paths and file locations displayed
+- **🎨 Visual Feedback**: Progress bars and colored output for better UX
+
+#### **🎯 Improved Workflow** (NEW!)
+**Better scan timing** - Rename prompt appears immediately after scan!
+
+- **📍 Immediate Action**: Rename prompt shows right after scan completes, not after validation
+- **🔧 Two-Stage Process**: First scan and report, then offer rename before conversion
+- **💡 Clear Intent**: "Press 'Y' to start the scan now" message for better clarity
+
+---
+
+## 📜 Previous Updates (Version 8.0)
 
 ### **🚀 What's New in v8.0**
 
@@ -29,7 +53,7 @@
 - **🎯 Visual Progress**: "Fetching... ✓" or "✗" for immediate feedback
 - **📊 API Transparency**: Shows endpoint being queried
 - **🆕 Better "No Releases" Handling**:
-  - Clear message: "This appears to be the first version (v8.0)"
+- Clear message: "This appears to be the first version (v8.1)"
   - Helpful tip to create GitHub release for version checking
   - GitHub Releases link displayed prominently
   - Distinguishes between connection failure vs no releases
