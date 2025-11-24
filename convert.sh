@@ -17922,8 +17922,11 @@ show_main_menu() {
         local update_status=""
         local update_info_file="$LOG_DIR/.update_available"
         
+        # In DEV_MODE, show dev status instead of update check
+        if [[ "$DEV_MODE" == "true" ]]; then
+            update_status="${YELLOW}DEV MODE${NC} - ${GRAY}Updates disabled${NC}"
         # Check if update is available
-        if [[ -f "$update_info_file" && "$AUTO_UPDATE_ENABLED" == "true" ]]; then
+        elif [[ -f "$update_info_file" && "$AUTO_UPDATE_ENABLED" == "true" ]]; then
             # Load update information
             source "$update_info_file" 2>/dev/null || true
             if [[ "$UPDATE_AVAILABLE" == "true" && -n "$REMOTE_VERSION" ]]; then
