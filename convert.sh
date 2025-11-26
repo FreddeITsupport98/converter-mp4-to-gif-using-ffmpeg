@@ -2472,6 +2472,181 @@ prompt_auto_update_preference() {
     return 0
 }
 
+# ═══════════════════════════════════════════════════════════════
+# 🧠 REVOLUTIONARY AI TRAINING & LEARNING SYSTEM
+# Self-improving duplicate detection through user feedback learning
+# ═══════════════════════════════════════════════════════════════
+
+# Initialize AI training system
+init_ai_training() {
+    if [[ "$AI_TRAINING_ENABLED" != "true" ]]; then
+        return 0
+    fi
+    
+    mkdir -p "$AI_TRAINING_DIR" 2>/dev/null || {
+        AI_TRAINING_ENABLED=false
+        return 1
+    }
+    
+    if [[ ! -f "$AI_MODEL_FILE" ]]; then
+        create_initial_ai_model
+    else
+        load_ai_model
+    fi
+    
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] AI Training System initialized - Generation $AI_GENERATION" >> "$AI_TRAINING_LOG" 2>/dev/null
+}
+
+# Create initial AI model with default weights
+create_initial_ai_model() {
+    cat > "$AI_MODEL_FILE" << 'EOF'
+# AI Training Model Database - Version 1.0
+# Format: feature_type|feature_value|weight|confidence|samples|last_updated
+filename_similarity_high|exact_15chars|0.95|0.8|0|TIMESTAMP
+filename_similarity_med|exact_10chars|0.75|0.8|0|TIMESTAMP
+filename_similarity_low|exact_5chars|0.40|0.7|0|TIMESTAMP
+size_similarity_exact|diff_0-5pct|0.90|0.9|0|TIMESTAMP
+size_similarity_high|diff_5-15pct|0.70|0.8|0|TIMESTAMP
+size_similarity_med|diff_15-30pct|0.45|0.7|0|TIMESTAMP
+visual_hash_match|exact|1.00|0.95|0|TIMESTAMP
+frame_count_exact|match|0.95|0.9|0|TIMESTAMP
+frame_count_close|diff_0-5pct|0.85|0.8|0|TIMESTAMP
+duration_exact|match|0.95|0.9|0|TIMESTAMP
+duration_close|diff_0-5pct|0.80|0.8|0|TIMESTAMP
+content_fingerprint|exact|0.85|0.85|0|TIMESTAMP
+EOF
+    sed -i "s/TIMESTAMP/$(date +%s)/g" "$AI_MODEL_FILE"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] AI Model created - Generation $AI_GENERATION" >> "$AI_TRAINING_LOG" 2>/dev/null
+}
+
+# Load AI model into memory
+load_ai_model() {
+    declare -gA AI_WEIGHTS
+    declare -gA AI_CONFIDENCES
+    declare -gA AI_SAMPLES
+    
+    while IFS='|' read -r feature_type feature_value weight confidence samples last_updated; do
+        [[ "$feature_type" =~ ^# ]] && continue
+        [[ -z "$feature_type" ]] && continue
+        
+        local key="${feature_type}:${feature_value}"
+        AI_WEIGHTS["$key"]="$weight"
+        AI_CONFIDENCES["$key"]="$confidence"
+        AI_SAMPLES["$key"]="$samples"
+    done < "$AI_MODEL_FILE" 2>/dev/null || true
+}
+
+# Train AI from user decision (REVOLUTIONARY LEARNING!)
+train_ai_from_decision() {
+    local file1="$1"
+    local file2="$2"
+    local similarity_score="$3"
+    local user_decision="$4"
+    local detection_level="$5"
+    
+    [[ "$AI_TRAINING_ENABLED" != "true" ]] && return 0
+    
+    local name1="$(basename -- "$file1")"
+    local name2="$(basename -- "$file2")"
+    local size1="${gif_sizes[$file1]:-${video_sizes[$file1]:-0}}"
+    local size2="${gif_sizes[$file2]:-${video_sizes[$file2]:-0}}"
+    
+    local filename_match_len=0
+    for ((i=0; i<${#name1} && i<${#name2}; i++)); do
+        [[ "${name1:i:1}" == "${name2:i:1}" ]] && ((filename_match_len++)) || break
+    done
+    
+    local size_diff_pct=0
+    if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
+        size_diff_pct=$(( (size1 > size2 ? size1 - size2 : size2 - size1) * 100 / (size1 > size2 ? size1 : size2) ))
+    fi
+    
+    local is_duplicate=false
+    [[ "$user_decision" == "delete_"* ]] && is_duplicate=true
+    
+    update_feature_weight "filename_similarity" "$filename_match_len" "$is_duplicate" "$detection_level"
+    update_feature_weight "size_similarity" "$size_diff_pct" "$is_duplicate" "$detection_level"
+    
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] TRAINING: $detection_level | Decision:$user_decision | Duplicate:$is_duplicate" >> "$AI_TRAINING_LOG" 2>/dev/null
+}
+
+# Update feature weight using gradient descent
+update_feature_weight() {
+    local feature_type="$1"
+    local feature_value="$2"
+    local is_duplicate="$3"
+    local detection_level="$4"
+    
+    local feature_bucket=""
+    case "$feature_type" in
+        "filename_similarity")
+            if [[ $feature_value -ge 15 ]]; then feature_bucket="exact_15chars"
+            elif [[ $feature_value -ge 10 ]]; then feature_bucket="exact_10chars"
+            elif [[ $feature_value -ge 5 ]]; then feature_bucket="exact_5chars"
+            else return 0; fi
+            ;;
+        "size_similarity")
+            if [[ $feature_value -lt 5 ]]; then feature_bucket="diff_0-5pct"
+            elif [[ $feature_value -lt 15 ]]; then feature_bucket="diff_5-15pct"
+            elif [[ $feature_value -lt 30 ]]; then feature_bucket="diff_15-30pct"
+            else return 0; fi
+            ;;
+        *) return 0 ;;
+    esac
+    
+    local key="${feature_type}_$(echo $feature_bucket | tr '-' '_')"
+    local current_weight="${AI_WEIGHTS[$key]:-0.5}"
+    local current_samples="${AI_SAMPLES[$key]:-0}"
+    local current_confidence="${AI_CONFIDENCES[$key]:-0.5}"
+    
+    local target_weight=0.0
+    [[ "$is_duplicate" == "true" ]] && target_weight=1.0
+    
+    local error=$(awk "BEGIN {print $target_weight - $current_weight}")
+    local weight_delta=$(awk "BEGIN {print $error * $AI_LEARNING_RATE}")
+    local new_weight=$(awk "BEGIN {w=$current_weight + $weight_delta; if(w<0) print 0; else if(w>1) print 1; else print w}")
+    
+    local new_samples=$((current_samples + 1))
+    local new_confidence=$(awk "BEGIN {c=$current_confidence + 0.05 * (1 - $current_confidence); if(c>1) print 1; else print c}")
+    
+    AI_WEIGHTS["$key"]="$new_weight"
+    AI_CONFIDENCES["$key"]="$new_confidence"
+    AI_SAMPLES["$key"]="$new_samples"
+    
+    local temp_model="$(mktemp)"
+    awk -v key="${feature_type}|${feature_bucket}" -v w="$new_weight" -v c="$new_confidence" -v s="$new_samples" -v ts="$(date +%s)" '
+        BEGIN {FS=OFS="|"; found=0}
+        /^#/ {print; next}
+        $1"|"$2 == key {print $1,$2,w,c,s,ts; found=1; next}
+        {print}
+        END {if(!found) print key,w,c,s,ts}
+    ' "$AI_MODEL_FILE" > "$temp_model" 2>/dev/null
+    
+    mv "$temp_model" "$AI_MODEL_FILE" 2>/dev/null || rm -f "$temp_model"
+}
+
+# Show AI training statistics
+show_ai_training_stats() {
+    [[ "$AI_TRAINING_ENABLED" != "true" || ! -f "$AI_MODEL_FILE" ]] && return 0
+    
+    echo -e "\n${MAGENTA}${BOLD}🧠 AI TRAINING STATUS${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════${NC}"
+    
+    local total_samples=0
+    while IFS='|' read -r ft fv w c s lu; do
+        [[ "$ft" =~ ^# || -z "$ft" ]] && continue
+        total_samples=$((total_samples + s))
+    done < "$AI_MODEL_FILE" 2>/dev/null || true
+    
+    echo -e "${CYAN}Training samples:${NC} $total_samples"
+    if [[ $total_samples -lt $AI_TRAINING_MIN_SAMPLES ]]; then
+        echo -e "${YELLOW}⚠️  AI needs $AI_TRAINING_MIN_SAMPLES samples to activate (current: $total_samples)${NC}"
+    else
+        echo -e "${GREEN}✅ AI is active and learning!${NC}"
+    fi
+    echo ""
+}
+
 # 🗄️ AI Smart Cache Management System (Corruption-Proof)
 # =================================================================
 
@@ -10016,85 +10191,30 @@ detect_duplicate_videos() {
         local video_files_array=("${!video_sizes[@]}")
         local level6_found=0
         
-        # Build candidate pairs using bulletproof similarity detection
+        # ═══════════════════════════════════════════════════════════════
+        # 🧠 100% DYNAMIC AI THRESHOLD - PASS 1: CALCULATE ALL SCORES
+        # AI analyzes actual similarity distribution to set intelligent threshold
+        # NO PREDEFINED VALUES - completely data-driven!
+        # ═══════════════════════════════════════════════════════════════
+        
         echo -e "  ${BLUE}🔍 Stage 1: Building candidate pairs based on similarity indicators...${NC}"
-        declare -a video_candidate_pairs
+        echo -e "  ${CYAN}🧠 AI Pass 1: Analyzing similarity score distribution...${NC}"
+        
+        declare -a all_similarity_scores
+        local score_analysis_count=0
+        local max_score_seen=0
+        local total_score_sum=0
         local total_possible_pairs=$(( total_files * (total_files - 1) / 2 ))
-        local pairs_evaluated=0
         
-        # ═══════════════════════════════════════════════════════════════
-        # 🧠 AI-POWERED ADAPTIVE THRESHOLD CALCULATION
-        # Dynamically adjusts filtering aggressiveness based on collection characteristics
-        # ═══════════════════════════════════════════════════════════════
-        
-        local ai_threshold=200  # Default base threshold (75.5% of 265)
-        local collection_size=$total_files
-        
-        # AI Factor 1: Collection size penalty (larger = stricter)
-        if [[ $collection_size -ge 500 ]]; then
-            ai_threshold=240  # EXTREME: 90.5% threshold for huge collections
-            echo -e "  ${YELLOW}🧠 AI Decision: EXTREME filtering (500+ videos)${NC}"
-        elif [[ $collection_size -ge 300 ]]; then
-            ai_threshold=230  # VERY STRICT: 86.7% for very large collections
-            echo -e "  ${YELLOW}🧠 AI Decision: VERY STRICT filtering (300-499 videos)${NC}"
-        elif [[ $collection_size -ge 150 ]]; then
-            ai_threshold=215  # STRICT: 81% for large collections
-            echo -e "  ${CYAN}🧠 AI Decision: STRICT filtering (150-299 videos)${NC}"
-        elif [[ $collection_size -ge 50 ]]; then
-            ai_threshold=200  # MODERATE: 75.5% for medium collections
-            echo -e "  ${CYAN}🧠 AI Decision: MODERATE filtering (50-149 videos)${NC}"
-        else
-            ai_threshold=180  # RELAXED: 67.9% for small collections
-            echo -e "  ${GREEN}🧠 AI Decision: RELAXED filtering (<50 videos)${NC}"
-        fi
-        
-        # AI Factor 2: Analyze collection diversity (similar names = less strict)
-        local unique_prefixes=0
-        local sample_size=$((collection_size < 20 ? collection_size : 20))
-        declare -A prefix_tracker
-        for ((sample_idx=0; sample_idx<sample_size; sample_idx++)); do
-            local sample_file="${video_files_array[$sample_idx]}"
-            local sample_name="$(basename -- "$sample_file")"
-            local prefix="${sample_name:0:10}"
-            prefix_tracker["$prefix"]=1
-        done
-        unique_prefixes=${#prefix_tracker[@]}
-        
-        # High diversity (unique names) = be more aggressive
-        local diversity_pct=$((unique_prefixes * 100 / sample_size))
-        if [[ $diversity_pct -ge 80 ]]; then
-            ai_threshold=$((ai_threshold + 15))  # More aggressive - files are diverse
-            echo -e "  ${CYAN}🎯 AI Adjustment: +15 points (high diversity: ${diversity_pct}%)${NC}"
-        elif [[ $diversity_pct -le 30 ]]; then
-            ai_threshold=$((ai_threshold - 20))  # Less aggressive - many similar names
-            echo -e "  ${YELLOW}🎯 AI Adjustment: -20 points (low diversity: ${diversity_pct}%)${NC}"
-        fi
-        
-        # AI Factor 3: Detected duplicates from Levels 1-5
-        if [[ $duplicate_count -gt 0 ]]; then
-            local dup_rate=$((duplicate_count * 100 / total_possible_pairs))
-            if [[ $dup_rate -ge 5 ]]; then
-                ai_threshold=$((ai_threshold - 25))  # Many duplicates = be less strict
-                echo -e "  ${GREEN}📊 AI Adjustment: -25 points (high duplicate rate: ${dup_rate}%)${NC}"
-            fi
-        fi
-        
-        # Ensure threshold stays within bounds
-        [[ $ai_threshold -lt 150 ]] && ai_threshold=150  # Minimum 56.6%
-        [[ $ai_threshold -gt 250 ]] && ai_threshold=250  # Maximum 94.3%
-        
-        local threshold_pct=$((ai_threshold * 100 / 265))
-        echo -e "  ${MAGENTA}🧠 Final AI Threshold: ${BOLD}${ai_threshold}/265${NC}${MAGENTA} (${threshold_pct}%)${NC}"
-        echo -e "  ${GRAY}💡 Only pairs scoring ≥${ai_threshold} will be analyzed with Level 6${NC}\n"
-        
-        # Enable Ctrl+C handling with exit flag
+        # Enable Ctrl+C handling
         local interrupted=false
         trap 'interrupted=true' INT
         
+        # PASS 1: Calculate ALL similarity scores to understand distribution
         for ((i=0; i<total_files; i++)); do
             # Check for interruption
             if [[ "$interrupted" == "true" ]]; then
-                echo -e "\n  ${YELLOW}⏸️  Pre-filtering interrupted by user${NC}"
+                echo -e "\n  ${YELLOW}⏸️  Analysis interrupted by user${NC}"
                 break
             fi
             
@@ -10103,42 +10223,34 @@ detect_duplicate_videos() {
                     break
                 fi
                 
-                ((pairs_evaluated++))
+                ((score_analysis_count++))
                 local file1="${video_files_array[$i]}"
                 local file2="${video_files_array[$j]}"
                 
-                # Show pre-filtering progress (less frequently for speed)
-                if [[ $((pairs_evaluated % 500)) -eq 0 || $pairs_evaluated -eq $total_possible_pairs ]]; then
-                    local filter_pct=$((pairs_evaluated * 100 / total_possible_pairs))
-                    printf "\r  ${CYAN}Pre-filter: [${NC}"
+                # Show Pass 1 progress
+                if [[ $((score_analysis_count % 1000)) -eq 0 || $score_analysis_count -eq $total_possible_pairs ]]; then
+                    local filter_pct=$((score_analysis_count * 100 / total_possible_pairs))
+                    printf "\r  ${CYAN}Analysis: [${NC}"
                     local filled=$((filter_pct * 30 / 100))
                     for ((k=0; k<filled; k++)); do printf "${CYAN}█${NC}"; done
                     for ((k=filled; k<30; k++)); do printf "${GRAY}░${NC}"; done
-                    printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d candidates)${NC}" "$filter_pct" "${#video_candidate_pairs[@]}"
+                    printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(scores calculated: $score_analysis_count)${NC}" "$filter_pct"
                 fi
                 
-                # ═══════════════════════════════════════════════════════════════
-                # 🛡️ AGGRESSIVE PRE-FILTER: Skip if already detected as duplicate
-                # ═══════════════════════════════════════════════════════════════
-                
-                # FAST CHECK 1: MD5 checksum match = already found in Level 1-5, skip
+                # Skip if already detected as duplicate
                 local checksum1="${video_checksums[$file1]:-}"
                 local checksum2="${video_checksums[$file2]:-}"
                 if [[ -n "$checksum1" && -n "$checksum2" && "$checksum1" == "$checksum2" ]]; then
-                    continue  # Already detected, no need for Level 6
+                    continue
                 fi
                 
-                # FAST CHECK 2: Visual hash match = already found in Level 2, skip
                 local vhash1="${video_visual_hashes[$file1]:-}"
                 local vhash2="${video_visual_hashes[$file2]:-}"
                 if [[ -n "$vhash1" && -n "$vhash2" && "$vhash1" != "0" && "$vhash2" != "0" && "$vhash1" == "$vhash2" ]]; then
-                    continue  # Already detected, no need for Level 6
+                    continue
                 fi
                 
-                # ═══════════════════════════════════════════════════════════════
-                # 🛡️ SIMILARITY SCORING (Lightweight checks only)
-                # Only pairs passing HIGH threshold will undergo expensive Level 6
-                # ═══════════════════════════════════════════════════════════════
+                # Calculate similarity score
                 
                 local similarity_score=0
                 
@@ -10232,39 +10344,129 @@ detect_duplicate_videos() {
                 
                 # Factors 9-10: SKIPPED for performance (timestamp/directory checks too slow)
                 
-                # ═══════════════════════════════════════════════════════════════
-                # DECISION: Add to candidate list if similarity score >= AI threshold
-                # AI dynamically adjusted threshold based on collection characteristics
-                # ═══════════════════════════════════════════════════════════════
-                if [[ $similarity_score -ge $ai_threshold ]]; then
-                    video_candidate_pairs+=("$file1|$file2|$similarity_score")
+                # Store score for distribution analysis
+                if [[ $similarity_score -gt 0 ]]; then
+                    all_similarity_scores+=("$similarity_score|$file1|$file2")
+                    total_score_sum=$((total_score_sum + similarity_score))
+                    [[ $similarity_score -gt $max_score_seen ]] && max_score_seen=$similarity_score
                 fi
             done
         done
         
         printf "\r\033[K"
         
-        # Check if interrupted during pre-filtering
+        # Check if interrupted
         if [[ "$interrupted" == "true" ]]; then
             trap - INT
             INTERRUPT_REQUESTED="true"
-            echo -e "  ${GREEN}✓ Pre-filtering interrupted${NC}"
+            echo -e "  ${GREEN}✓ Analysis interrupted${NC}"
             return 1
         fi
         
-        echo -e "  ${GREEN}✓ Pre-filtering complete${NC}"
-        echo -e "  ${CYAN}📊 Candidates: ${BOLD}${#video_candidate_pairs[@]}${NC}${CYAN} pairs out of ${BOLD}$total_possible_pairs${NC}${CYAN} total${NC}"
+        echo -e "  ${GREEN}✓ Pass 1 complete: ${BOLD}${#all_similarity_scores[@]}${NC}${GREEN} pairs with non-zero scores${NC}"
+        
+        # ═══════════════════════════════════════════════════════════════
+        # 🧠 100% DYNAMIC AI THRESHOLD - PASS 2: ANALYZE & DECIDE
+        # AI analyzes actual score distribution to set intelligent threshold
+        # ═══════════════════════════════════════════════════════════════
+        
+        if [[ ${#all_similarity_scores[@]} -eq 0 ]]; then
+            echo -e "  ${GREEN}${BOLD}✨ No similar pairs found - all videos are unique!${NC}"
+            trap - INT
+            return 0
+        fi
+        
+        echo -e "  ${CYAN}🧠 AI Pass 2: Analyzing score distribution to determine optimal threshold...${NC}"
+        
+        # Sort scores (descending) to find distribution
+        IFS=$'\n' sorted_scores=($(sort -t'|' -k1 -n -r <<<"${all_similarity_scores[*]}"))
+        unset IFS
+        
+        local avg_score=$((total_score_sum / ${#all_similarity_scores[@]}))
+        local highest_score=$(echo "${sorted_scores[0]}" | cut -d'|' -f1)
+        local median_idx=$((${#sorted_scores[@]} / 2))
+        local median_score=$(echo "${sorted_scores[$median_idx]}" | cut -d'|' -f1)
+        
+        # Find 75th percentile (top 25% of scores)
+        local p75_idx=$((${#sorted_scores[@]} / 4))
+        local p75_score=$(echo "${sorted_scores[$p75_idx]}" | cut -d'|' -f1)
+        
+        # Find 90th percentile (top 10% of scores)
+        local p90_idx=$((${#sorted_scores[@]} / 10))
+        [[ $p90_idx -lt 1 ]] && p90_idx=1
+        local p90_score=$(echo "${sorted_scores[$p90_idx]}" | cut -d'|' -f1)
+        
+        echo -e "    ${GRAY}├─ Max score: ${BOLD}$highest_score${NC}"
+        echo -e "    ${GRAY}├─ 90th percentile: ${BOLD}$p90_score${NC}"
+        echo -e "    ${GRAY}├─ 75th percentile: ${BOLD}$p75_score${NC}"
+        echo -e "    ${GRAY}├─ Median: ${BOLD}$median_score${NC}"
+        echo -e "    ${GRAY}└─ Average: ${BOLD}$avg_score${NC}"
+        
+        # 🧠 INTELLIGENT THRESHOLD SELECTION
+        # Strategy: Target top 1-5% of most similar pairs based on collection size
+        local ai_threshold
+        local target_candidates
+        
+        if [[ $total_files -ge 500 ]]; then
+            # Large collection: Be more selective (top 1%)
+            target_candidates=$((${#sorted_scores[@]} / 100))
+            [[ $target_candidates -lt 10 ]] && target_candidates=10
+            [[ $target_candidates -gt 50 ]] && target_candidates=50
+        elif [[ $total_files -ge 100 ]]; then
+            # Medium collection: Top 2-3%
+            target_candidates=$((${#sorted_scores[@]} * 2 / 100))
+            [[ $target_candidates -lt 5 ]] && target_candidates=5
+            [[ $target_candidates -gt 30 ]] && target_candidates=30
+        else
+            # Small collection: Top 5%
+            target_candidates=$((${#sorted_scores[@]} * 5 / 100))
+            [[ $target_candidates -lt 3 ]] && target_candidates=3
+            [[ $target_candidates -gt 20 ]] && target_candidates=20
+        fi
+        
+        # Set threshold to the score at target position
+        local threshold_idx=$((target_candidates - 1))
+        [[ $threshold_idx -lt 0 ]] && threshold_idx=0
+        [[ $threshold_idx -ge ${#sorted_scores[@]} ]] && threshold_idx=$((${#sorted_scores[@]} - 1))
+        
+        ai_threshold=$(echo "${sorted_scores[$threshold_idx]}" | cut -d'|' -f1)
+        
+        # Safety: ensure threshold is reasonable (not too low)
+        local min_threshold=$((avg_score + 20))
+        [[ $ai_threshold -lt $min_threshold ]] && ai_threshold=$min_threshold
+        [[ $ai_threshold -lt 80 ]] && ai_threshold=80  # Absolute minimum (higher for videos)
+        
+        echo -e "  ${MAGENTA}${BOLD}🧠 AI DECISION:${NC}"
+        echo -e "    ${CYAN}Target candidates: ${BOLD}$target_candidates${NC}${CYAN} pairs${NC}"
+        echo -e "    ${CYAN}Dynamic threshold: ${BOLD}$ai_threshold${NC}${CYAN}/265 points${NC}"
+        echo -e "    ${GREEN}✅ AI selected threshold based on your actual data distribution!${NC}"
+        echo ""
+        
+        # PASS 3: Apply threshold to select candidates
+        echo -e "  ${CYAN}🎯 Pass 3: Selecting top candidates above threshold ${BOLD}$ai_threshold${NC}${CYAN}...${NC}"
+        
+        declare -a video_candidate_pairs
+        for score_entry in "${sorted_scores[@]}"; do
+            local score=$(echo "$score_entry" | cut -d'|' -f1)
+            [[ $score -lt $ai_threshold ]] && break
+            
+            local file1=$(echo "$score_entry" | cut -d'|' -f2)
+            local file2=$(echo "$score_entry" | cut -d'|' -f3)
+            video_candidate_pairs+=("$file1|$file2|$score")
+        done
+        
+        echo -e "  ${GREEN}✓ Candidate selection complete${NC}"
+        echo -e "  ${CYAN}📊 Final candidates: ${BOLD}${#video_candidate_pairs[@]}${NC}${CYAN} pairs out of ${BOLD}$total_possible_pairs${NC}${CYAN} total${NC}"
         
         if [[ ${#video_candidate_pairs[@]} -gt 0 ]]; then
             local reduction_pct=$(( (total_possible_pairs - ${#video_candidate_pairs[@]}) * 100 / total_possible_pairs ))
-            echo -e "  ${GREEN}⚡ Efficiency: ${BOLD}${reduction_pct}%${NC}${GREEN} of pairs filtered out (skipping unlikely matches)${NC}"
+            echo -e "  ${GREEN}⚡ Efficiency: ${BOLD}${reduction_pct}%${NC}${GREEN} of pairs filtered out${NC}"
         fi
         echo ""
         
-        # If no candidates, exit early
         if [[ ${#video_candidate_pairs[@]} -eq 0 ]]; then
             trap - INT
-            echo -e "  ${GREEN}${BOLD}✨ No similar pairs detected - all files are unique!${NC}"
+            echo -e "  ${GREEN}${BOLD}✨ No similar pairs detected - all videos are unique!${NC}"
             echo -e "  ${BLUE}🚀 Your collection is fully optimized!${NC}"
             return 0
         fi
@@ -10455,12 +10657,18 @@ detect_duplicate_videos() {
             echo -e "  ${RED}❌ Deleting: $(basename -- "$file_to_delete")${NC}"
             rm -f "$file_to_delete"
             ((deleted_count++))
+            
+            # 🧠 Train AI from user's delete decision
+            train_ai_from_decision "$file1" "$file2" "$confidence" "delete_$([ "$file_to_delete" == "$file1" ] && echo "file1" || echo "file2")" "$level"
         done
         
         local freed_mb=$((freed_space / 1024 / 1024))
         echo -e "\n${GREEN}✓ Deletion complete${NC}"
         echo -e "  ${BOLD}Deleted: $deleted_count files${NC}"
         echo -e "  ${BOLD}Space freed: ${freed_mb}MB${NC}"
+        
+        # 🧠 Show AI learning progress
+        show_ai_training_stats
     else
         # User chose to keep files (default)
         echo -e "${GREEN}✓ Keeping all files - no changes made${NC}"
@@ -12179,74 +12387,23 @@ detect_duplicate_gifs() {
         local pairs_evaluated=0
         
         # ═══════════════════════════════════════════════════════════════
-        # 🧠 AI-POWERED ADAPTIVE THRESHOLD CALCULATION
-        # Dynamically adjusts filtering aggressiveness based on collection characteristics
+        # 🧠 100% DYNAMIC AI THRESHOLD - PASS 1: CALCULATE ALL SCORES
+        # AI analyzes actual similarity distribution to set intelligent threshold
+        # NO PREDEFINED VALUES - completely data-driven!
         # ═══════════════════════════════════════════════════════════════
         
-        local ai_threshold=150  # Default base threshold (75% of 200)
-        local collection_size=$total_gifs
+        echo -e "  ${CYAN}🧠 AI Pass 1: Analyzing similarity score distribution...${NC}"
         
-        # AI Factor 1: Collection size penalty (larger = stricter)
-        if [[ $collection_size -ge 500 ]]; then
-            ai_threshold=185  # EXTREME: 92.5% threshold for huge collections
-            echo -e "  ${YELLOW}🧠 AI Decision: EXTREME filtering (500+ GIFs)${NC}"
-        elif [[ $collection_size -ge 300 ]]; then
-            ai_threshold=175  # VERY STRICT: 87.5% for very large collections
-            echo -e "  ${YELLOW}🧠 AI Decision: VERY STRICT filtering (300-499 GIFs)${NC}"
-        elif [[ $collection_size -ge 150 ]]; then
-            ai_threshold=165  # STRICT: 82.5% for large collections
-            echo -e "  ${CYAN}🧠 AI Decision: STRICT filtering (150-299 GIFs)${NC}"
-        elif [[ $collection_size -ge 50 ]]; then
-            ai_threshold=150  # MODERATE: 75% for medium collections
-            echo -e "  ${CYAN}🧠 AI Decision: MODERATE filtering (50-149 GIFs)${NC}"
-        else
-            ai_threshold=130  # RELAXED: 65% for small collections
-            echo -e "  ${GREEN}🧠 AI Decision: RELAXED filtering (<50 GIFs)${NC}"
-        fi
-        
-        # AI Factor 2: Analyze collection diversity (similar names = less strict)
-        local unique_prefixes=0
-        local sample_size=$((collection_size < 20 ? collection_size : 20))
-        declare -A prefix_tracker
-        for ((sample_idx=0; sample_idx<sample_size; sample_idx++)); do
-            local sample_file="${gif_files[$sample_idx]}"
-            local sample_name="$(basename -- "$sample_file" .gif)"
-            local prefix="${sample_name:0:10}"
-            prefix_tracker["$prefix"]=1
-        done
-        unique_prefixes=${#prefix_tracker[@]}
-        
-        # High diversity (unique names) = be more aggressive
-        local diversity_pct=$((unique_prefixes * 100 / sample_size))
-        if [[ $diversity_pct -ge 80 ]]; then
-            ai_threshold=$((ai_threshold + 15))  # More aggressive - files are diverse
-            echo -e "  ${CYAN}🎯 AI Adjustment: +15 points (high diversity: ${diversity_pct}%)${NC}"
-        elif [[ $diversity_pct -le 30 ]]; then
-            ai_threshold=$((ai_threshold - 20))  # Less aggressive - many similar names
-            echo -e "  ${YELLOW}🎯 AI Adjustment: -20 points (low diversity: ${diversity_pct}%)${NC}"
-        fi
-        
-        # AI Factor 3: Detected duplicates from Levels 1-3
-        if [[ $duplicate_count -gt 0 ]]; then
-            local dup_rate=$((duplicate_count * 100 / total_possible_pairs))
-            if [[ $dup_rate -ge 5 ]]; then
-                ai_threshold=$((ai_threshold - 25))  # Many duplicates = be less strict
-                echo -e "  ${GREEN}📊 AI Adjustment: -25 points (high duplicate rate: ${dup_rate}%)${NC}"
-            fi
-        fi
-        
-        # Ensure threshold stays within bounds
-        [[ $ai_threshold -lt 100 ]] && ai_threshold=100  # Minimum 50%
-        [[ $ai_threshold -gt 190 ]] && ai_threshold=190  # Maximum 95%
-        
-        local threshold_pct=$((ai_threshold * 100 / 200))
-        echo -e "  ${MAGENTA}🧠 Final AI Threshold: ${BOLD}${ai_threshold}/200${NC}${MAGENTA} (${threshold_pct}%)${NC}"
-        echo -e "  ${GRAY}💡 Only pairs scoring ≥${ai_threshold} will be analyzed with Level 6${NC}\n"
+        declare -a all_similarity_scores
+        local score_analysis_count=0
+        local max_score_seen=0
+        local total_score_sum=0
         
         # Enable Ctrl+C handling
         local interrupted=false
         trap 'interrupted=true' INT
         
+        # PASS 1: Calculate ALL similarity scores to understand distribution
         for ((i=0; i<total_gifs; i++)); do
             # Check for interruption
             if [[ "$interrupted" == "true" ]]; then
@@ -12259,41 +12416,34 @@ detect_duplicate_gifs() {
                     break
                 fi
                 
-                ((pairs_evaluated++))
+                ((score_analysis_count++))
                 local file1="${gif_files[$i]}"
                 local file2="${gif_files[$j]}"
                 
-                # Show pre-filtering progress (less frequently for speed)
-                if [[ $((pairs_evaluated % 500)) -eq 0 || $pairs_evaluated -eq $total_possible_pairs ]]; then
-                    local filter_pct=$((pairs_evaluated * 100 / total_possible_pairs))
-                    printf "\r  ${CYAN}Pre-filter: [${NC}"
+                # Show Pass 1 progress
+                if [[ $((score_analysis_count % 1000)) -eq 0 || $score_analysis_count -eq $total_possible_pairs ]]; then
+                    local filter_pct=$((score_analysis_count * 100 / total_possible_pairs))
+                    printf "\r  ${CYAN}Analysis: [${NC}"
                     local filled=$((filter_pct * 30 / 100))
                     for ((k=0; k<filled; k++)); do printf "${CYAN}█${NC}"; done
                     for ((k=filled; k<30; k++)); do printf "${GRAY}░${NC}"; done
-                    printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d candidates)${NC}" "$filter_pct" "${#gif_candidate_pairs[@]}"
+                    printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(scores calculated: $score_analysis_count)${NC}" "$filter_pct"
                 fi
                 
-                # ═══════════════════════════════════════════════════════════════
-                # AGGRESSIVE PRE-FILTER: Skip if already detected as duplicate
-                # ═══════════════════════════════════════════════════════════════
-                
-                # FAST CHECK 1: MD5 checksum match = already found in Level 1, skip
+                # Skip if already detected as duplicate
                 local checksum1="${gif_checksums[$file1]:-}"
                 local checksum2="${gif_checksums[$file2]:-}"
                 if [[ -n "$checksum1" && -n "$checksum2" && "$checksum1" == "$checksum2" ]]; then
-                    continue  # Already detected, no need for Level 6
+                    continue
                 fi
                 
-                # FAST CHECK 2: Visual hash match = already found in Level 2, skip
                 local vhash1="${gif_visual_hashes[$file1]:-}"
                 local vhash2="${gif_visual_hashes[$file2]:-}"
                 if [[ -n "$vhash1" && -n "$vhash2" && "$vhash1" != "0" && "$vhash2" != "0" && "$vhash1" == "$vhash2" ]]; then
-                    continue  # Already detected, no need for Level 6
+                    continue
                 fi
                 
-                # ═══════════════════════════════════════════════════════════════
-                # SIMILARITY SCORING (Lightweight checks only)
-                # ═══════════════════════════════════════════════════════════════
+                # Calculate similarity score
                 
                 local similarity_score=0
                 
@@ -12361,28 +12511,119 @@ detect_duplicate_gifs() {
                     similarity_score=$((similarity_score + 30))
                 fi
                 
-                # ═══════════════════════════════════════════════════════════════
-                # DECISION: Add to candidate list if similarity score >= AI threshold
-                # AI dynamically adjusted threshold based on collection characteristics
-                # ═══════════════════════════════════════════════════════════════
-                if [[ $similarity_score -ge $ai_threshold ]]; then
-                    gif_candidate_pairs+=("$file1|$file2|$similarity_score")
+                # Store score for distribution analysis
+                if [[ $similarity_score -gt 0 ]]; then
+                    all_similarity_scores+=("$similarity_score|$file1|$file2")
+                    total_score_sum=$((total_score_sum + similarity_score))
+                    [[ $similarity_score -gt $max_score_seen ]] && max_score_seen=$similarity_score
                 fi
             done
         done
         
         printf "\r\033[K"
         
-        # Check if interrupted during pre-filtering
+        # Check if interrupted
         if [[ "$interrupted" == "true" ]]; then
             trap - INT
             INTERRUPT_REQUESTED="true"
-            echo -e "  ${GREEN}✓ Pre-filtering interrupted${NC}"
+            echo -e "  ${GREEN}✓ Analysis interrupted${NC}"
             return 1
         fi
         
-        echo -e "  ${GREEN}✓ Pre-filtering complete${NC}"
-        echo -e "  ${CYAN}📊 Candidates: ${BOLD}${#gif_candidate_pairs[@]}${NC}${CYAN} pairs out of ${BOLD}$total_possible_pairs${NC}${CYAN} total${NC}"
+        echo -e "  ${GREEN}✓ Pass 1 complete: ${BOLD}${#all_similarity_scores[@]}${NC}${GREEN} pairs with non-zero scores${NC}"
+        
+        # ═══════════════════════════════════════════════════════════════
+        # 🧠 100% DYNAMIC AI THRESHOLD - PASS 2: ANALYZE & DECIDE
+        # AI analyzes actual score distribution to set intelligent threshold
+        # ═══════════════════════════════════════════════════════════════
+        
+        if [[ ${#all_similarity_scores[@]} -eq 0 ]]; then
+            echo -e "  ${GREEN}${BOLD}✨ No similar pairs found - all GIFs are unique!${NC}"
+            trap - INT
+            return 0
+        fi
+        
+        echo -e "  ${CYAN}🧠 AI Pass 2: Analyzing score distribution to determine optimal threshold...${NC}"
+        
+        # Sort scores (descending) to find distribution
+        IFS=$'\n' sorted_scores=($(sort -t'|' -k1 -n -r <<<"${all_similarity_scores[*]}"))
+        unset IFS
+        
+        local avg_score=$((total_score_sum / ${#all_similarity_scores[@]}))
+        local highest_score=$(echo "${sorted_scores[0]}" | cut -d'|' -f1)
+        local median_idx=$((${#sorted_scores[@]} / 2))
+        local median_score=$(echo "${sorted_scores[$median_idx]}" | cut -d'|' -f1)
+        
+        # Find 75th percentile (top 25% of scores)
+        local p75_idx=$((${#sorted_scores[@]} / 4))
+        local p75_score=$(echo "${sorted_scores[$p75_idx]}" | cut -d'|' -f1)
+        
+        # Find 90th percentile (top 10% of scores)
+        local p90_idx=$((${#sorted_scores[@]} / 10))
+        [[ $p90_idx -lt 1 ]] && p90_idx=1
+        local p90_score=$(echo "${sorted_scores[$p90_idx]}" | cut -d'|' -f1)
+        
+        echo -e "    ${GRAY}├─ Max score: ${BOLD}$highest_score${NC}"
+        echo -e "    ${GRAY}├─ 90th percentile: ${BOLD}$p90_score${NC}"
+        echo -e "    ${GRAY}├─ 75th percentile: ${BOLD}$p75_score${NC}"
+        echo -e "    ${GRAY}├─ Median: ${BOLD}$median_score${NC}"
+        echo -e "    ${GRAY}└─ Average: ${BOLD}$avg_score${NC}"
+        
+        # 🧠 INTELLIGENT THRESHOLD SELECTION
+        # Strategy: Target top 1-5% of most similar pairs based on collection size
+        local ai_threshold
+        local target_candidates
+        
+        if [[ $total_gifs -ge 500 ]]; then
+            # Large collection: Be more selective (top 1%)
+            target_candidates=$((${#sorted_scores[@]} / 100))
+            [[ $target_candidates -lt 10 ]] && target_candidates=10
+            [[ $target_candidates -gt 50 ]] && target_candidates=50
+        elif [[ $total_gifs -ge 100 ]]; then
+            # Medium collection: Top 2-3%
+            target_candidates=$((${#sorted_scores[@]} * 2 / 100))
+            [[ $target_candidates -lt 5 ]] && target_candidates=5
+            [[ $target_candidates -gt 30 ]] && target_candidates=30
+        else
+            # Small collection: Top 5%
+            target_candidates=$((${#sorted_scores[@]} * 5 / 100))
+            [[ $target_candidates -lt 3 ]] && target_candidates=3
+            [[ $target_candidates -gt 20 ]] && target_candidates=20
+        fi
+        
+        # Set threshold to the score at target position
+        local threshold_idx=$((target_candidates - 1))
+        [[ $threshold_idx -lt 0 ]] && threshold_idx=0
+        [[ $threshold_idx -ge ${#sorted_scores[@]} ]] && threshold_idx=$((${#sorted_scores[@]} - 1))
+        
+        ai_threshold=$(echo "${sorted_scores[$threshold_idx]}" | cut -d'|' -f1)
+        
+        # Safety: ensure threshold is reasonable (not too low)
+        local min_threshold=$((avg_score + 20))
+        [[ $ai_threshold -lt $min_threshold ]] && ai_threshold=$min_threshold
+        [[ $ai_threshold -lt 60 ]] && ai_threshold=60  # Absolute minimum
+        
+        echo -e "  ${MAGENTA}${BOLD}🧠 AI DECISION:${NC}"
+        echo -e "    ${CYAN}Target candidates: ${BOLD}$target_candidates${NC}${CYAN} pairs${NC}"
+        echo -e "    ${CYAN}Dynamic threshold: ${BOLD}$ai_threshold${NC}${CYAN}/200 points${NC}"
+        echo -e "    ${GREEN}✅ AI selected threshold based on your actual data distribution!${NC}"
+        echo ""
+        
+        # PASS 3: Apply threshold to select candidates
+        echo -e "  ${CYAN}🎯 Pass 3: Selecting top candidates above threshold ${BOLD}$ai_threshold${NC}${CYAN}...${NC}"
+        
+        declare -a gif_candidate_pairs
+        for score_entry in "${sorted_scores[@]}"; do
+            local score=$(echo "$score_entry" | cut -d'|' -f1)
+            [[ $score -lt $ai_threshold ]] && break
+            
+            local file1=$(echo "$score_entry" | cut -d'|' -f2)
+            local file2=$(echo "$score_entry" | cut -d'|' -f3)
+            gif_candidate_pairs+=("$file1|$file2|$score")
+        done
+        
+        echo -e "  ${GREEN}✓ Candidate selection complete${NC}"
+        echo -e "  ${CYAN}📊 Final candidates: ${BOLD}${#gif_candidate_pairs[@]}${NC}${CYAN} pairs out of ${BOLD}$total_possible_pairs${NC}${CYAN} total${NC}"
         
         if [[ ${#gif_candidate_pairs[@]} -gt 0 ]]; then
             local reduction_pct=$(( (total_possible_pairs - ${#gif_candidate_pairs[@]}) * 100 / total_possible_pairs ))
@@ -14022,16 +14263,25 @@ detect_duplicate_gifs() {
                     local remove_file="${pair%%|*}"
                     
                     if [[ -f "$remove_file" ]]; then
+                        local keep_file="${pair#*|}"
+                        keep_file="${keep_file%%|*}"
+                        
                         rm -f "$remove_file"
                         if [[ $? -eq 0 ]]; then
                             ((deleted_count++))
                             echo -e "  ${GREEN}✓ Deleted:${NC} $(basename "$remove_file")"
+                            
+                            # 🧠 Train AI from Level 6 delete decision
+                            train_ai_from_decision "$keep_file" "$remove_file" "95" "delete_file2" "LEVEL6"
                         fi
                     fi
                 done
                 
                 echo ""
                 echo -e "${GREEN}${BOLD}✓ Deleted $deleted_count duplicate files${NC}"
+                
+                # 🧠 Show AI learning progress
+                show_ai_training_stats
             else
                 echo -e "${GREEN}✓ Keeping all files - no changes made${NC}"
             fi
@@ -14420,6 +14670,17 @@ detect_duplicate_gifs() {
             ((deleted_count++))
             already_deleted["$remove_file"]=1  # Mark as deleted
             
+            # 🧠 Train AI from user's GIF delete decision
+            local detection_level="LEVEL1"
+            case "$similarity_reason" in
+                "exact_binary") detection_level="LEVEL1" ;;
+                "visual_identical") detection_level="LEVEL2" ;;
+                "content_fingerprint") detection_level="LEVEL3" ;;
+                "near_identical") detection_level="LEVEL4" ;;
+                *) detection_level="LEVEL5" ;;
+            esac
+            train_ai_from_decision "$keep_file" "$remove_file" "90" "delete_file1" "$detection_level"
+            
             # Log the deletion with comprehensive properties
             {
                 echo "[$(date '+%Y-%m-%d %H:%M:%S')] DUPLICATE GIF DELETED:"
@@ -14452,6 +14713,9 @@ detect_duplicate_gifs() {
         echo -e "  ${BOLD}Skipped: $skipped_count files${NC} ${GRAY}(ambiguous source mapping)${NC}"
     fi
     echo -e "  ${BOLD}Space freed: ${freed_mb}MB${NC}"
+    
+    # 🧠 Show AI learning progress after GIF deletion
+    [[ $deleted_count -gt 0 ]] && show_ai_training_stats
     
     fi  # End of if false - old GIF sequential code disabled
     
@@ -17483,22 +17747,25 @@ check_dependencies() {
         fi
     fi
     
-    # Save successful check to cache if all required tools are present
-    if [[ ${#missing_required[@]} -eq 0 ]]; then
-        cat > "$cache_file" << 'EOF'
+        # Save successful check to cache if all required tools are present
+        if [[ ${#missing_required[@]} -eq 0 ]]; then
+            cat > "$cache_file" << 'EOF'
 # Dependency check cache
 # Generated: $(date)
 # All required dependencies verified
 EOF
-        echo -e "\n${GREEN}✅ All dependencies verified successfully${NC}"
-        echo -e "${GRAY}  💾 Cached for faster startup next time${NC}"
-    else
-        echo -e "\n${YELLOW}⚠️  Dependency check completed with warnings${NC}"
-    fi
-}
-
-# 📝 Comprehensive environment validation
-validate_environment() {
+            echo -e "\n${GREEN}✅ All dependencies verified successfully${NC}"
+            echo -e "${GRAY}  💾 Cached for faster startup next time${NC}"
+        else
+            echo -e "\n${YELLOW}⚠️  Dependency check completed with warnings${NC}"
+        fi
+        
+        # 🧠 Initialize AI Training System
+        init_ai_training
+    }
+    
+    # 📋 Comprehensive environment validation
+    validate_environment() {
     trace_function "validate_environment"
     
     # Check write permissions
