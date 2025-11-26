@@ -17719,11 +17719,11 @@ check_dependencies() {
             # Show version for whichever variant exists
             local version=""
             if command -v xxh128sum >/dev/null 2>&1; then
-                version=$(xxh128sum --version 2>/dev/null | head -1 || echo "xxHash available")
+                version=$(xxh128sum --version 2>&1 | head -1 | awk '{print "xxHash " $2}' || echo "xxHash available")
             elif command -v xxh64sum >/dev/null 2>&1; then
-                version=$(xxh64sum --version 2>/dev/null | head -1 || echo "xxHash available")
+                version=$(xxh64sum --version 2>&1 | head -1 | awk '{print "xxHash " $2}' || echo "xxHash available")
             else
-                version=$(xxhsum --version 2>/dev/null | head -1 || echo "xxHash available")
+                version=$(xxhsum --version 2>&1 | head -1 | awk '{print "xxHash " $2}' || echo "xxHash available")
             fi
             echo -e "  ${GREEN}✓ xxhash: $version${NC}"
             # Use the logical tool name for update checks (maps to package name via get_package_name)
@@ -17804,11 +17804,11 @@ check_dependencies() {
             "xxhsum"|"xxh64sum"|"xxh128sum")
                 # Check for any xxhash variant
                 if command -v xxh128sum >/dev/null 2>&1; then
-                    version=$(xxh128sum --version 2>/dev/null | head -1 || echo "xxHash available")
+                    version=$(xxh128sum --version 2>&1 | head -1 | awk '{print "xxHash " $2}' || echo "xxHash available")
                 elif command -v xxh64sum >/dev/null 2>&1; then
-                    version=$(xxh64sum --version 2>/dev/null | head -1 || echo "xxHash available")
+                    version=$(xxh64sum --version 2>&1 | head -1 | awk '{print "xxHash " $2}' || echo "xxHash available")
                 elif command -v xxhsum >/dev/null 2>&1; then
-                    version=$(xxhsum --version 2>/dev/null | head -1 || echo "xxHash available")
+                    version=$(xxhsum --version 2>&1 | head -1 | awk '{print "xxHash " $2}' || echo "xxHash available")
                 else
                     version="not found"
                 fi
@@ -17932,18 +17932,17 @@ check_dependencies() {
                 source /etc/os-release
                 case "${ID,,}" in
                     ubuntu|debian|pop|mint)
-                        echo -e "  ${GRAY}    • sudo apt install ffmpeg-nvidia (for NVIDIA)${NC}"
-                        echo -e "  ${GRAY}    • sudo apt install mesa-va-drivers intel-media-va-driver (for AMD/Intel)${NC}"
+                        echo -e "  ${GRAY}    • sudo apt install mesa-va-drivers intel-media-va-driver libva-utils${NC}"
+                        echo -e "  ${GRAY}    • For NVIDIA: Use proprietary drivers with libva-utils${NC}"
                         ;;
                     fedora|rhel|centos)
-                        echo -e "  ${GRAY}    • sudo dnf install ffmpeg-free (includes VAAPI)${NC}"
-                        echo -e "  ${GRAY}    • sudo dnf install nvidia-vaapi-driver (for NVIDIA)${NC}"
+                        echo -e "  ${GRAY}    • sudo dnf install ffmpeg mesa-va-drivers intel-media-driver libva-utils${NC}"
                         ;;
                     arch|manjaro)
-                        echo -e "  ${GRAY}    • sudo pacman -S ffmpeg libva-mesa-driver intel-media-driver${NC}"
+                        echo -e "  ${GRAY}    • sudo pacman -S ffmpeg libva-mesa-driver intel-media-driver libva-utils${NC}"
                         ;;
                     opensuse*|suse)
-                        echo -e "  ${GRAY}    • sudo zypper install ffmpeg-4 libva-vdpau-driver${NC}"
+                        echo -e "  ${GRAY}    • sudo zypper install ffmpeg-4 Mesa-libva libva-intel-driver libva-vdpau-driver libva-utils${NC}"
                         ;;
                 esac
             fi
@@ -17956,13 +17955,28 @@ check_dependencies() {
     
     # Handle missing hardware drivers with installation prompt
     if [[ ${#hw_drivers_missing[@]} -gt 0 ]]; then
-        echo -e "\n${YELLOW}📦 Missing hardware acceleration drivers:${NC}"
-        for driver in "${hw_drivers_missing[@]}"; do
-            echo -e "  ${YELLOW}• $driver${NC}"
-        done
+        # Check if user previously declined within last 24h
+        local skip_file="$LOG_DIR/.hw_prompt_skip"
+        local skip_prompt=false
+        if [[ -f "$skip_file" ]]; then
+            source "$skip_file" 2>/dev/null || true
+            local now_ts=$(date +%s)
+            if [[ -n "$skip_hw_prompt_until" && $now_ts -lt $skip_hw_prompt_until ]]; then
+                echo -e "\n${GRAY}⏭ Skipping hardware driver prompt (snoozed for $(( (skip_hw_prompt_until - now_ts) / 3600 )) hours).${NC}"
+                echo -e "${GRAY}Run 'Check Dependencies' from the menu to revisit at any time.${NC}"
+                skip_prompt=true
+            fi
+        fi
         
-        # Detect distribution and build installation commands
-        local hw_install_commands=()
+        # Only show and prompt if not skipped
+        if [[ "$skip_prompt" == false ]]; then
+            echo -e "\n${YELLOW}📦 Missing hardware acceleration drivers:${NC}"
+            for driver in "${hw_drivers_missing[@]}"; do
+                echo -e "  ${YELLOW}• $driver${NC}"
+            done
+            
+            # Detect distribution and build installation commands
+            local hw_install_commands=()
         if [[ -f /etc/os-release ]]; then
             source /etc/os-release
             
@@ -17970,27 +17984,27 @@ check_dependencies() {
                 ubuntu|debian|pop|mint)
                     # Determine which drivers to install based on GPU
                     if lspci 2>/dev/null | grep -qi "nvidia"; then
-                        hw_install_commands+=("sudo apt update && sudo apt install -y mesa-va-drivers libva-utils")
+                        hw_install_commands+=("sudo apt update && sudo apt install -y libva-utils")
                     elif lspci 2>/dev/null | grep -qi "amd.*radeon\|amd.*vga"; then
-                        hw_install_commands+=("sudo apt update && sudo apt install -y mesa-va-drivers libva-mesa-driver libva-utils")
+                        hw_install_commands+=("sudo apt update && sudo apt install -y mesa-va-drivers libva-utils")
                     elif lspci 2>/dev/null | grep -qi "intel.*vga\|intel.*graphics"; then
                         hw_install_commands+=("sudo apt update && sudo apt install -y intel-media-va-driver libva-utils")
                     fi
                     ;;
                 fedora|rhel|centos)
                     if lspci 2>/dev/null | grep -qi "nvidia"; then
-                        hw_install_commands+=("sudo dnf install -y nvidia-vaapi-driver libva-utils")
+                        hw_install_commands+=("sudo dnf install -y libva-utils")
                     elif lspci 2>/dev/null | grep -qi "amd.*radeon\|amd.*vga"; then
-                        hw_install_commands+=("sudo dnf install -y mesa-va-drivers libva-utils")
+                        hw_install_commands+=("sudo dnf install -y libva-utils mesa-va-drivers")
                     elif lspci 2>/dev/null | grep -qi "intel.*vga\|intel.*graphics"; then
                         hw_install_commands+=("sudo dnf install -y intel-media-driver libva-utils")
                     fi
                     ;;
                 arch|manjaro)
                     if lspci 2>/dev/null | grep -qi "nvidia"; then
-                        hw_install_commands+=("sudo pacman -S --needed libva-mesa-driver libva-utils")
+                        hw_install_commands+=("sudo pacman -S --needed libva-utils")
                     elif lspci 2>/dev/null | grep -qi "amd.*radeon\|amd.*vga"; then
-                        hw_install_commands+=("sudo pacman -S --needed libva-mesa-driver libva-utils mesa-vdpau")
+                        hw_install_commands+=("sudo pacman -S --needed libva-mesa-driver libva-utils")
                     elif lspci 2>/dev/null | grep -qi "intel.*vga\|intel.*graphics"; then
                         hw_install_commands+=("sudo pacman -S --needed intel-media-driver libva-utils")
                     fi
@@ -17999,9 +18013,9 @@ check_dependencies() {
                     if lspci 2>/dev/null | grep -qi "nvidia"; then
                         hw_install_commands+=("sudo zypper install -y libva-vdpau-driver libva-utils")
                     elif lspci 2>/dev/null | grep -qi "amd.*radeon\|amd.*vga"; then
-                        hw_install_commands+=("sudo zypper install -y libva-vdpau-driver libva-utils mesa-vdpau")
+                        hw_install_commands+=("sudo zypper install -y Mesa-libva libva-utils")
                     elif lspci 2>/dev/null | grep -qi "intel.*vga\|intel.*graphics"; then
-                        hw_install_commands+=("sudo zypper install -y libva-intel-driver intel-media-driver libva-utils")
+                        hw_install_commands+=("sudo zypper install -y libva-intel-driver libva-utils")
                     fi
                     ;;
                 *)
@@ -18010,47 +18024,51 @@ check_dependencies() {
             esac
         fi
         
-        # Prompt user to install hardware drivers
-        if [[ ${#hw_install_commands[@]} -gt 0 ]]; then
-            echo ""
-            echo -e "${CYAN}🚀 Hardware acceleration can significantly speed up conversions!${NC}"
-            echo -e "${GRAY}Without it, CPU-only encoding will be slower and use more resources.${NC}"
-            echo ""
-            echo -ne "${CYAN}Would you like to install hardware acceleration drivers? [Y/n]:${NC} "
-            read -r hw_install_choice
+            # Prompt user to install hardware drivers
+            if [[ ${#hw_install_commands[@]} -gt 0 ]]; then
+                echo ""
+                echo -e "${CYAN}🚀 Hardware acceleration can significantly speed up conversions!${NC}"
+                echo -e "${GRAY}Without it, CPU-only encoding will be slower and use more resources.${NC}"
+                echo ""
+                echo -ne "${CYAN}Would you like to install hardware acceleration drivers? [Y/n]:${NC} "
+                read -r hw_install_choice
             
-            if [[ ! "$hw_install_choice" =~ ^[Nn]$ ]]; then
-                echo -e "\n${BLUE}🔧 Installing hardware acceleration drivers...${NC}"
-                
-                local install_success=false
-                for cmd in "${hw_install_commands[@]}"; do
-                    echo -e "${CYAN}➡️  Running: ${GRAY}$cmd${NC}"
-                    if eval "$cmd"; then
-                        install_success=true
-                        echo -e "${GREEN}✓ Installation completed${NC}"
+                if [[ ! "$hw_install_choice" =~ ^[Nn]$ ]]; then
+                    echo -e "\n${BLUE}🔧 Installing hardware acceleration drivers...${NC}"
+                    
+                    local install_success=false
+                    for cmd in "${hw_install_commands[@]}"; do
+                        echo -e "${CYAN}➡️  Running: ${GRAY}$cmd${NC}"
+                        if eval "$cmd"; then
+                            install_success=true
+                            echo -e "${GREEN}✓ Installation completed${NC}"
+                        else
+                            echo -e "${YELLOW}⚠️  Installation failed or was cancelled${NC}"
+                        fi
+                    done
+                    
+                    if [[ "$install_success" == true ]]; then
+                        echo -e "\n${GREEN}✅ Hardware acceleration drivers installed!${NC}"
+                        echo -e "${CYAN}🔄 Please restart the script to detect the new drivers.${NC}"
+                        echo ""
+                        echo -ne "${YELLOW}Press Enter to exit and restart...${NC}"
+                        read -r
+                        exit 0
                     else
-                        echo -e "${YELLOW}⚠️  Installation failed or was cancelled${NC}"
+                        echo -e "${YELLOW}Continuing without hardware acceleration drivers...${NC}"
+                        echo -e "${GRAY}You can install them manually later for better performance.${NC}"
                     fi
-                done
-                
-                if [[ "$install_success" == true ]]; then
-                    echo -e "\n${GREEN}✅ Hardware acceleration drivers installed!${NC}"
-                    echo -e "${CYAN}🔄 Please restart the script to detect the new drivers.${NC}"
-                    echo ""
-                    echo -ne "${YELLOW}Press Enter to exit and restart...${NC}"
-                    read -r
-                    exit 0
                 else
-                    echo -e "${YELLOW}Continuing without hardware acceleration drivers...${NC}"
-                    echo -e "${GRAY}You can install them manually later for better performance.${NC}"
+                    echo -e "${CYAN}Continuing without hardware acceleration...${NC}"
+                    echo -e "${GRAY}Note: Conversions will use CPU-only encoding (slower).${NC}"
+                    # Remember choice to skip on next run for 24h
+                    mkdir -p "$LOG_DIR" 2>/dev/null || true
+                    echo "skip_hw_prompt_until=$(date -d '+24 hours' +%s)" > "$LOG_DIR/.hw_prompt_skip"
                 fi
             else
-                echo -e "${CYAN}Continuing without hardware acceleration...${NC}"
-                echo -e "${GRAY}Note: Conversions will use CPU-only encoding (slower).${NC}"
+                echo -e "\n${GRAY}📝 Manual installation required for your system${NC}"
+                echo -e "${GRAY}Please refer to your distribution's documentation.${NC}"
             fi
-        else
-            echo -e "\n${GRAY}📝 Manual installation required for your system${NC}"
-            echo -e "${GRAY}Please refer to your distribution's documentation.${NC}"
         fi
     fi
     
@@ -19283,6 +19301,7 @@ show_main_menu() {
         "🔧 System Information"
         "🔫 Kill FFmpeg Processes"
         "❓ Help & Documentation"
+        "📦 Check Dependencies"
         "🔄 Check for Updates"
         "🛠️  Reset All Settings"
         "🚺 Exit"
@@ -19425,9 +19444,10 @@ show_main_menu() {
             8) help_text=$(get_responsive_help_text "System info" "Check CPU, GPU, and system capabilities for optimization" $layout_mode) ;;
             9) help_text=$(get_responsive_help_text "Kill processes" "Stop any stuck or runaway FFmpeg processes safely" $layout_mode) ;;
             10) help_text=$(get_responsive_help_text "Help & docs" "Complete usage guide with examples and feature docs" $layout_mode) ;;
-            11) help_text=$(get_responsive_help_text "Check for updates" "Check for and install script updates from GitHub" $layout_mode) ;;
-            12) help_text=$(get_responsive_help_text "Reset settings" "Reset all settings to factory defaults (files are safe)" $layout_mode) ;;
-            13) help_text=$(get_responsive_help_text "Exit" "Save your current settings and exit gracefully" $layout_mode) ;;
+            11) help_text=$(get_responsive_help_text "Check dependencies" "Review and install required and optional dependencies" $layout_mode) ;;
+            12) help_text=$(get_responsive_help_text "Check for updates" "Check for and install script updates from GitHub" $layout_mode) ;;
+            13) help_text=$(get_responsive_help_text "Reset settings" "Reset all settings to factory defaults (files are safe)" $layout_mode) ;;
+            14) help_text=$(get_responsive_help_text "Exit" "Save your current settings and exit gracefully" $layout_mode) ;;
         esac
         
         # Calculate actual content width by measuring the longest menu option
@@ -19665,7 +19685,10 @@ execute_menu_option() {
         10) # Help
             show_interactive_help
             ;;
-        11) # Check for Updates
+        11) # Check Dependencies
+            show_dependency_check_menu
+            ;;
+        12) # Check for Updates
             clear
             print_header
             echo -e "${CYAN}${BOLD}🔄 CHECKING FOR UPDATES${NC}\n"
@@ -19679,10 +19702,10 @@ execute_menu_option() {
             echo -e "\n${YELLOW}Press any key to return to main menu...${NC}"
             read -rsn1
             ;;
-        12) # Reset All Settings
+        13) # Reset All Settings
             reset_all_settings
             ;;
-        13) # Exit
+        14) # Exit
             echo -e "\n${YELLOW}👋 Goodbye!${NC}"
             exit 0
             ;;
@@ -21832,6 +21855,344 @@ reset_all_settings() {
     
     echo -e "${YELLOW}Press any key to return to main menu...${NC}"
     read -rsn1
+}
+
+# 📦 Comprehensive Dependency Check Menu with WASD Navigation
+# Uses existing global dependency checking system from check_dependencies()
+show_dependency_check_menu() {
+    local selected=0
+    local options=(
+        "🔧 Install missing tools (automatic)"
+        "🚀 Install hardware drivers (automatic)"
+        "📋 Show manual installation commands"
+        "🔄 Re-run dependency check"
+        "← Return to main menu"
+    )
+    
+    while true; do
+        clear
+        print_header
+        echo -e "${CYAN}${BOLD}📦 DEPENDENCY CHECK & MANAGEMENT${NC}\n"
+        
+        # Force a fresh dependency check (bypass cache)
+        local cache_file="$LOG_DIR/.dependency_cache"
+        rm -f "$cache_file" 2>/dev/null
+        
+        # Use the existing global dependency arrays and lists from check_dependencies()
+        # These are defined at line 17699-17703
+        local required_tools=("ffmpeg" "git" "curl" "tmux" "notify-send" "gifsicle" "jq" "convert" "xxhsum")
+        local optional_tools=()  # All tools are now required per existing logic
+        
+        # Arrays to track results
+        local missing_required=()
+        local missing_optional=()
+        local installed_required=()
+        local installed_optional=()
+        local hw_drivers_missing=()
+        
+        echo -e "${BLUE}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${BLUE}${BOLD}REQUIRED DEPENDENCIES${NC}"
+        echo -e "${BLUE}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+        
+        # Check required dependencies using same logic as check_dependencies()
+    for tool in "${required_tools[@]}"; do
+        # Special handling for xxhash: accept any variant (matches line 17711-17731)
+        if [[ "$tool" == "xxhsum" ]]; then
+            if ! command -v xxh128sum >/dev/null 2>&1 && \
+               ! command -v xxh64sum  >/dev/null 2>&1 && \
+               ! command -v xxhsum    >/dev/null 2>&1; then
+                missing_required+=("xxhsum")
+                echo -e "  ${RED}✗${NC} ${BOLD}xxhash${NC} - ${YELLOW}MISSING${NC}"
+                echo -e "    ${GRAY}Benefit: ${GREEN}20-30x faster${GRAY} duplicate detection vs MD5${NC}"
+                continue
+            fi
+            # Show version for whichever variant exists
+            installed_required+=("xxhsum")
+            local version=""
+            if command -v xxh128sum >/dev/null 2>&1; then
+                version=$(xxh128sum --version 2>&1 | head -1 | awk '{print $2}' || echo "available")
+            elif command -v xxh64sum >/dev/null 2>&1; then
+                version=$(xxh64sum --version 2>&1 | head -1 | awk '{print $2}' || echo "available")
+            else
+                version=$(xxhsum --version 2>&1 | head -1 | awk '{print $2}' || echo "available")
+            fi
+            echo -e "  ${GREEN}✓${NC} ${BOLD}xxhash${NC} - xxHash $version"
+            continue
+        fi
+        
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            missing_required+=("$tool")
+            echo -e "  ${RED}✗${NC} ${BOLD}$tool${NC} - ${YELLOW}MISSING${NC}"
+            case "$tool" in
+                "ffmpeg") echo -e "    ${GRAY}Needed for: Video processing (CRITICAL)${NC}" ;;
+                "git") echo -e "    ${GRAY}Needed for: Script updates${NC}" ;;
+                "curl") echo -e "    ${GRAY}Needed for: Downloading updates${NC}" ;;
+                "tmux") echo -e "    ${GRAY}Needed for: Terminal crash protection${NC}" ;;
+                "notify-send") echo -e "    ${GRAY}Needed for: Desktop notifications (package: libnotify)${NC}" ;;
+                "gifsicle") echo -e "    ${GRAY}Benefit: GIF size optimization (20-50% smaller)${NC}" ;;
+                "jq") echo -e "    ${GRAY}Benefit: Enhanced auto-detection features${NC}" ;;
+                "convert") echo -e "    ${GRAY}Benefit: AI perceptual hashing for duplicates (package: imagemagick)${NC}" ;;
+            esac
+        else
+            installed_required+=("$tool")
+            # Get version info based on tool-specific flags (matches line 17738-17769)
+            local version=""
+            case "$tool" in
+                "git")
+                    version=$(git --version 2>/dev/null | head -1 || echo "unknown version")
+                    ;;
+                "curl")
+                    version=$(curl --version 2>/dev/null | head -1 || echo "unknown version")
+                    ;;
+                "ffmpeg")
+                    version=$(ffmpeg -version 2>/dev/null | head -1 | cut -d' ' -f1-3 || echo "unknown version")
+                    ;;
+                "tmux")
+                    version=$(tmux -V 2>/dev/null || echo "unknown version")
+                    ;;
+                "notify-send")
+                    version=$(notify-send --version 2>/dev/null | head -1 || echo "available")
+                    ;;
+                "gifsicle")
+                    version=$(gifsicle --version 2>/dev/null | head -1 || echo "available")
+                    ;;
+                "jq")
+                    version=$(jq --version 2>/dev/null || echo "available")
+                    ;;
+                "convert")
+                    version=$(convert -version 2>/dev/null | head -1 | sed 's/Version: ImageMagick /ImageMagick /' || echo "available")
+                    ;;
+                *)
+                    version=$("$tool" --version 2>/dev/null | head -1 2>/dev/null || echo "available")
+                    ;;
+            esac
+            echo -e "  ${GREEN}✓${NC} ${BOLD}$tool${NC} - $version"
+        fi
+    done
+    
+    # Hardware acceleration check (matches line 17843-18006)
+    echo -e "\n${BLUE}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BLUE}${BOLD}HARDWARE ACCELERATION${NC}"
+    echo -e "${BLUE}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+    
+    if command -v ffmpeg >/dev/null 2>&1; then
+        local ffmpeg_encoders=$(ffmpeg -encoders 2>/dev/null | grep -E "nvenc|qsv|vaapi|videotoolbox")
+        local hw_found=false
+        
+        # NVIDIA NVENC
+        if echo "$ffmpeg_encoders" | grep -q "h264_nvenc"; then
+            hw_found=true
+            echo -e "  ${GREEN}✓${NC} ${BOLD}NVIDIA NVENC${NC} - Hardware encoding available"
+        elif lspci 2>/dev/null | grep -qi "nvidia"; then
+            echo -e "  ${YELLOW}○${NC} ${BOLD}NVIDIA GPU detected${NC} - NVENC ${YELLOW}not available in FFmpeg${NC}"
+            hw_drivers_missing+=("nvidia-drivers")
+        fi
+        
+        # AMD/Intel VAAPI
+        if echo "$ffmpeg_encoders" | grep -q "h264_vaapi"; then
+            hw_found=true
+            echo -e "  ${GREEN}✓${NC} ${BOLD}VAAPI${NC} - Hardware encoding available (AMD/Intel)"
+        elif lspci 2>/dev/null | grep -qi "amd.*radeon\|amd.*vga"; then
+            echo -e "  ${YELLOW}○${NC} ${BOLD}AMD GPU detected${NC} - VAAPI ${YELLOW}drivers may be missing${NC}"
+            hw_drivers_missing+=("mesa-va-drivers")
+        elif lspci 2>/dev/null | grep -qi "intel.*vga\|intel.*graphics"; then
+            echo -e "  ${YELLOW}○${NC} ${BOLD}Intel GPU detected${NC} - VAAPI ${YELLOW}drivers may be missing${NC}"
+            hw_drivers_missing+=("intel-media-driver")
+        fi
+        
+        # Intel QSV
+        if echo "$ffmpeg_encoders" | grep -q "h264_qsv"; then
+            hw_found=true
+            echo -e "  ${GREEN}✓${NC} ${BOLD}Intel QSV${NC} - Hardware encoding available"
+        fi
+        
+        if [[ "$hw_found" == false ]]; then
+            echo -e "  ${YELLOW}⚠${NC}  ${YELLOW}No hardware acceleration detected${NC}"
+            echo -e "    ${GRAY}CPU-only encoding will be used (slower)${NC}"
+        fi
+    else
+        echo -e "  ${RED}✗${NC} ${YELLOW}Cannot check - FFmpeg not installed${NC}"
+    fi
+    
+    # Summary
+    echo -e "\n${BLUE}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BLUE}${BOLD}SUMMARY${NC}"
+    echo -e "${BLUE}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+    
+    echo -e "  ${GREEN}✓${NC} Tools installed: ${BOLD}${#installed_required[@]}${NC}/${BOLD}${#required_tools[@]}${NC}"
+    [[ ${#missing_required[@]} -gt 0 ]] && echo -e "  ${RED}✗${NC} Missing tools: ${BOLD}${#missing_required[@]}${NC}"
+    [[ ${#hw_drivers_missing[@]} -gt 0 ]] && echo -e "  ${YELLOW}!${NC} Missing HW drivers: ${BOLD}${#hw_drivers_missing[@]}${NC}"
+    
+    # Render options with WASD navigation
+    echo -e "\n${CYAN}${BOLD}ACTIONS (W/S to navigate, Enter to select, q to go back)${NC}\n"
+    for i in "${!options[@]}"; do
+        if [[ $i -eq $selected ]]; then
+            echo -e "  ${GREEN}> ${BOLD}${options[$i]}${NC}"
+        else
+            echo -e "    ${options[$i]}"
+        fi
+    done
+    
+    # Contextual help
+    case $selected in
+        0) echo -e "\n${GRAY}Installs all missing tools using your distro's package manager.${NC}" ;;
+        1) echo -e "\n${GRAY}Installs VA-API/NVENC drivers appropriate for your GPU and distro.${NC}" ;;
+        2) echo -e "\n${GRAY}Shows copy-paste commands to install tools manually.${NC}" ;;
+        3) echo -e "\n${GRAY}Refreshes detection after you change anything.${NC}" ;;
+        4) echo -e "\n${GRAY}Return to the main menu.${NC}" ;;
+    esac
+    
+    show_tmux_controls
+    
+    # Single-key input (WASD + arrows + Enter/Space/q)
+    local key=""
+    if read -rsn1 key 2>/dev/null; then :; else printf "${MAGENTA}Select: ${NC}"; read -r key; key="${key:0:1}"; fi
+    case "$key" in
+        ''|$'\n'|$'\r'|' ') # Enter/Return/Space
+            case $selected in
+                0)
+                    if [[ ${#missing_required[@]} -eq 0 ]]; then
+                        echo -e "\n${GREEN}✓ All tools are already installed!${NC}"
+                    else
+                        echo -e "\n${CYAN}🔧 Installing missing tools...${NC}\n"
+                        auto_install_dependencies "${missing_required[@]}"
+                    fi
+                    echo -e "\n${YELLOW}Press any key to continue...${NC}"; read -rsn1 ;;
+                1)
+                    if [[ ${#hw_drivers_missing[@]} -eq 0 ]]; then
+                        echo -e "\n${GREEN}✓ Hardware acceleration is available or not applicable!${NC}"
+                    else
+                        echo -e "\n${CYAN}🚀 Installing hardware acceleration drivers...${NC}\n"
+                        if [[ -f /etc/os-release ]]; then
+                            source /etc/os-release
+                            local hw_install_cmd=""
+                            case "${ID,,}" in
+                                ubuntu|debian|pop|mint)
+                                    if lspci 2>/dev/null | grep -qi "nvidia"; then
+                                        hw_install_cmd="sudo apt update && sudo apt install -y libva-utils"
+                                    elif lspci 2>/dev/null | grep -qi "amd.*radeon\|amd.*vga"; then
+                                        hw_install_cmd="sudo apt update && sudo apt install -y mesa-va-drivers libva-utils"
+                                    elif lspci 2>/dev/null | grep -qi "intel.*vga\|intel.*graphics"; then
+                                        hw_install_cmd="sudo apt update && sudo apt install -y intel-media-va-driver libva-utils"
+                                    fi ;;
+                                fedora|rhel|centos)
+                                    if lspci 2>/dev/null | grep -qi "nvidia"; then
+                                        hw_install_cmd="sudo dnf install -y libva-utils"
+                                    elif lspci 2>/dev/null | grep -qi "amd.*radeon\|amd.*vga"; then
+                                        hw_install_cmd="sudo dnf install -y libva-utils mesa-va-drivers"
+                                    elif lspci 2>/dev/null | grep -qi "intel.*vga\|intel.*graphics"; then
+                                        hw_install_cmd="sudo dnf install -y intel-media-driver libva-utils"
+                                    fi ;;
+                                arch|manjaro)
+                                    if lspci 2>/dev/null | grep -qi "nvidia"; then
+                                        hw_install_cmd="sudo pacman -S --needed libva-utils"
+                                    elif lspci 2>/dev/null | grep -qi "amd.*radeon\|amd.*vga"; then
+                                        hw_install_cmd="sudo pacman -S --needed libva-mesa-driver libva-utils"
+                                    elif lspci 2>/dev/null | grep -qi "intel.*vga\|intel.*graphics"; then
+                                        hw_install_cmd="sudo pacman -S --needed intel-media-driver libva-utils"
+                                    fi ;;
+                                opensuse*|suse)
+                                    if lspci 2>/dev/null | grep -qi "nvidia"; then
+                                        hw_install_cmd="sudo zypper install -y libva-vdpau-driver libva-utils"
+                                    elif lspci 2>/dev/null | grep -qi "amd.*radeon\|amd.*vga"; then
+                                        hw_install_cmd="sudo zypper install -y Mesa-libva libva-utils"
+                                    elif lspci 2>/dev/null | grep -qi "intel.*vga\|intel.*graphics"; then
+                                        hw_install_cmd="sudo zypper install -y libva-intel-driver libva-utils"
+                                    fi ;;
+                            esac
+                            if [[ -n "$hw_install_cmd" ]]; then
+                                echo -e "${CYAN}Running: ${GRAY}$hw_install_cmd${NC}"; eval "$hw_install_cmd"
+                                echo -e "\n${GREEN}✓ Hardware drivers installed!${NC}"
+                                echo -e "${CYAN}🔄 Please restart the script to detect the new drivers.${NC}"
+                            else
+                                echo -e "${YELLOW}Could not determine installation command for your system${NC}"
+                            fi
+                        else
+                            echo -e "${YELLOW}Could not detect distribution${NC}"
+                        fi
+                    fi
+                    echo -e "\n${YELLOW}Press any key to continue...${NC}"; read -rsn1 ;;
+                2)
+                    show_manual_install_commands "${missing_required[@]}"
+                    echo -e "\n${YELLOW}Press any key to continue...${NC}"; read -rsn1 ;;
+                3)
+                    : # simply loop to re-run
+                    ;;
+                4)
+                    return 0 ;;
+            esac ;;
+        'w'|'W'|$'\x1b[A')
+            selected=$((selected - 1)); [[ $selected -lt 0 ]] && selected=$((${#options[@]}-1)) ;;
+        's'|'S'|$'\x1b[B')
+            selected=$((selected + 1)); [[ $selected -ge ${#options[@]} ]] && selected=0 ;;
+        'q'|'Q')
+            return 0 ;;
+        *) : ;;
+    esac
+    done
+}
+
+# 📋 Show manual installation commands
+show_manual_install_commands() {
+    local missing_deps=("$@")
+    
+    clear
+    print_header
+    echo -e "${CYAN}${BOLD}📋 MANUAL INSTALLATION COMMANDS${NC}\n"
+    
+    if [[ ${#missing_deps[@]} -eq 0 ]]; then
+        echo -e "${GREEN}✓ No missing dependencies!${NC}"
+        return 0
+    fi
+    
+    if [[ -f /etc/os-release ]]; then
+        source /etc/os-release
+        
+        echo -e "${BLUE}Detected distribution: ${BOLD}$NAME${NC}\n"
+        
+        case "${ID,,}" in
+            ubuntu|debian|pop|mint)
+                echo -e "${YELLOW}Installation commands for Debian/Ubuntu:${NC}\n"
+                echo -e "${GRAY}sudo apt update${NC}"
+                for dep in "${missing_deps[@]}"; do
+                    local pkg=$(get_package_names "$dep")
+                    echo -e "${GRAY}sudo apt install -y $pkg${NC}"
+                done
+                ;;
+            fedora|rhel|centos)
+                echo -e "${YELLOW}Installation commands for Fedora/RHEL:${NC}\n"
+                for dep in "${missing_deps[@]}"; do
+                    local pkg=$(get_package_names "$dep")
+                    echo -e "${GRAY}sudo dnf install -y $pkg${NC}"
+                done
+                ;;
+            arch|manjaro)
+                echo -e "${YELLOW}Installation commands for Arch/Manjaro:${NC}\n"
+                for dep in "${missing_deps[@]}"; do
+                    local pkg=$(get_package_names "$dep")
+                    echo -e "${GRAY}sudo pacman -S --needed $pkg${NC}"
+                done
+                ;;
+            opensuse*|suse)
+                echo -e "${YELLOW}Installation commands for openSUSE:${NC}\n"
+                for dep in "${missing_deps[@]}"; do
+                    local pkg=$(get_package_names "$dep")
+                    echo -e "${GRAY}sudo zypper install -y $pkg${NC}"
+                done
+                ;;
+            *)
+                echo -e "${YELLOW}Distribution not recognized. Here are the package names:${NC}\n"
+                for dep in "${missing_deps[@]}"; do
+                    echo -e "  ${GRAY}• $dep${NC}"
+                done
+                ;;
+        esac
+    else
+        echo -e "${YELLOW}Could not detect distribution. Here are the package names:${NC}\n"
+        for dep in "${missing_deps[@]}"; do
+            echo -e "  ${GRAY}• $dep${NC}"
+        done
+    fi
 }
 
 # 📁 Manage log files
