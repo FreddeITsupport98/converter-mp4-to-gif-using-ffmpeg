@@ -17006,6 +17006,19 @@ get_package_names() {
                 *) echo "imagemagick" ;;
             esac
             ;;
+        "xxhsum")
+            # xxhash CLI (accept any variant; package names below)
+            case "$distro" in
+                "debian-based") echo "xxhash" ;;
+                "redhat-based") echo "xxhash" ;;
+                "arch-based") echo "xxhash" ;;
+                "suse-based") echo "xxhash" ;;
+                "alpine") echo "xxhash" ;;
+                "gentoo") echo "app-crypt/xxhash" ;;
+                "void") echo "xxHash" ;;
+                *) echo "xxhash" ;;
+            esac
+            ;;
         "git")
             case "$distro" in
                 "debian-based") echo "git" ;;
@@ -17086,6 +17099,7 @@ show_manual_install_instructions() {
             "jq") echo -n " jq" ;;
             "convert") echo -n " imagemagick" ;;
             "notify-send") echo -n " libnotify-bin" ;;
+            "xxhsum") echo -n " xxhash" ;;
         esac
     done
     echo -e "${NC}"
@@ -17104,6 +17118,7 @@ show_manual_install_instructions() {
             "jq") echo -n " jq" ;;
             "convert") echo -n " ImageMagick" ;;
             "notify-send") echo -n " libnotify" ;;
+            "xxhsum") echo -n " xxhash" ;;
         esac
     done
     echo -e "${NC}"
@@ -17122,6 +17137,7 @@ show_manual_install_instructions() {
             "jq") echo -n " jq" ;;
             "convert") echo -n " imagemagick" ;;
             "notify-send") echo -n " libnotify" ;;
+            "xxhsum") echo -n " xxhash" ;;
         esac
     done
     echo -e "${NC}"
@@ -17140,6 +17156,7 @@ show_manual_install_instructions() {
             "jq") echo -n " jq" ;;
             "convert") echo -n " ImageMagick" ;;
             "notify-send") echo -n " libnotify-tools" ;;
+            "xxhsum") echo -n " xxhash" ;;
         esac
     done
     echo -e "${NC}"
@@ -17158,6 +17175,7 @@ show_manual_install_instructions() {
             "jq") echo -n " jq" ;;
             "convert") echo -n " imagemagick" ;;
             "notify-send") echo -n " libnotify" ;;
+            "xxhsum") echo -n " xxhash" ;;
         esac
     done
     echo -e "${NC}"
@@ -17176,6 +17194,7 @@ show_manual_install_instructions() {
             "jq") echo -n " app-misc/jq" ;;
             "convert") echo -n " media-gfx/imagemagick" ;;
             "notify-send") echo -n " x11-libs/libnotify" ;;
+            "xxhsum") echo -n " app-crypt/xxhash" ;;
         esac
     done
     echo -e "${NC}"
@@ -17194,6 +17213,7 @@ show_manual_install_instructions() {
             "jq") echo -n " jq" ;;
             "convert") echo -n " ImageMagick" ;;
             "notify-send") echo -n " libnotify" ;;
+            "xxhsum") echo -n " xxhash" ;;
         esac
     done
     echo -e "${NC}"
@@ -17641,11 +17661,30 @@ check_dependencies() {
         local cache_max_age=$((cache_validity_hours * 3600))
         
         if [[ $cache_age -lt $cache_max_age ]]; then
-            # Cache is still valid - load cached results
-            source "$cache_file" 2>/dev/null && {
-                echo -e "${GREEN}✓ Dependencies verified (cached)${NC}"
-                return 0
-            }
+            # Cache is still valid - load cached results, but sanity-check presence of required tools
+            if source "$cache_file" 2>/dev/null; then
+                local sanity_missing=()
+                local sanity_required=("ffmpeg" "git" "curl" "tmux" "notify-send" "gifsicle" "jq" "convert" "xxhsum")
+                for t in "${sanity_required[@]}"; do
+                    if [[ "$t" == "xxhsum" ]]; then
+                        if ! command -v xxh128sum >/dev/null 2>&1 && \
+                           ! command -v xxh64sum  >/dev/null 2>&1 && \
+                           ! command -v xxhsum    >/dev/null 2>&1; then
+                            sanity_missing+=("xxhsum")
+                        fi
+                    else
+                        command -v "$t" >/dev/null 2>&1 || sanity_missing+=("$t")
+                    fi
+                done
+                if [[ ${#sanity_missing[@]} -eq 0 ]]; then
+                    echo -e "${GREEN}✓ Dependencies verified (cached)${NC}"
+                    return 0
+                else
+                    force_check=true
+                fi
+            else
+                force_check=true
+            fi
         else
             force_check=true
         fi
@@ -17673,8 +17712,8 @@ check_dependencies() {
             if ! command -v xxh128sum >/dev/null 2>&1 && \
                ! command -v xxh64sum  >/dev/null 2>&1 && \
                ! command -v xxhsum    >/dev/null 2>&1; then
-                # Use friendly name in missing list for package mapping
-                missing_required+=("xxhash")
+                # Require xxhash via its CLI alias; package resolver maps it per distro
+                missing_required+=("xxhsum")
                 continue
             fi
             # Show version for whichever variant exists
@@ -17783,6 +17822,23 @@ check_dependencies() {
         # Check if package is up-to-date (all distros)
         check_package_update_available "$tool" 2>/dev/null
     done
+    
+    # EARLY handling for missing required dependencies (prompt before expensive HW checks)
+    if [[ ${#missing_required[@]} -gt 0 ]]; then
+        echo -e "\n${RED}❌ Missing required dependencies:${NC}"
+        for dep in "${missing_required[@]}"; do
+            echo -e "  ${RED}• $dep${NC}"
+        done
+        
+        # Attempt auto-installation
+        if auto_install_dependencies "${missing_required[@]}"; then
+            echo -e "${GREEN}✅ Required dependencies installed successfully!${NC}"
+        else
+            echo -e "\n${RED}❌ Cannot proceed without required dependencies${NC}"
+            echo -e "${YELLOW}Please install them manually and try again.${NC}"
+            exit 1
+        fi
+    fi
     
     # Check hardware acceleration support
     echo -e "\n${CYAN}🎮 Checking hardware acceleration support...${NC}"
@@ -17995,23 +18051,6 @@ check_dependencies() {
         else
             echo -e "\n${GRAY}📝 Manual installation required for your system${NC}"
             echo -e "${GRAY}Please refer to your distribution's documentation.${NC}"
-        fi
-    fi
-    
-    # Handle missing required dependencies
-    if [[ ${#missing_required[@]} -gt 0 ]]; then
-        echo -e "\n${RED}❌ Missing required dependencies:${NC}"
-        for dep in "${missing_required[@]}"; do
-            echo -e "  ${RED}• $dep${NC}"
-        done
-        
-        # Attempt auto-installation
-        if auto_install_dependencies "${missing_required[@]}"; then
-            echo -e "${GREEN}✅ Required dependencies installed successfully!${NC}"
-        else
-            echo -e "\n${RED}❌ Cannot proceed without required dependencies${NC}"
-            echo -e "${YELLOW}Please install them manually and try again.${NC}"
-            exit 1
         fi
     fi
     
