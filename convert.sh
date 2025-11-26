@@ -1178,7 +1178,7 @@ AI_TRAINING_MIN_SAMPLES=5  # Minimum samples before AI makes confident predictio
 GITHUB_REPO="FreddeITsupport98/converter-mp4-to-gif-using-ffmpeg"
 GITHUB_API_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_URL="https://github.com/${GITHUB_REPO}/releases"
-CURRENT_VERSION="8.1"  # Script version
+CURRENT_VERSION="9.0"  # Script version
 UPDATE_CHECK_FILE="$LOG_DIR/.last_update_check"
 UPDATE_CHECK_INTERVAL=86400  # Check once per day (in seconds)
 AUTO_UPDATE_ENABLED=true  # Enable automatic update checks (user configurable)
@@ -2548,8 +2548,8 @@ train_ai_from_decision() {
     
     local name1="$(basename -- "$file1")"
     local name2="$(basename -- "$file2")"
-    local size1="${gif_sizes[$file1]:-${video_sizes[$file1]:-0}}"
-    local size2="${gif_sizes[$file2]:-${video_sizes[$file2]:-0}}"
+    local size1="${gif_sizes["$file1"]:-${video_sizes["$file1"]:-0}}"
+    local size2="${gif_sizes["$file2"]:-${video_sizes["$file2"]:-0}}"
     
     local filename_match_len=0
     for ((i=0; i<${#name1} && i<${#name2}; i++)); do
@@ -3098,24 +3098,67 @@ parallel_hash_batch() {
     local output_file="$2"    # Where to write results
     
     local hash_cmd="${HASH_ALGORITHM:-md5sum}"
+    local max_jobs="${AI_DUPLICATE_THREADS:-4}"
     
     # Use GNU parallel if available (best performance)
     if command -v parallel >/dev/null 2>&1; then
-        printf '%s\\0' "${files_array[@]}" | \
-            parallel -0 -j "$AI_DUPLICATE_THREADS" --will-cite \
-            "$hash_cmd {} 2>/dev/null | awk '{print \\$1,\"{}\"}' || echo ERROR {}" \
+        printf '%s\0' "${files_array[@]}" | \
+            parallel -0 -j "$max_jobs" --will-cite \
+            "$hash_cmd {} 2>/dev/null | awk '{print \$1,\"{}\"}' || echo ERROR {}" \
             >> "$output_file" 2>/dev/null
-    # Fallback: xargs with parallelization
+    # Fallback: xargs with parallelization (fixed escaping)
     elif command -v xargs >/dev/null 2>&1; then
-        printf '%s\\0' "${files_array[@]}" | \
-            xargs -0 -P "$AI_DUPLICATE_THREADS" -I {} sh -c \
-            "$hash_cmd '{}' 2>/dev/null | awk '{print \\$1,\"{}\"}' || echo ERROR {}" \
+        printf '%s\0' "${files_array[@]}" | \
+            xargs -0 -n 1 -P "$max_jobs" -I '{}' \
+            sh -c '$hash_cmd "{}" 2>/dev/null | awk '"'"'{print $1,"{}"}'"'"' || echo ERROR "{}"' \
             >> "$output_file" 2>/dev/null
-    # Last resort: sequential (but still faster hash)
+    # Native bash parallel implementation (no external tools needed!)
     else
-        for file in "${files_array[@]}"; do
-            local hash=$(fast_hash "$file")
-            echo "$hash $file" >> "$output_file"
+        echo "  ${YELLOW}⚠️  Using native bash parallel hashing (xargs not found)${NC}" >&2
+        
+        # Split files into batches
+        local batch_size=$(( (${#files_array[@]} + max_jobs - 1) / max_jobs ))
+        [[ $batch_size -lt 1 ]] && batch_size=1
+        
+        local pids=()
+        local temp_files=()
+        local batch_idx=0
+        
+        for ((i=0; i<${#files_array[@]}; i+=batch_size)); do
+            local temp_batch="${output_file}.batch${batch_idx}"
+            temp_files+=("$temp_batch")
+            
+            # Process batch in background
+            (
+                for ((j=i; j<i+batch_size && j<${#files_array[@]}; j++)); do
+                    local file="${files_array[$j]}"
+                    if [[ -f "$file" && -r "$file" ]]; then
+                        local hash=$(fast_hash "$file" 2>/dev/null || echo "ERROR")
+                        echo "$hash $file"
+                    else
+                        echo "ERROR $file"
+                    fi
+                done > "$temp_batch"
+            ) &
+            pids+=("$!")
+            ((batch_idx++))
+            
+            # Limit concurrent batches
+            if [[ ${#pids[@]} -ge $max_jobs ]]; then
+                wait "${pids[0]}" 2>/dev/null
+                pids=("${pids[@]:1}")
+            fi
+        done
+        
+        # Wait for all background jobs
+        for pid in "${pids[@]}"; do
+            wait "$pid" 2>/dev/null
+        done
+        
+        # Merge all batch files
+        for temp_file in "${temp_files[@]}"; do
+            [[ -f "$temp_file" ]] && cat "$temp_file" >> "$output_file" 2>/dev/null
+            rm -f "$temp_file" 2>/dev/null
         done
     fi
 }
@@ -9628,12 +9671,136 @@ detect_duplicate_videos() {
         # Use parallel_hash_batch to hash ALL uncached files at once!
         parallel_hash_batch uncached_files_list "$batch_hash_file"
         
+        echo -e "  ${GREEN}✓ Pre-calculated ${total_to_process} hashes in parallel${NC}"
+        
+        # 🚀 PARALLEL METADATA EXTRACTION with progress bar
+        if command -v parallel >/dev/null 2>&1 && [[ $total_to_process -gt 5 ]]; then
+            echo -e "  ${MAGENTA}🚀 Analyzing metadata in parallel (${AI_DUPLICATE_THREADS} threads)...${NC}"
+            
+            # Create parallel metadata extraction script
+            local metadata_script="$temp_analysis_dir/extract_metadata.sh"
+            local metadata_results="$temp_analysis_dir/metadata_out.txt"
+            local progress_counter="$temp_analysis_dir/meta_progress.txt"
+            echo "0" > "$progress_counter"
+            
+            cat > "$metadata_script" << 'META_EOF'
+#!/bin/bash
+extract_video_metadata() {
+    local video_file="$1"
+    local checksum="$2"
+    local progress_file="$3"
+    
+    local size=$(stat -c%s -- "$video_file" 2>/dev/null || echo "0")
+    local duration="0"
+    local resolution="unknown"
+    local bitrate="0"
+    local codec="unknown"
+    local fps="0"
+    local width="0"
+    local height="0"
+    local format="${video_file##*.}"
+    format="${format,,}"
+    local perceptual_hash=""
+    
+    if command -v ffprobe >/dev/null 2>&1; then
+        local ffprobe_output=$(timeout 8 ffprobe -v error -select_streams v:0 \
+            -show_entries stream=duration,width,height,bit_rate,codec_name,r_frame_rate \
+            -of csv=p=0 "$video_file" 2>/dev/null)
+        
+        if [[ -n "$ffprobe_output" ]]; then
+            duration=$(echo "$ffprobe_output" | head -1 | cut -d',' -f1 | cut -d'.' -f1)
+            width=$(echo "$ffprobe_output" | head -1 | cut -d',' -f2)
+            height=$(echo "$ffprobe_output" | head -1 | cut -d',' -f3)
+            bitrate=$(echo "$ffprobe_output" | head -1 | cut -d',' -f4)
+            codec=$(echo "$ffprobe_output" | head -1 | cut -d',' -f5)
+            local fps_frac=$(echo "$ffprobe_output" | head -1 | cut -d',' -f6)
+            
+            if [[ "$fps_frac" =~ ^[0-9]+/[0-9]+$ ]]; then
+                local num=$(echo "$fps_frac" | cut -d'/' -f1)
+                local den=$(echo "$fps_frac" | cut -d'/' -f2)
+                [[ $den -gt 0 ]] && fps=$((num / den))
+            fi
+            
+            resolution="${width}x${height}"
+            [[ ! "$duration" =~ ^[0-9]+$ ]] && duration="0"
+            [[ ! "$bitrate" =~ ^[0-9]+$ ]] && bitrate="0"
+            [[ ! "$fps" =~ ^[0-9]+$ ]] && fps="0"
+        fi
+    fi
+    
+    # Update progress
+    if [[ -n "$progress_file" ]]; then
+        flock -x "$progress_file" bash -c 'echo $(($(cat "$1" 2>/dev/null || echo 0) + 1)) > "$1"' _ "$progress_file" 2>/dev/null || true
+    fi
+    
+    local content_fingerprint="${size}:${resolution}:${duration}:${bitrate}:${fps}:${codec}:${format}"
+    echo "$video_file|$checksum|$size|$content_fingerprint|$perceptual_hash|$duration|$resolution|$codec|$format"
+}
+export -f extract_video_metadata
+META_EOF
+            chmod +x "$metadata_script"
+            
+            # Create input file with video paths and hashes
+            local metadata_input="$temp_analysis_dir/metadata_input.txt"
+            : > "$metadata_input"
+            while read -r hash_value filepath; do
+                [[ -n "$filepath" && -f "$filepath" ]] && echo "$filepath	$hash_value" >> "$metadata_input"
+            done < "$batch_hash_file"
+            
+            # Start parallel processing in background
+            source "$metadata_script"
+            (
+                cat "$metadata_input" | parallel --colsep '\t' -j "$AI_DUPLICATE_THREADS" \
+                    "extract_video_metadata {1} {2} '$progress_counter'" > "$metadata_results" 2>/dev/null
+            ) &
+            local parallel_pid=$!
+            
+            # Monitor progress with live progress bar
+            local last_count=0
+            while kill -0 $parallel_pid 2>/dev/null; do
+                local current_count=$(cat "$progress_counter" 2>/dev/null || echo "0")
+                
+                if [[ $current_count -ne $last_count || $current_count -eq 0 ]]; then
+                    local progress=$((current_count * 100 / total_to_process))
+                    [[ $progress -gt 100 ]] && progress=100
+                    local filled=$((progress * 30 / 100))
+                    local empty=$((30 - filled))
+                    
+                    printf "\r  ${CYAN}["
+                    for ((k=0; k<filled; k++)); do printf "${GREEN}█${NC}"; done
+                    for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
+                    printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d/%d videos)${NC}" "$progress" "$current_count" "$total_to_process"
+                    
+                    last_count=$current_count
+                fi
+                
+                sleep 0.2
+            done
+            
+            # Wait for completion
+            wait $parallel_pid 2>/dev/null
+            
+            # Show final 100%
+            printf "\r  ${CYAN}["
+            for ((k=0; k<30; k++)); do printf "${GREEN}█${NC}"; done
+            printf "${CYAN}] ${BOLD}100%%${NC} ${GRAY}(%d/%d videos)${NC}\n" "$total_to_process" "$total_to_process"
+            
+            # Append results to main file and save to cache
+            while IFS='|' read -r filepath checksum size fingerprint phash duration resolution codec format; do
+                [[ -z "$filepath" ]] && continue
+                echo "$filepath|$checksum|$size|$fingerprint|$phash|$duration|$resolution|$codec|$format" >> "$results_file"
+                save_video_analysis_to_cache "$filepath" "$filepath|$checksum|$size|$fingerprint|$phash|$duration|$resolution|$codec|$format"
+            done < "$metadata_results"
+            
+        else
+            # Sequential fallback
+            echo -e "  ${YELLOW}⚠️  Processing metadata sequentially...${NC}"
         # Now process each file with its pre-calculated hash
         local loop_idx=0
         for video_file in "${uncached_files_list[@]}"; do
             # Check if user requested interrupt (Ctrl+C)
             if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
-                echo -e "\n  ${YELLOW}⏸️  Analysis interrupted by user${NC}"
+                echo -e "\\n  ${YELLOW}⏸️  Analysis interrupted by user${NC}"
                 echo -e "  ${CYAN}💾 Processed: $loop_idx, Cached: $files_cached${NC}"
                 break
             fi
@@ -9651,6 +9818,7 @@ detect_duplicate_videos() {
             # Now analyze with pre-calculated hash (skip hash calculation)
             analyze_video_with_hash "$video_file" "$checksum" "$temp_analysis_dir" "$results_file" "$loop_idx" "$total_to_process"
         done
+        fi  # End of parallel/sequential metadata extraction
         
         # Clean up batch hash file
         rm -f "$batch_hash_file" 2>/dev/null
@@ -9674,6 +9842,12 @@ detect_duplicate_videos() {
         video_codecs["$filename"]="$codec"
         video_formats["$filename"]="$format"
         
+        # Extract bitrate and FPS from fingerprint (format: size:resolution:duration:bitrate:fps:codec:format)
+        local bitrate=$(echo "$fingerprint" | cut -d':' -f4)
+        local fps=$(echo "$fingerprint" | cut -d':' -f5)
+        video_bitrates["$filename"]="${bitrate:-0}"
+        video_fps_values["$filename"]="${fps:-0}"
+        
         # Track format distribution
         ((format_counts[$format]++))
         ((processed_count++))
@@ -9694,7 +9868,7 @@ detect_duplicate_videos() {
     echo -e "  ${CYAN}⚡ Optimizing: Grouping files by hash prefix...${NC}"
     declare -A hash_groups
     for file in "${video_files_list[@]}"; do
-        local checksum="${video_checksums[$file]}"
+        local checksum="${video_checksums["$file"]}"
         if [[ -n "$checksum" && "$checksum" != "ERROR" ]]; then
             local hash_prefix="${checksum:0:4}"  # Group by first 4 chars
             hash_groups["$hash_prefix"]+="$file|"
@@ -9740,13 +9914,13 @@ detect_duplicate_videos() {
     for ((i=0; i<total_files; i++)); do
         local file1="${video_files_list[$i]}"
         [[ ! -f "$file1" ]] && continue
-        local checksum1="${video_checksums[$file1]}"
+        local checksum1="${video_checksums["$file1"]}"
         [[ -z "$checksum1" ]] && continue
         
         for ((j=i+1; j<total_files; j++)); do
             local file2="${video_files_list[$j]}"
             [[ ! -f "$file2" ]] && continue
-            local checksum2="${video_checksums[$file2]}"
+            local checksum2="${video_checksums["$file2"]}"
             [[ -z "$checksum2" ]] && continue
             
             # Write pair to queue
@@ -9786,8 +9960,8 @@ detect_duplicate_videos() {
             local file2="${video_files_list[$j]}"
             
             # Perform comparison (Levels 1-5, skip Level 6 for now)
-            local checksum1="${video_checksums[$file1]}"
-            local checksum2="${video_checksums[$file2]}"
+            local checksum1="${video_checksums["$file1"]}"
+            local checksum2="${video_checksums["$file2"]}"
             
             local duplicate_found=""
             
@@ -9798,8 +9972,8 @@ detect_duplicate_videos() {
             
             # Level 2: Visual hash
             if [[ -z "$duplicate_found" ]]; then
-                local hash1="${video_visual_hashes[$file1]}"
-                local hash2="${video_visual_hashes[$file2]}"
+                local hash1="${video_visual_hashes["$file1"]}"
+                local hash2="${video_visual_hashes["$file2"]}"
                 if [[ -n "$hash1" && -n "$hash2" && "$hash1" == "$hash2" ]]; then
                     duplicate_found="LEVEL2|95|$file1|$file2|Identical visual fingerprint"
                 fi
@@ -9807,11 +9981,11 @@ detect_duplicate_videos() {
             
             # Level 3: Content fingerprint
             if [[ -z "$duplicate_found" ]]; then
-                local fp1="${video_fingerprints[$file1]}"
-                local fp2="${video_fingerprints[$file2]}"
+                local fp1="${video_fingerprints["$file1"]}"
+                local fp2="${video_fingerprints["$file2"]}"
                 if [[ "$fp1" == "$fp2" ]]; then
-                    local size1="${video_sizes[$file1]:-0}"
-                    local size2="${video_sizes[$file2]:-0}"
+                    local size1="${video_sizes["$file1"]:-0}"
+                    local size2="${video_sizes["$file2"]:-0}"
                     if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
                         local size_ratio=$(( (size1 < size2 ? size1 * 100 / size2 : size2 * 100 / size1) ))
                         if [[ $size_ratio -ge 95 ]]; then
@@ -9908,14 +10082,14 @@ detect_duplicate_videos() {
         local file1="${video_files_list[$i]}"
         [[ ! -f "$file1" ]] && continue
         
-        local checksum1="${video_checksums[$file1]}"
+        local checksum1="${video_checksums["$file1"]}"
         [[ -z "$checksum1" ]] && continue
         
         for ((j=i+1; j<total_files; j++)); do
             local file2="${video_files_list[$j]}"
             [[ ! -f "$file2" ]] && continue
             
-            local checksum2="${video_checksums[$file2]}"
+            local checksum2="${video_checksums["$file2"]}"
             [[ -z "$checksum2" ]] && continue
             
             ((current_comparison++))
@@ -9950,8 +10124,8 @@ detect_duplicate_videos() {
             fi
             
             # Level 2: Visual similarity (perceptual hash)
-            local hash1="${video_visual_hashes[$file1]}"
-            local hash2="${video_visual_hashes[$file2]}"
+            local hash1="${video_visual_hashes["$file1"]}"
+            local hash2="${video_visual_hashes["$file2"]}"
             
             if [[ -n "$hash1" && -n "$hash2" && "$hash1" == "$hash2" ]]; then
                 duplicate_pairs+=("LEVEL2|95|$file1|$file2|Identical visual fingerprint")
@@ -9960,12 +10134,12 @@ detect_duplicate_videos() {
             fi
             
             # Level 3: Content fingerprint match
-            local fp1="${video_fingerprints[$file1]}"
-            local fp2="${video_fingerprints[$file2]}"
+            local fp1="${video_fingerprints["$file1"]}"
+            local fp2="${video_fingerprints["$file2"]}"
             
             if [[ "$fp1" == "$fp2" ]]; then
-                local size1="${video_sizes[$file1]:-0}"
-                local size2="${video_sizes[$file2]:-0}"
+                local size1="${video_sizes["$file1"]:-0}"
+                local size2="${video_sizes["$file2"]:-0}"
                 
                 # Only calculate ratio if both sizes are valid and non-zero
                 if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
@@ -9980,14 +10154,14 @@ detect_duplicate_videos() {
             fi
             
             # Level 4: Near-identical detection
-            local dur1="${video_durations[$file1]}"
-            local dur2="${video_durations[$file2]}"
-            local res1="${video_resolutions[$file1]}"
-            local res2="${video_resolutions[$file2]}"
+            local dur1="${video_durations["$file1"]}"
+            local dur2="${video_durations["$file2"]}"
+            local res1="${video_resolutions["$file1"]}"
+            local res2="${video_resolutions["$file2"]}"
             
             if [[ "$dur1" == "$dur2" && "$res1" == "$res2" ]]; then
-                local size1="${video_sizes[$file1]:-0}"
-                local size2="${video_sizes[$file2]:-0}"
+                local size1="${video_sizes["$file1"]:-0}"
+                local size2="${video_sizes["$file2"]:-0}"
                 
                 # Only calculate if both sizes are valid and non-zero
                 if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
@@ -10023,8 +10197,8 @@ detect_duplicate_videos() {
             
             # Check for similar filenames with similar properties
             if [[ $filename_similarity -ge 75 ]]; then
-                local size1="${video_sizes[$file1]:-0}"
-                local size2="${video_sizes[$file2]:-0}"
+                local size1="${video_sizes["$file1"]:-0}"
+                local size2="${video_sizes["$file2"]:-0}"
                 
                 # Only calculate ratio if both sizes are valid and non-zero
                 if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
@@ -10060,8 +10234,8 @@ detect_duplicate_videos() {
             
             # Quick bailout #2: Collection too large
             if [[ $total_files -ge 200 ]] && [[ "$skip_level6_calculation" != "true" ]]; then
-                local quick_size1="${video_sizes[$file1]:-0}"
-                local quick_size2="${video_sizes[$file2]:-0}"
+                local quick_size1="${video_sizes["$file1"]:-0}"
+                local quick_size2="${video_sizes["$file2"]:-0}"
                 if [[ $quick_size1 -gt 0 && $quick_size2 -gt 0 ]]; then
                     local quick_diff=$(( (quick_size1 > quick_size2 ? quick_size1 - quick_size2 : quick_size2 - quick_size1) * 100 / (quick_size1 > quick_size2 ? quick_size1 : quick_size2) ))
                     if [[ $quick_diff -gt 20 ]]; then
@@ -10095,8 +10269,8 @@ detect_duplicate_videos() {
                 
                 # Factor 2: MD5 Hash Proximity Analysis
                 local md5_score=0
-                local hash1="${video_checksums[$file1]}"
-                local hash2="${video_checksums[$file2]}"
+                local hash1="${video_checksums["$file1"]}"
+                local hash2="${video_checksums["$file2"]}"
                 if [[ -n "$hash1" && -n "$hash2" && "$hash1" != "ERROR" && "$hash2" != "ERROR" ]]; then
                     if [[ "${hash1:0:8}" == "${hash2:0:8}" ]]; then
                         ((md5_score += 50))  # Very strong similarity
@@ -10136,8 +10310,8 @@ detect_duplicate_videos() {
                 
                 # Factor 5: Visual Hash Similarity
                 local visual_hash_score=0
-                local vhash1="${video_visual_hashes[$file1]}"
-                local vhash2="${video_visual_hashes[$file2]}"
+                local vhash1="${video_visual_hashes["$file1"]}"
+                local vhash2="${video_visual_hashes["$file2"]}"
                 if [[ -n "$vhash1" && -n "$vhash2" && "$vhash1" != "0" && "$vhash2" != "0" ]]; then
                     if [[ "$vhash1" == "$vhash2" ]]; then
                         ((visual_hash_score += 50))  # Identical visual hash
@@ -10154,18 +10328,18 @@ detect_duplicate_videos() {
                 
                 # Factor 6: Content Fingerprint Analysis
                 local fingerprint_score=0
-                local fp1="${video_fingerprints[$file1]}"
-                local fp2="${video_fingerprints[$file2]}"
+                local fp1="${video_fingerprints["$file1"]}"
+                local fp2="${video_fingerprints["$file2"]}"
                 if [[ -n "$fp1" && -n "$fp2" && "$fp1" == "$fp2" ]]; then
                     ((fingerprint_score += 40))  # Identical fingerprint
                 fi
                 
                 # Factor 7: Codec & Format Compatibility
                 local codec_format_score=0
-                local codec1="${video_codecs[$file1]}"
-                local codec2="${video_codecs[$file2]}"
-                local format1="${video_formats[$file1]}"
-                local format2="${video_formats[$file2]}"
+                local codec1="${video_codecs["$file1"]}"
+                local codec2="${video_codecs["$file2"]}"
+                local format1="${video_formats["$file1"]}}"
+                local format2="${video_formats["$file2"]}}"
                 
                 if [[ "$codec1" == "$codec2" ]]; then
                     ((codec_format_score += 20))  # Same codec
@@ -10179,8 +10353,8 @@ detect_duplicate_videos() {
                 
                 # Factor 9: File Size Similarity
                 local size_similarity_score=0
-                local size1="${video_sizes[$file1]}"
-                local size2="${video_sizes[$file2]}"
+                local size1="${video_sizes["$file1"]}"
+                local size2="${video_sizes["$file2"]}"
                 if [[ -n "$size1" && -n "$size2" && $size1 -gt 0 && $size2 -gt 0 ]]; then
                     local size_diff_pct=$(( (size1 > size2 ? size1 - size2 : size2 - size1) * 100 / (size1 > size2 ? size1 : size2) ))
                     if [[ $size_diff_pct -lt 10 ]]; then
@@ -10373,7 +10547,8 @@ detect_duplicate_videos() {
         echo -e "  ${CYAN}🧠 AI Pre-filtering: Only analyzing likely duplicate candidates...${NC}"
         echo -e "  ${YELLOW}⚠️  Press Ctrl+C to cancel at any time${NC}\n"
         
-        local video_files_array=("${!video_sizes[@]}")
+        # Use original video_files_list instead of extracting from associative array
+        local video_files_array=("${video_files_list[@]}")
         local level6_found=0
         
         # ═══════════════════════════════════════════════════════════════
@@ -10423,14 +10598,14 @@ detect_duplicate_videos() {
                 fi
                 
                 # Skip if already detected as duplicate
-                local checksum1="${video_checksums[$file1]:-}"
-                local checksum2="${video_checksums[$file2]:-}"
+                local checksum1="${video_checksums["$file1"]:-}"
+                local checksum2="${video_checksums["$file2"]:-}"
                 if [[ -n "$checksum1" && -n "$checksum2" && "$checksum1" == "$checksum2" ]]; then
                     continue
                 fi
                 
-                local vhash1="${video_visual_hashes[$file1]:-}"
-                local vhash2="${video_visual_hashes[$file2]:-}"
+                local vhash1="${video_visual_hashes["$file1"]:-}"
+                local vhash2="${video_visual_hashes["$file2"]:-}"
                 if [[ -n "$vhash1" && -n "$vhash2" && "$vhash1" != "0" && "$vhash2" != "0" && "$vhash1" == "$vhash2" ]]; then
                     continue
                 fi
@@ -10454,8 +10629,8 @@ detect_duplicate_videos() {
                 fi
                 
                 # Factor 2: Similar file sizes (35 points max)
-                local size1="${video_sizes[$file1]:-0}"
-                local size2="${video_sizes[$file2]:-0}"
+                local size1="${video_sizes["$file1"]:-0}"
+                local size2="${video_sizes["$file2"]:-0}"
                 if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
                     local size_diff_pct=$(( (size1 > size2 ? size1 - size2 : size2 - size1) * 100 / (size1 > size2 ? size1 : size2) ))
                     if [[ $size_diff_pct -lt 5 ]]; then
@@ -10470,8 +10645,8 @@ detect_duplicate_videos() {
                 fi
                 
                 # Factor 3: Duration match (50 points max)
-                local dur1="${video_durations[$file1]:-0}"
-                local dur2="${video_durations[$file2]:-0}"
+                local dur1="${video_durations["$file1"]:-0}"
+                local dur2="${video_durations["$file2"]:-0}"
                 if [[ $dur1 -gt 0 && $dur2 -gt 0 ]]; then
                     if [[ $dur1 -eq $dur2 ]]; then
                         similarity_score=$((similarity_score + 50))  # Exact match
@@ -10488,8 +10663,8 @@ detect_duplicate_videos() {
                 fi
                 
                 # Factor 4: Resolution match (45 points max)
-                local res1="${video_resolutions[$file1]:-}"
-                local res2="${video_resolutions[$file2]:-}"
+                local res1="${video_resolutions["$file1"]:-}"
+                local res2="${video_resolutions["$file2"]:-}"
                 if [[ -n "$res1" && -n "$res2" && "$res1" == "$res2" ]]; then
                     similarity_score=$((similarity_score + 45))
                 fi
@@ -10497,8 +10672,8 @@ detect_duplicate_videos() {
                 # Factor 5: Visual hash similarity - SKIPPED (already checked above)
                 
                 # Factor 6: Bitrate similarity (30 points max)
-                local br1="${video_bitrates[$file1]:-0}"
-                local br2="${video_bitrates[$file2]:-0}"
+                local br1="${video_bitrates["$file1"]:-0}"
+                local br2="${video_bitrates["$file2"]:-0}"
                 if [[ $br1 -gt 0 && $br2 -gt 0 ]]; then
                     local br_diff=$(( (br1 > br2 ? br1 - br2 : br2 - br1) * 100 / (br1 > br2 ? br1 : br2) ))
                     if [[ $br_diff -lt 10 ]]; then
@@ -10509,15 +10684,15 @@ detect_duplicate_videos() {
                 fi
                 
                 # Factor 7: Codec match (35 points max)
-                local codec1="${video_codecs[$file1]:-}"
-                local codec2="${video_codecs[$file2]:-}"
+                local codec1="${video_codecs["$file1"]:-}"
+                local codec2="${video_codecs["$file2"]:-}"
                 if [[ -n "$codec1" && -n "$codec2" && "$codec1" == "$codec2" ]]; then
                     similarity_score=$((similarity_score + 35))
                 fi
                 
                 # Factor 8: FPS similarity (30 points max)
-                local fps1="${video_fps_values[$file1]:-0}"
-                local fps2="${video_fps_values[$file2]:-0}"
+                local fps1="${video_fps_values["$file1"]:-0}"
+                local fps2="${video_fps_values["$file2"]:-0}"
                 if [[ -n "$fps1" && -n "$fps2" ]]; then
                     # Compare FPS as integers (remove decimals)
                     local fps1_int=${fps1%.*}
@@ -10789,8 +10964,8 @@ detect_duplicate_videos() {
         IFS='|' read -r level confidence file1 file2 reason <<< "$pair"
         
         # In each pair, we'd delete the larger file (keep smaller)
-        local size1="${video_sizes[$file1]}"
-        local size2="${video_sizes[$file2]}"
+        local size1="${video_sizes["$file1"]}"
+        local size2="${video_sizes["$file2"]}"
         
         if [[ -n "$size1" && -n "$size2" ]]; then
             if [[ $size1 -gt $size2 ]]; then
@@ -10832,8 +11007,8 @@ detect_duplicate_videos() {
             IFS='|' read -r level confidence file1 file2 reason <<< "$pair"
             
             # Determine which file is larger (delete the larger one)
-            local size1="${video_sizes[$file1]}"
-            local size2="${video_sizes[$file2]}"
+            local size1="${video_sizes["$file1"]}"
+            local size2="${video_sizes["$file2"]}"
             local file_to_delete
             local file_to_keep
             
@@ -10894,6 +11069,132 @@ detect_corrupted_videos() {
     fi
     
     echo -e "  ${BLUE}Checking ${BOLD}$total_videos${NC}${BLUE} video files with ${BOLD}4-layer validation${NC}${BLUE}...${NC}"
+    
+    # Check if GNU parallel is available for fast validation
+    if command -v parallel >/dev/null 2>&1 && [[ $total_videos -gt 10 ]]; then
+        # PARALLEL MODE: Process all videos at once using all CPU cores
+        local temp_validation_dir="$(mktemp -d)"
+        local validation_script="$temp_validation_dir/validate_video.sh"
+        local validation_results="$temp_validation_dir/results.txt"
+        local progress_counter="$temp_validation_dir/progress.txt"
+        echo "0" > "$progress_counter"
+        
+        # Create validation script
+        cat > "$validation_script" << 'VIDEO_VALIDATION_EOF'
+#!/bin/bash
+validate_single_video() {
+    local video_file="$1"
+    local progress_file="$2"
+    
+    local failed_checks=0
+    local failure_reasons=()
+    
+    # Layer 1: File size check
+    local file_size=$(stat -c%s -- "$video_file" 2>/dev/null || echo "0")
+    if [[ $file_size -lt 1024 ]]; then
+        ((failed_checks++))
+        failure_reasons+=("File too small")
+    fi
+    
+    # Layer 2: Codec detection
+    if command -v ffprobe >/dev/null 2>&1; then
+        if ! timeout 5 ffprobe -v error -select_streams v:0 -show_entries stream=codec_name \
+            -of csv=p=0 -- "$video_file" >/dev/null 2>&1; then
+            ((failed_checks++))
+            failure_reasons+=("No video codec")
+        fi
+    fi
+    
+    # Layer 3: Metadata check
+    if command -v ffprobe >/dev/null 2>&1; then
+        local duration=$(timeout 5 ffprobe -v error -show_entries format=duration \
+            -of csv=p=0 -- "$video_file" 2>/dev/null | cut -d'.' -f1)
+        local width=$(timeout 5 ffprobe -v error -select_streams v:0 -show_entries stream=width \
+            -of csv=p=0 -- "$video_file" 2>/dev/null)
+        
+        if [[ -z "$duration" || "$duration" == "0" || -z "$width" || "$width" == "0" ]]; then
+            ((failed_checks++))
+            failure_reasons+=("Missing metadata")
+        fi
+    fi
+    
+    # Layer 4: Frame extraction test
+    if command -v ffmpeg >/dev/null 2>&1; then
+        if ! timeout 8 ffmpeg -i -- "$video_file" -vframes 1 -f null - >/dev/null 2>&1; then
+            ((failed_checks++))
+            failure_reasons+=("Cannot extract frames")
+        fi
+    fi
+    
+    # Update progress
+    if [[ -n "$progress_file" ]]; then
+        flock -x "$progress_file" bash -c 'echo $(($(cat "$1" 2>/dev/null || echo 0) + 1)) > "$1"' _ "$progress_file" 2>/dev/null || true
+    fi
+    
+    # Output result if corrupted (2+ failures)
+    if [[ $failed_checks -ge 2 ]]; then
+        local reasons_str=$(IFS=','; echo "${failure_reasons[*]}")
+        echo "CORRUPTED|$video_file|$failed_checks|$reasons_str"
+    fi
+}
+export -f validate_single_video
+VIDEO_VALIDATION_EOF
+        chmod +x "$validation_script"
+        
+        # Start parallel validation in background
+        source "$validation_script"
+        (
+            printf '%s\n' "${all_videos[@]}" | parallel -j "${AI_DUPLICATE_THREADS:-4}" \
+                "validate_single_video {} '$progress_counter'" > "$validation_results" 2>/dev/null
+        ) &
+        local parallel_pid=$!
+        
+        # Monitor progress with live progress bar
+        local last_count=0
+        while kill -0 $parallel_pid 2>/dev/null; do
+            local current_count=$(cat "$progress_counter" 2>/dev/null || echo "0")
+            
+            if [[ $current_count -ne $last_count || $current_count -eq 0 ]]; then
+                local progress=$((current_count * 100 / total_videos))
+                [[ $progress -gt 100 ]] && progress=100
+                local filled=$((progress * 30 / 100))
+                local empty=$((30 - filled))
+                
+                printf "\r  ${CYAN}["
+                for ((k=0; k<filled; k++)); do printf "${GREEN}█${NC}"; done
+                for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
+                printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d/%d)${NC}" "$progress" "$current_count" "$total_videos"
+                
+                last_count=$current_count
+            fi
+            
+            sleep 0.2
+        done
+        
+        # Wait for completion
+        wait $parallel_pid 2>/dev/null
+        
+        # Show final 100%
+        printf "\r  ${CYAN}["
+        for ((k=0; k<30; k++)); do printf "${GREEN}█${NC}"; done
+        printf "${CYAN}] ${BOLD}100%%${NC} ${GRAY}(%d/%d)${NC}\n" "$total_videos" "$total_videos"
+        
+        # Process results
+        while IFS='|' read -r status filepath check_count reasons; do
+            if [[ "$status" == "CORRUPTED" ]]; then
+                corrupted_files+=("$filepath")
+                corruption_reasons["$filepath"]="$reasons"
+                ((corrupted_count++))
+            fi
+        done < "$validation_results"
+        
+        scanned_count=$total_videos
+        
+        # Cleanup
+        rm -rf "$temp_validation_dir" 2>/dev/null
+        
+    else
+        # SEQUENTIAL MODE: For small file counts or when parallel not available
     echo -e "  ${YELLOW}⚠️  Press Ctrl+C to cancel at any time${NC}"
     
     # Enable Ctrl+C handling
@@ -10983,6 +11284,8 @@ detect_corrupted_videos() {
         echo -e "  ${GREEN}✓ Corruption scan interrupted (scanned $scanned_count/$total_videos files)${NC}"
         return 1
     fi
+    
+    fi  # End of parallel/sequential if-else
     
     echo -e "  ${GREEN}✓ Scanned $scanned_count video files${NC}"
     
@@ -11595,6 +11898,138 @@ detect_duplicate_gifs() {
     local files_actually_processed=0
     local files_loaded_from_cache=0
     
+    # 🚀 TRUE PARALLEL METADATA ANALYSIS using GNU parallel!
+    if [[ ${#uncached_files_list[@]} -gt 0 ]] && command -v parallel >/dev/null 2>&1; then
+        echo -e "  ${MAGENTA}🚀 Analyzing metadata in parallel (${AI_DUPLICATE_THREADS} threads)...${NC}"
+        
+        # Create temporary script for parallel execution
+        local parallel_script="$temp_analysis_dir/analyze_metadata.sh"
+        local progress_counter="$temp_analysis_dir/progress_counter.txt"
+        echo "0" > "$progress_counter"
+        
+        cat > "$parallel_script" << 'PARALLEL_EOF'
+#!/bin/bash
+analyze_single_gif() {
+    local gif_file="$1"
+    local checksum="$2"
+    local result_file="$3"
+    local progress_file="$4"
+    
+    local size=$(stat -c%s -- "$gif_file" 2>/dev/null || echo "0")
+    local frame_count="0"
+    local duration="0"
+    local resolution="unknown"
+    
+    # Use FFprobe to get metadata
+    if command -v ffprobe >/dev/null 2>&1; then
+        local ffprobe_output=$(timeout 3 ffprobe -v error -select_streams v:0 \
+            -count_packets -show_entries stream=nb_read_packets,duration,width,height \
+            -of csv=p=0 "$gif_file" 2>/dev/null)
+        
+        if [[ -n "$ffprobe_output" ]]; then
+            frame_count=$(echo "$ffprobe_output" | cut -d',' -f1)
+            duration=$(echo "$ffprobe_output" | cut -d',' -f2 | cut -d'.' -f1)
+            local width=$(echo "$ffprobe_output" | cut -d',' -f3)
+            local height=$(echo "$ffprobe_output" | cut -d',' -f4)
+            resolution="${width}x${height}"
+            [[ ! "$frame_count" =~ ^[0-9]+$ ]] && frame_count="0"
+            [[ ! "$duration" =~ ^[0-9]+$ ]] && duration="0"
+        fi
+    fi
+    
+    # Update progress counter atomically
+    if [[ -n "$progress_file" ]]; then
+        flock -x "$progress_file" bash -c 'echo $(($(cat "$1" 2>/dev/null || echo 0) + 1)) > "$1"' _ "$progress_file" 2>/dev/null || true
+    fi
+    
+    local content_fingerprint="${size}:${resolution}:${frame_count}:${duration}"
+    echo "$gif_file|$checksum|$size|$content_fingerprint||$frame_count|$duration"
+}
+export -f analyze_single_gif
+PARALLEL_EOF
+        chmod +x "$parallel_script"
+        
+        # Create input file with filepath and hash pairs
+        local parallel_input="$temp_analysis_dir/parallel_input.txt"
+        : > "$parallel_input"
+        for gif_file in "${uncached_files_list[@]}"; do
+            local hash="${gif_hash_lookup[$gif_file]}"
+            echo "$gif_file	$hash" >> "$parallel_input"
+        done
+        
+        # Start parallel processing in background
+        local metadata_results="$temp_analysis_dir/metadata_results.txt"
+        source "$parallel_script"
+        (
+            cat "$parallel_input" | parallel --colsep '\t' -j "$AI_DUPLICATE_THREADS" \
+                "analyze_single_gif {1} {2} '$results_file' '$progress_counter'" > "$metadata_results" 2>/dev/null
+        ) &
+        local parallel_pid=$!
+        
+        # Monitor progress with live progress bar
+        local total_files=${#uncached_files_list[@]}
+        local last_count=0
+        while kill -0 $parallel_pid 2>/dev/null; do
+            local current_count=$(cat "$progress_counter" 2>/dev/null || echo "0")
+            
+            if [[ $current_count -ne $last_count || $current_count -eq 0 ]]; then
+                local progress=$((current_count * 100 / total_files))
+                [[ $progress -gt 100 ]] && progress=100
+                local filled=$((progress * 30 / 100))
+                local empty=$((30 - filled))
+                
+                printf "\r  ${CYAN}["
+                for ((k=0; k<filled; k++)); do printf "${GREEN}█${NC}"; done
+                for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
+                printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d/%d files)${NC}" "$progress" "$current_count" "$total_files"
+                
+                last_count=$current_count
+            fi
+            
+            sleep 0.2
+        done
+        
+        # Wait for parallel to finish
+        wait $parallel_pid 2>/dev/null
+        
+        # Show final 100% state
+        local final_count=$(cat "$progress_counter" 2>/dev/null || echo "$total_files")
+        printf "\r  ${CYAN}["
+        for ((k=0; k<30; k++)); do printf "${GREEN}█${NC}"; done
+        printf "${CYAN}] ${BOLD}100%%${NC} ${GRAY}(%d/%d files)${NC}\n" "$final_count" "$total_files"
+        
+        # Append results and save to cache (batch operation for speed)
+        if [[ -f "$metadata_results" ]]; then
+            local cache_batch_file="$temp_analysis_dir/cache_batch.txt"
+            : > "$cache_batch_file"
+            
+            while IFS='|' read -r filepath checksum size fingerprint phash frames dur; do
+                [[ -z "$filepath" ]] && continue
+                echo "$filepath|$checksum|$size|$fingerprint|$phash|$frames|$dur" >> "$results_file"
+                
+                # Prepare cache entry
+                if [[ "$AI_CACHE_ENABLED" == "true" && -f "$filepath" ]]; then
+                    local filesize=$(stat -c%s "$filepath" 2>/dev/null || echo "0")
+                    local filemtime=$(stat -c%Y "$filepath" 2>/dev/null || echo "0")
+                    local timestamp=$(date +%s)
+                    local filename=$(basename -- "$filepath")
+                    local analysis_data="DUPLICATE_DETECT:$filepath|$checksum|$size|$fingerprint|$phash|$frames|$dur"
+                    echo "$filename|$filesize|$filemtime|$timestamp|$analysis_data" >> "$cache_batch_file"
+                fi
+            done < "$metadata_results"
+            
+            # Single atomic append to cache index
+            if [[ -s "$cache_batch_file" && "$AI_CACHE_ENABLED" == "true" ]]; then
+                cat "$cache_batch_file" >> "$AI_CACHE_INDEX" 2>/dev/null || true
+            fi
+        fi
+        
+        files_actually_processed=${#uncached_files_list[@]}
+        echo -e "  ${GREEN}✓ Analyzed ${files_actually_processed} files in parallel${NC}"
+    else
+        # Fallback to sequential processing if parallel not available
+        echo -e "  ${YELLOW}⚠️  GNU parallel not available, using sequential processing${NC}"
+    
     # Use simple while loop - process ONLY uncached files
     local loop_idx=0
     local total_to_process=${#uncached_files_list[@]}
@@ -11701,6 +12136,7 @@ detect_duplicate_gifs() {
         echo -e "  ${BLUE}🔗 Try: Check file permissions, restart script, or run fsck${NC}"
         return 1
     fi
+    fi  # End of if-else for parallel vs sequential processing
     
     # Final progress update - show accurate counts
     if [[ "$INTERRUPT_REQUESTED" == "true" ]]; then
@@ -12067,10 +12503,10 @@ detect_duplicate_gifs() {
     
     for ((i=0; i<${#gif_files[@]}; i++)); do
         local file="${gif_files[i]}"
-        local size="${gif_sizes[$file]:-0}"
-        local frames="${gif_frame_counts[$file]:-0}"
-        local duration="${gif_durations[$file]:-0}"
-        local vhash="${gif_visual_hashes[$file]:-NONE}"
+        local size="${gif_sizes["$file"]:-0}"
+        local frames="${gif_frame_counts["$file"]:-0}"
+        local duration="${gif_durations["$file"]:-0}"
+        local vhash="${gif_visual_hashes["$file"]:-NONE}"
         
         # Size clustering: ±25% tolerance buckets (exponential)
         # Files only compared within same or adjacent buckets
@@ -12186,8 +12622,8 @@ detect_duplicate_gifs() {
         for ((i=0; i<${#size_members[@]}; i++)); do
             local idx1=${size_members[i]}
             local file1="${gif_files[$idx1]}"
-            local frames1="${gif_frame_counts[$file1]:-0}"
-            local dur1="${gif_durations[$file1]:-0}"
+            local frames1="${gif_frame_counts["$file1"]:-0}"
+            local dur1="${gif_durations["$file1"]:-0}"
             
             for ((j=i+1; j<${#size_members[@]}; j++)); do
                 local idx2=${size_members[j]}
@@ -12197,8 +12633,8 @@ detect_duplicate_gifs() {
                 [[ -n "${queued_pairs[$pair_key]}" ]] && continue
                 
                 # Validate frame/duration similarity before queuing
-                local frames2="${gif_frame_counts[$file2]:-0}"
-                local dur2="${gif_durations[$file2]:-0}"
+                local frames2="${gif_frame_counts["$file2"]:-0}"
+                local dur2="${gif_durations["$file2"]:-0}"
                 
                 local frame_ok=true
                 if [[ $frames1 -gt 0 && $frames2 -gt 0 ]]; then
@@ -12237,7 +12673,7 @@ detect_duplicate_gifs() {
         for ((i=0; i<${#frame_members[@]}; i++)); do
             local idx1=${frame_members[i]}
             local file1="${gif_files[$idx1]}"
-            local size1="${gif_sizes[$file1]:-0}"
+            local size1="${gif_sizes["$file1"]:-0}"
             
             for ((j=i+1; j<${#frame_members[@]}; j++)); do
                 local idx2=${frame_members[j]}
@@ -12247,7 +12683,7 @@ detect_duplicate_gifs() {
                 [[ -n "${queued_pairs[$pair_key]}" ]] && continue
                 
                 # Size similarity check
-                local size2="${gif_sizes[$file2]:-0}"
+                local size2="${gif_sizes["$file2"]:-0}"
                 if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
                     local size_diff_pct=$(( (size1 > size2 ? size1 - size2 : size2 - size1) * 100 / (size1 > size2 ? size1 : size2) ))
                     [[ $size_diff_pct -gt 60 ]] && continue
@@ -12340,12 +12776,12 @@ detect_duplicate_gifs() {
             # ═══════════════════════════════════════════════════════════════
             
             # Get file properties for pre-filtering (cached in memory)
-            local size1="${gif_sizes[$file1]:-0}"
-            local size2="${gif_sizes[$file2]:-0}"
-            local frame1="${gif_frame_counts[$file1]:-0}"
-            local frame2="${gif_frame_counts[$file2]:-0}"
-            local dur1="${gif_durations[$file1]:-0}"
-            local dur2="${gif_durations[$file2]:-0}"
+            local size1="${gif_sizes["$file1"]:-0}"
+            local size2="${gif_sizes["$file2"]:-0}"
+            local frame1="${gif_frame_counts["$file1"]:-0}"
+            local frame2="${gif_frame_counts["$file2"]:-0}"
+            local dur1="${gif_durations["$file1"]:-0}"
+            local dur2="${gif_durations["$file2"]:-0}"
             
             # PRE-FILTER 1: Size difference > 80% = definitely not duplicates
             if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
@@ -12393,8 +12829,8 @@ detect_duplicate_gifs() {
             # Passed pre-filters - now perform detailed comparison (Levels 1-3)
             # ═══════════════════════════════════════════════════════════════
             
-            local checksum1="${gif_checksums[$file1]}"
-            local checksum2="${gif_checksums[$file2]}"
+            local checksum1="${gif_checksums["$file1"]}}"
+            local checksum2="${gif_checksums["$file2"]}}"
             local duplicate_found=""
             
             # Level 1: MD5 match
@@ -12404,8 +12840,8 @@ detect_duplicate_gifs() {
             
             # Level 2: Visual hash
             if [[ -z "$duplicate_found" ]]; then
-                local hash1="${gif_visual_hashes[$file1]}"
-                local hash2="${gif_visual_hashes[$file2]}"
+                local hash1="${gif_visual_hashes["$file1"]}}"
+                local hash2="${gif_visual_hashes["$file2"]}}"
                 if [[ -n "$hash1" && -n "$hash2" && "$hash1" == "$hash2" ]]; then
                     duplicate_found="LEVEL2|95|$file1|$file2|Identical visual fingerprint"
                 fi
@@ -12413,8 +12849,8 @@ detect_duplicate_gifs() {
             
             # Level 3: Content fingerprint
             if [[ -z "$duplicate_found" ]]; then
-                local fp1="${gif_fingerprints[$file1]}"
-                local fp2="${gif_fingerprints[$file2]}"
+                local fp1="${gif_fingerprints["$file1"]}}"
+                local fp2="${gif_fingerprints["$file2"]}}"
                 if [[ -n "$fp1" && -n "$fp2" && "$fp1" == "$fp2" ]]; then
                     if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
                         local size_ratio=$(( (size1 < size2 ? size1 * 100 / size2 : size2 * 100 / size1) ))
@@ -12609,14 +13045,14 @@ detect_duplicate_gifs() {
                 fi
                 
                 # Skip if already detected as duplicate
-                local checksum1="${gif_checksums[$file1]:-}"
-                local checksum2="${gif_checksums[$file2]:-}"
+                local checksum1="${gif_checksums["$file1"]:-}"
+                local checksum2="${gif_checksums["$file2"]:-}"
                 if [[ -n "$checksum1" && -n "$checksum2" && "$checksum1" == "$checksum2" ]]; then
                     continue
                 fi
                 
-                local vhash1="${gif_visual_hashes[$file1]:-}"
-                local vhash2="${gif_visual_hashes[$file2]:-}"
+                local vhash1="${gif_visual_hashes["$file1"]:-}"
+                local vhash2="${gif_visual_hashes["$file2"]:-}"
                 if [[ -n "$vhash1" && -n "$vhash2" && "$vhash1" != "0" && "$vhash2" != "0" && "$vhash1" == "$vhash2" ]]; then
                     continue
                 fi
@@ -12637,8 +13073,8 @@ detect_duplicate_gifs() {
                 fi
                 
                 # Factor 2: Similar file sizes (35 points max)
-                local size1="${gif_sizes[$file1]:-0}"
-                local size2="${gif_sizes[$file2]:-0}"
+                local size1="${gif_sizes["$file1"]:-0}"
+                local size2="${gif_sizes["$file2"]:-0}"
                 if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
                     local size_diff_pct=$(( (size1 > size2 ? size1 - size2 : size2 - size1) * 100 / (size1 > size2 ? size1 : size2) ))
                     if [[ $size_diff_pct -lt 5 ]]; then
@@ -12651,8 +13087,8 @@ detect_duplicate_gifs() {
                 fi
                 
                 # Factor 3: Frame count match (50 points max)
-                local frame1="${gif_frame_counts[$file1]:-0}"
-                local frame2="${gif_frame_counts[$file2]:-0}"
+                local frame1="${gif_frame_counts["$file1"]:-0}"
+                local frame2="${gif_frame_counts["$file2"]:-0}"
                 if [[ $frame1 -gt 0 && $frame2 -gt 0 ]]; then
                     if [[ $frame1 -eq $frame2 ]]; then
                         similarity_score=$((similarity_score + 50))  # Exact match
@@ -12667,8 +13103,8 @@ detect_duplicate_gifs() {
                 fi
                 
                 # Factor 4: Duration match (45 points max)
-                local dur1="${gif_durations[$file1]:-0}"
-                local dur2="${gif_durations[$file2]:-0}"
+                local dur1="${gif_durations["$file1"]:-0}"
+                local dur2="${gif_durations["$file2"]:-0}"
                 if [[ $dur1 -gt 0 && $dur2 -gt 0 ]]; then
                     if [[ $dur1 -eq $dur2 ]]; then
                         similarity_score=$((similarity_score + 45))
@@ -12683,8 +13119,8 @@ detect_duplicate_gifs() {
                 fi
                 
                 # Factor 5: Content fingerprint (30 points max)
-                local fp1="${gif_fingerprints[$file1]:-}"
-                local fp2="${gif_fingerprints[$file2]:-}"
+                local fp1="${gif_fingerprints["$file1"]:-}"
+                local fp2="${gif_fingerprints["$file2"]:-}"
                 if [[ -n "$fp1" && -n "$fp2" && "$fp1" == "$fp2" ]]; then
                     similarity_score=$((similarity_score + 30))
                 fi
@@ -12981,23 +13417,23 @@ detect_duplicate_gifs() {
             
             # Level 1: Exact binary match (highest confidence)
             ((level1_checked++))
-            if [[ "${gif_checksums[$file1]}" == "${gif_checksums[$file2]}" ]]; then
+            if [[ "${gif_checksums["$file1"]}}" == "${gif_checksums["$file2"]}}" ]]; then
                 is_duplicate=true
                 similarity_reason="exact_binary"
                 ((DUPLICATE_STATS_EXACT_BINARY++))
             # Level 2: Visual similarity (high confidence)
             ((level2_checked++))
-            elif [[ -n "${gif_visual_hashes[$file1]}" && -n "${gif_visual_hashes[$file2]}" ]] && \
-                 [[ "${gif_visual_hashes[$file1]}" == "${gif_visual_hashes[$file2]}" ]]; then
+            elif [[ -n "${gif_visual_hashes["$file1"]}}" && -n "${gif_visual_hashes["$file2"]}}" ]] && \
+                 [[ "${gif_visual_hashes["$file1"]}}" == "${gif_visual_hashes["$file2"]}}" ]]; then
                 is_duplicate=true
                 similarity_reason="visual_identical"
                 ((DUPLICATE_STATS_VISUAL_IDENTICAL++))
             # Level 3: Content fingerprint match (medium confidence)
             ((level3_checked++))
-            elif [[ "${gif_fingerprints[$file1]}" == "${gif_fingerprints[$file2]}" ]]; then
+            elif [[ "${gif_fingerprints["$file1"]}}" == "${gif_fingerprints["$file2"]}}" ]]; then
                 # Additional validation for content fingerprint matches
-                local size1="${gif_sizes[$file1]}"
-                local size2="${gif_sizes[$file2]}"
+                local size1="${gif_sizes["$file1"]}}"
+                local size2="${gif_sizes["$file2"]}}"
                 local size_diff=$(( (size1 > size2 ? size1 - size2 : size2 - size1) ))
                 local size_ratio=$(( size_diff * 100 / (size1 > size2 ? size1 : size2) ))
                 
@@ -13009,23 +13445,23 @@ detect_duplicate_gifs() {
                 fi
             # Level 4: AI-Enhanced Near-identical Detection (STRICT - visual similarity required)
             ((level4_checked++))
-            elif [[ "${gif_frame_counts[$file1]}" == "${gif_frame_counts[$file2]}" ]] && \
-                 [[ "${gif_durations[$file1]}" == "${gif_durations[$file2]}" ]] && \
-                 [[ "${gif_frame_counts[$file1]}" != "0" ]] && \
-                 [[ "${gif_durations[$file1]}" != "0" ]]; then
+            elif [[ "${gif_frame_counts["$file1"]}}" == "${gif_frame_counts["$file2"]}}" ]] && \
+                 [[ "${gif_durations["$file1"]}}" == "${gif_durations["$file2"]}}" ]] && \
+                 [[ "${gif_frame_counts["$file1"]}}" != "0" ]] && \
+                 [[ "${gif_durations["$file1"]}}" != "0" ]]; then
                 
                 # Both have actual frame/duration data (not just zeros)
-                local size1="${gif_sizes[$file1]}"
-                local size2="${gif_sizes[$file2]}"
+                local size1="${gif_sizes["$file1"]}}"
+                local size2="${gif_sizes["$file2"]}}"
                 local size_diff=$(( (size1 > size2 ? size1 - size2 : size2 - size1) ))
                 local size_ratio=$(( size_diff * 100 / (size1 > size2 ? size1 : size2) ))
                 
                 # CRITICAL: Level 4 now REQUIRES visual similarity - no false positives
                 local visual_similar=false
-                if [[ -n "${gif_visual_hashes[$file1]}" && -n "${gif_visual_hashes[$file2]}" ]]; then
+                if [[ -n "${gif_visual_hashes["$file1"]}}" && -n "${gif_visual_hashes["$file2"]}}" ]]; then
                     # Compare perceptual hashes
-                    local hash1="${gif_visual_hashes[$file1]}"
-                    local hash2="${gif_visual_hashes[$file2]}"
+                    local hash1="${gif_visual_hashes["$file1"]}}"
+                    local hash2="${gif_visual_hashes["$file2"]}}"
                     
                     # Exact hash match = visually identical
                     if [[ "$hash1" == "$hash2" ]]; then
@@ -13054,10 +13490,10 @@ detect_duplicate_gifs() {
             # Level 5: Filename-based similarity for identical properties
             # Catches cases where GIFs have same dimensions/frames but different color tables
             ((level5_checked++))
-            elif [[ "${gif_frame_counts[$file1]}" == "${gif_frame_counts[$file2]}" ]] && \
-                 [[ "${gif_durations[$file1]}" == "${gif_durations[$file2]}" ]] && \
-                 [[ "${gif_frame_counts[$file1]}" != "0" ]] && \
-                 [[ "${gif_durations[$file1]}" != "0" ]]; then
+            elif [[ "${gif_frame_counts["$file1"]}}" == "${gif_frame_counts["$file2"]}}" ]] && \
+                 [[ "${gif_durations["$file1"]}}" == "${gif_durations["$file2"]}}" ]] && \
+                 [[ "${gif_frame_counts["$file1"]}}" != "0" ]] && \
+                 [[ "${gif_durations["$file1"]}}" != "0" ]]; then
                 
                 # Check if filenames suggest they're from the same source
                 local basename1=$(basename -- "$file1" .gif)
@@ -13065,8 +13501,8 @@ detect_duplicate_gifs() {
                 
                 # Calculate filename similarity
                 local name_similarity=0
-                local size1="${gif_sizes[$file1]}"
-                local size2="${gif_sizes[$file2]}"
+                local size1="${gif_sizes["$file1"]}}"
+                local size2="${gif_sizes["$file2"]}}"
                 local size_diff=$(( (size1 > size2 ? size1 - size2 : size2 - size1) ))
                 local size_ratio=$(( size_diff * 100 / (size1 > size2 ? size1 : size2) ))
                 
@@ -13082,8 +13518,8 @@ detect_duplicate_gifs() {
                 # If filenames are similar AND properties match AND size difference is reasonable
                 if [[ $name_similarity -ge 50 ]] && [[ $size_ratio -lt 15 ]]; then
                     # Additional check: verify resolution matches (from content fingerprint)
-                    local fp1="${gif_fingerprints[$file1]}"
-                    local fp2="${gif_fingerprints[$file2]}"
+                    local fp1="${gif_fingerprints["$file1"]}}"
+                    local fp2="${gif_fingerprints["$file2"]}}"
                     local res1=$(echo "$fp1" | cut -d':' -f2)
                     local res2=$(echo "$fp2" | cut -d':' -f2)
                     
@@ -13116,8 +13552,8 @@ detect_duplicate_gifs() {
             # Quick bailout #2: Collection too large (237 files = < 0.1% trigger rate)
             if [[ $total_gifs -ge 200 ]] && [[ "$skip_level6_calculation" != "true" ]]; then
                 # For massive collections, skip unless files are VERY suspicious
-                local quick_size1="${gif_sizes[$file1]}"
-                local quick_size2="${gif_sizes[$file2]}"
+                local quick_size1="${gif_sizes["$file1"]}}"
+                local quick_size2="${gif_sizes["$file2"]}}"
                 if [[ -n "$quick_size1" && -n "$quick_size2" ]]; then
                     local quick_diff=$(( (quick_size1 > quick_size2 ? quick_size1 - quick_size2 : quick_size2 - quick_size1) * 100 / (quick_size1 > quick_size2 ? quick_size1 : quick_size2) ))
                     # If size difference > 20%, skip AI calculation entirely
@@ -13152,8 +13588,8 @@ detect_duplicate_gifs() {
                 
                 # Factor 2: MD5 Hash Proximity Analysis
                 local md5_score=0
-                local hash1="${gif_checksums[$file1]}"
-                local hash2="${gif_checksums[$file2]}"
+                local hash1="${gif_checksums["$file1"]}}"
+                local hash2="${gif_checksums["$file2"]}}"
                 if [[ -n "$hash1" && -n "$hash2" && "$hash1" != "ERROR" && "$hash2" != "ERROR" ]]; then
                     if [[ "${hash1:0:8}" == "${hash2:0:8}" ]]; then
                         ((md5_score += 50))  # Very strong similarity indicator
@@ -13181,10 +13617,10 @@ detect_duplicate_gifs() {
                 
                 # Factor 4: Frame Count & Duration Match
                 local frame_duration_score=0
-                local frame1="${gif_frame_counts[$file1]}"
-                local frame2="${gif_frame_counts[$file2]}"
-                local dur1="${gif_durations[$file1]}"
-                local dur2="${gif_durations[$file2]}"
+                local frame1="${gif_frame_counts["$file1"]}}"
+                local frame2="${gif_frame_counts["$file2"]}}"
+                local dur1="${gif_durations["$file1"]}}"
+                local dur2="${gif_durations["$file2"]}}"
                 if [[ $frame1 -gt 0 && $frame2 -gt 0 && $dur1 -gt 0 && $dur2 -gt 0 ]]; then
                     if [[ $frame1 -eq $frame2 && $dur1 -eq $dur2 ]]; then
                         ((frame_duration_score += 45))  # Identical timing
@@ -13201,8 +13637,8 @@ detect_duplicate_gifs() {
                 
                 # Factor 5: Visual Hash Similarity
                 local visual_hash_score=0
-                local vhash1="${gif_visual_hashes[$file1]}"
-                local vhash2="${gif_visual_hashes[$file2]}"
+                local vhash1="${gif_visual_hashes["$file1"]}}"
+                local vhash2="${gif_visual_hashes["$file2"]}}"
                 if [[ -n "$vhash1" && -n "$vhash2" && "$vhash1" != "0" && "$vhash2" != "0" ]]; then
                     if [[ "$vhash1" == "$vhash2" ]]; then
                         ((visual_hash_score += 50))  # Identical visual hash
@@ -13219,8 +13655,8 @@ detect_duplicate_gifs() {
                 
                 # Factor 6: Content Fingerprint
                 local fingerprint_score=0
-                local fp1="${gif_fingerprints[$file1]}"
-                local fp2="${gif_fingerprints[$file2]}"
+                local fp1="${gif_fingerprints["$file1"]}}"
+                local fp2="${gif_fingerprints["$file2"]}}"
                 if [[ -n "$fp1" && -n "$fp2" && "$fp1" == "$fp2" ]]; then
                     ((fingerprint_score += 40))  # Identical fingerprint
                 fi
@@ -13256,8 +13692,8 @@ detect_duplicate_gifs() {
                 elif [[ "${name1:0:8}" == "${name2:0:8}" ]]; then
                     ((similarity_score += 25))
                 fi
-                local size1="${gif_sizes[$file1]}"
-                local size2="${gif_sizes[$file2]}"
+                local size1="${gif_sizes["$file1"]}}"
+                local size2="${gif_sizes["$file2"]}}"
                 if [[ -n "$size1" && -n "$size2" && $size1 -gt 0 && $size2 -gt 0 ]]; then
                     local size_diff_pct=$(( (size1 > size2 ? size1 - size2 : size2 - size1) * 100 / (size1 > size2 ? size1 : size2) ))
                     if [[ $size_diff_pct -lt 10 ]]; then
@@ -13331,8 +13767,8 @@ detect_duplicate_gifs() {
                 # Factor 2: MD5 Hash Proximity Analysis
                 # Check if MD5 hashes are "close" (shared prefixes suggest similar content)
                 local md5_score=0
-                local hash1="${gif_checksums[$file1]}"
-                local hash2="${gif_checksums[$file2]}"
+                local hash1="${gif_checksums["$file1"]}}"
+                local hash2="${gif_checksums["$file2"]}}"
                 if [[ -n "$hash1" && -n "$hash2" && "$hash1" != "ERROR" && "$hash2" != "ERROR" ]]; then
                     # Compare first 8 characters of MD5 (collision unlikely but similarity indicator)
                     if [[ "${hash1:0:8}" == "${hash2:0:8}" ]]; then
@@ -13367,10 +13803,10 @@ detect_duplicate_gifs() {
                 
                 # Factor 4: Frame Count & Duration Match
                 local frame_duration_score=0
-                local frame1="${gif_frame_counts[$file1]}"
-                local frame2="${gif_frame_counts[$file2]}"
-                local dur1="${gif_durations[$file1]}"
-                local dur2="${gif_durations[$file2]}"
+                local frame1="${gif_frame_counts["$file1"]}}"
+                local frame2="${gif_frame_counts["$file2"]}}"
+                local dur1="${gif_durations["$file1"]}}"
+                local dur2="${gif_durations["$file2"]}}"
                 
                 if [[ $frame1 -gt 0 && $frame2 -gt 0 && $dur1 -gt 0 && $dur2 -gt 0 ]]; then
                     # Exact match = very suspicious
@@ -13392,8 +13828,8 @@ detect_duplicate_gifs() {
                 
                 # Factor 5: Visual Hash Similarity (if available)
                 local visual_hash_score=0
-                local vhash1="${gif_visual_hashes[$file1]}"
-                local vhash2="${gif_visual_hashes[$file2]}"
+                local vhash1="${gif_visual_hashes["$file1"]}}"
+                local vhash2="${gif_visual_hashes["$file2"]}}"
                 if [[ -n "$vhash1" && -n "$vhash2" && "$vhash1" != "0" && "$vhash2" != "0" ]]; then
                     if [[ "$vhash1" == "$vhash2" ]]; then
                         ((visual_hash_score += 50))  # Identical visual hash
@@ -13411,16 +13847,16 @@ detect_duplicate_gifs() {
                 
                 # Factor 6: Content Fingerprint Analysis
                 local fingerprint_score=0
-                local fp1="${gif_fingerprints[$file1]}"
-                local fp2="${gif_fingerprints[$file2]}"
+                local fp1="${gif_fingerprints["$file1"]}}"
+                local fp2="${gif_fingerprints["$file2"]}}"
                 if [[ -n "$fp1" && -n "$fp2" && "$fp1" == "$fp2" ]]; then
                     ((fingerprint_score += 40))  # Identical fingerprint
                 fi
                 
                 # Factor 7: Resolution/Quality detection (detect low-res/pixelated)
                 local quality_score=0
-                local fp1="${gif_fingerprints[$file1]}"
-                local fp2="${gif_fingerprints[$file2]}"
+                local fp1="${gif_fingerprints["$file1"]}}"
+                local fp2="${gif_fingerprints["$file2"]}}"
                 
                 # Extract resolution from fingerprint (format: size:resolution:frames:duration)
                 local res1=$(echo "$fp1" | cut -d':' -f2)
@@ -13465,8 +13901,8 @@ detect_duplicate_gifs() {
                 fi
                 
                 # Similar file sizes
-                local size1="${gif_sizes[$file1]}"
-                local size2="${gif_sizes[$file2]}"
+                local size1="${gif_sizes["$file1"]}}"
+                local size2="${gif_sizes["$file2"]}}"
                 if [[ -n "$size1" && -n "$size2" && $size1 -gt 0 && $size2 -gt 0 ]]; then
                     local size_diff_pct=$(( (size1 > size2 ? size1 - size2 : size2 - size1) * 100 / (size1 > size2 ? size1 : size2) ))
                     if [[ $size_diff_pct -lt 10 ]]; then
@@ -13613,12 +14049,12 @@ detect_duplicate_gifs() {
                 # Perform deep frame analysis
                 # No pre-filtering - Level 6 should run on ALL pairs to provide independent validation
                 
-                local frame1="${gif_frame_counts[$file1]}"
-                local frame2="${gif_frame_counts[$file2]}"
-                local dur1="${gif_durations[$file1]}"
-                local dur2="${gif_durations[$file2]}"
-                local size1="${gif_sizes[$file1]}"
-                local size2="${gif_sizes[$file2]}"
+                local frame1="${gif_frame_counts["$file1"]}}"
+                local frame2="${gif_frame_counts["$file2"]}}"
+                local dur1="${gif_durations["$file1"]}}"
+                local dur2="${gif_durations["$file2"]}}"
+                local size1="${gif_sizes["$file1"]}}"
+                local size2="${gif_sizes["$file2"]}}"
                 
                 # Only require basic data availability (not strict thresholds)
                 if [[ $frame1 -gt 0 && $frame2 -gt 0 && $dur1 -gt 0 && $dur2 -gt 0 ]]; then
@@ -13749,8 +14185,8 @@ detect_duplicate_gifs() {
             
             # Handle detected duplicates
             if [[ "$is_duplicate" == "true" ]]; then
-                local size1="${gif_sizes[$file1]}"
-                local size2="${gif_sizes[$file2]}"
+                local size1="${gif_sizes["$file1"]}}"
+                local size2="${gif_sizes["$file2"]}}"
                 
                 # Get file metadata for intelligent decision
                 local mtime1=$(stat -c%Y -- "$file1" 2>/dev/null || echo "0")  # Modification time
@@ -14186,8 +14622,8 @@ detect_duplicate_gifs() {
                 fi
                 
                 # Factor 2: Similar file sizes (35 points max)
-                local size1="${gif_sizes[$file1]:-0}"
-                local size2="${gif_sizes[$file2]:-0}"
+                local size1="${gif_sizes["$file1"]:-0}"
+                local size2="${gif_sizes["$file2"]:-0}"
                 if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
                     local size_diff_pct=$(( (size1 > size2 ? size1 - size2 : size2 - size1) * 100 / (size1 > size2 ? size1 : size2) ))
                     if [[ $size_diff_pct -lt 5 ]]; then
@@ -14202,8 +14638,8 @@ detect_duplicate_gifs() {
                 fi
                 
                 # Factor 3: Frame count match (50 points max)
-                local frame1="${gif_frame_counts[$file1]:-0}"
-                local frame2="${gif_frame_counts[$file2]:-0}"
+                local frame1="${gif_frame_counts["$file1"]:-0}"
+                local frame2="${gif_frame_counts["$file2"]:-0}"
                 if [[ $frame1 -gt 0 && $frame2 -gt 0 ]]; then
                     if [[ $frame1 -eq $frame2 ]]; then
                         similarity_score=$((similarity_score + 50))  # Exact match = very suspicious
@@ -14220,8 +14656,8 @@ detect_duplicate_gifs() {
                 fi
                 
                 # Factor 4: Duration match (45 points max)
-                local dur1="${gif_durations[$file1]:-0}"
-                local dur2="${gif_durations[$file2]:-0}"
+                local dur1="${gif_durations["$file1"]:-0}"
+                local dur2="${gif_durations["$file2"]:-0}"
                 if [[ $dur1 -gt 0 && $dur2 -gt 0 ]]; then
                     if [[ $dur1 -eq $dur2 ]]; then
                         similarity_score=$((similarity_score + 45))  # Exact match
@@ -14238,8 +14674,8 @@ detect_duplicate_gifs() {
                 fi
                 
                 # Factor 5: Visual hash similarity (55 points max)
-                local vhash1="${gif_visual_hashes[$file1]:-0}"
-                local vhash2="${gif_visual_hashes[$file2]:-0}"
+                local vhash1="${gif_visual_hashes["$file1"]:-0}"
+                local vhash2="${gif_visual_hashes["$file2"]:-0}"
                 if [[ -n "$vhash1" && -n "$vhash2" && "$vhash1" != "0" && "$vhash2" != "0" ]]; then
                     if [[ "$vhash1" == "$vhash2" ]]; then
                         similarity_score=$((similarity_score + 55))  # Identical hash
@@ -14257,8 +14693,8 @@ detect_duplicate_gifs() {
                 fi
                 
                 # Factor 6: Content fingerprint match (50 points max)
-                local fp1="${gif_fingerprints[$file1]:-}"
-                local fp2="${gif_fingerprints[$file2]:-}"
+                local fp1="${gif_fingerprints["$file1"]:-}"
+                local fp2="${gif_fingerprints["$file2"]:-}"
                 if [[ -n "$fp1" && -n "$fp2" && "$fp1" == "$fp2" ]]; then
                     similarity_score=$((similarity_score + 50))
                 fi
@@ -14273,8 +14709,8 @@ detect_duplicate_gifs() {
                 fi
                 
                 # Factor 8: MD5 prefix similarity (35 points max)
-                local hash1="${gif_checksums[$file1]:-}"
-                local hash2="${gif_checksums[$file2]:-}"
+                local hash1="${gif_checksums["$file1"]:-}"
+                local hash2="${gif_checksums["$file2"]:-}"
                 if [[ -n "$hash1" && -n "$hash2" && "$hash1" != "ERROR" && "$hash2" != "ERROR" ]]; then
                     if [[ "${hash1:0:8}" == "${hash2:0:8}" ]]; then
                         similarity_score=$((similarity_score + 35))
@@ -14386,8 +14822,8 @@ detect_duplicate_gifs() {
                     ((level6_duplicate_count++))
                     
                     # Add to duplicate pairs
-                    local size1="${gif_sizes[$file1]:-0}"
-                    local size2="${gif_sizes[$file2]:-0}"
+                    local size1="${gif_sizes["$file1"]:-0}"
+                    local size2="${gif_sizes["$file2"]:-0}"
                     local keep_file="$file1"
                     local remove_file="$file2"
                     
@@ -15555,6 +15991,161 @@ detect_corrupted_gifs() {
     
     echo -e "  ${CYAN}📊 Found $total_to_check GIF files - validating with ${BOLD}5-layer checks${NC}${CYAN}...${NC}"
     
+    # Check if GNU parallel is available for fast validation
+    if command -v parallel >/dev/null 2>&1 && [[ $total_to_check -gt 10 ]]; then
+        # PARALLEL MODE: Process all GIFs at once using all CPU cores
+        local temp_validation_dir="$(mktemp -d)"
+        local validation_script="$temp_validation_dir/validate_gif.sh"
+        local validation_results="$temp_validation_dir/results.txt"
+        local progress_counter="$temp_validation_dir/progress.txt"
+        echo "0" > "$progress_counter"
+        
+        # Create validation script
+        cat > "$validation_script" << 'VALIDATION_EOF'
+#!/bin/bash
+validate_single_gif() {
+    local gif_file="$1"
+    local progress_file="$2"
+    
+    local failed_checks=0
+    local failure_reasons=()
+    local needs_fixing=false
+    local corruption_type="unknown"
+    local corrected_name=""
+    local basename_file="$(basename -- "$gif_file")"
+    
+    # LAYER 0: Extension/Filename corruption detection
+    if [[ "$basename_file" =~ \.gif\.gif ]]; then
+        needs_fixing=true
+        corruption_type="multiple_gif_extensions"
+    elif [[ "$basename_file" =~ \.gif[0-9]+\.?gif ]]; then
+        needs_fixing=true
+        corruption_type="corrupted_numbered_extension"
+    elif [[ "$basename_file" =~ \.gif[a-z]*gif ]]; then
+        needs_fixing=true
+        corruption_type="concatenated_gif_extension"
+    elif [[ "$basename_file" =~ \.[Gg][Ii][Ff][a-zA-Z0-9]+ ]] && [[ ! "$basename_file" =~ \.gif$ ]]; then
+        needs_fixing=true
+        corruption_type="malformed_gif_extension"
+    fi
+    
+    # Layer 1: File size check
+    local file_size=$(stat -c%s -- "$gif_file" 2>/dev/null || echo "0")
+    if [[ $file_size -lt 100 ]]; then
+        ((failed_checks++))
+        failure_reasons+=("File too small")
+    fi
+    
+    # Layer 2: Check GIF magic bytes
+    local magic_bytes=$(head -c 6 "$gif_file" 2>/dev/null)
+    if [[ "$magic_bytes" != "GIF89a" && "$magic_bytes" != "GIF87a" ]]; then
+        ((failed_checks++))
+        failure_reasons+=("Invalid header")
+    fi
+    
+    # Layer 3: Test with ffprobe
+    if command -v ffprobe >/dev/null 2>&1; then
+        if ! timeout 5 ffprobe -v error -select_streams v:0 -show_entries stream=nb_frames \
+            -of csv=p=0 "$gif_file" >/dev/null 2>&1; then
+            ((failed_checks++))
+            failure_reasons+=("Cannot read frames")
+        fi
+    fi
+    
+    # Layer 4: Try to extract first frame
+    if command -v ffmpeg >/dev/null 2>&1; then
+        if ! timeout 5 ffmpeg -i "$gif_file" -vframes 1 -f null - >/dev/null 2>&1; then
+            ((failed_checks++))
+            failure_reasons+=("Frame extraction failed")
+        fi
+    fi
+    
+    # Layer 5: Gifsicle validation
+    if command -v gifsicle >/dev/null 2>&1; then
+        if ! timeout 5 gifsicle --info "$gif_file" >/dev/null 2>&1; then
+            ((failed_checks++))
+            failure_reasons+=("Gifsicle validation failed")
+        fi
+    fi
+    
+    # Update progress
+    if [[ -n "$progress_file" ]]; then
+        flock -x "$progress_file" bash -c 'echo $(($(cat "$1" 2>/dev/null || echo 0) + 1)) > "$1"' _ "$progress_file" 2>/dev/null || true
+    fi
+    
+    # Output result if corrupted (2+ failures)
+    if [[ $failed_checks -ge 2 ]]; then
+        local reasons_str=$(IFS=','; echo "${failure_reasons[*]}")
+        echo "CORRUPTED|$gif_file|$failed_checks|$reasons_str"
+    elif [[ "$needs_fixing" == "true" ]]; then
+        echo "NEEDS_FIX|$gif_file|0|$corruption_type"
+    fi
+}
+export -f validate_single_gif
+VALIDATION_EOF
+        chmod +x "$validation_script"
+        
+        # Start parallel validation in background
+        source "$validation_script"
+        (
+            printf '%s\n' "${all_gifs[@]}" | parallel -j "${AI_DUPLICATE_THREADS:-4}" \
+                "validate_single_gif {} '$progress_counter'" > "$validation_results" 2>/dev/null
+        ) &
+        local parallel_pid=$!
+        
+        # Monitor progress with live progress bar
+        local last_count=0
+        while kill -0 $parallel_pid 2>/dev/null; do
+            local current_count=$(cat "$progress_counter" 2>/dev/null || echo "0")
+            
+            if [[ $current_count -ne $last_count || $current_count -eq 0 ]]; then
+                local percent=$((current_count * 100 / total_to_check))
+                [[ $percent -gt 100 ]] && percent=100
+                local filled=$((percent * 50 / 100))
+                local empty=$((50 - filled))
+                
+                printf "\r  ${BLUE}🔍 ["
+                for ((i=0; i<filled; i++)); do printf "${GREEN}█${NC}"; done
+                for ((i=0; i<empty; i++)); do printf "${GRAY}░${NC}"; done
+                printf "${BLUE}] ${YELLOW}%3d%%${NC} ${GRAY}(%d/%d)${NC}" "$percent" "$current_count" "$total_to_check"
+                
+                last_count=$current_count
+            fi
+            
+            sleep 0.2
+        done
+        
+        # Wait for completion
+        wait $parallel_pid 2>/dev/null
+        
+        # Show final 100%
+        printf "\r  ${BLUE}🔍 ["
+        for ((i=0; i<50; i++)); do printf "${GREEN}█${NC}"; done
+        printf "${BLUE}] ${YELLOW}100%%${NC} ${GRAY}(%d/%d)${NC}\n" "$total_to_check" "$total_to_check"
+        
+        # Process results
+        while IFS='|' read -r status filepath check_count reasons; do
+            if [[ "$status" == "CORRUPTED" ]]; then
+                corrupted_files+=("$filepath")
+                corruption_reasons["$filepath"]="$reasons"
+                ((corrupted_count++))
+            elif [[ "$status" == "NEEDS_FIX" ]]; then
+                # Handle auto-fix cases
+                local base_name="${filepath%%.*}"
+                local corrected_name="$(dirname "$filepath")/${base_name}.gif"
+                if [[ ! -f "$corrected_name" && -f "$filepath" ]]; then
+                    if mv "$filepath" "$corrected_name" 2>/dev/null; then
+                        echo -e "  ${GREEN}✓ Auto-fixed:${NC} $(basename -- "$filepath") → $(basename -- "$corrected_name") ${GRAY}($reasons)${NC}"
+                    fi
+                fi
+            fi
+        done < "$validation_results"
+        
+        # Cleanup
+        rm -rf "$temp_validation_dir" 2>/dev/null
+        
+    else
+        # SEQUENTIAL MODE: For small file counts or when parallel not available
     # Second pass: check each file with progress bar
     local checked=0
     shopt -s nullglob
@@ -15726,6 +16317,8 @@ detect_corrupted_gifs() {
     
     # Clear progress bar
     printf "\r\033[K"
+    
+    fi  # End of parallel/sequential GIF validation if-else
     
     if [[ $total_gifs -eq 0 ]]; then
         echo -e "  ${CYAN}ℹ️  No existing GIF files found${NC}"
@@ -17067,6 +17660,18 @@ get_package_names() {
                 *) echo "libnotify" ;;
             esac
             ;;
+        "parallel")
+            case "$distro" in
+                "debian-based") echo "parallel" ;;
+                "redhat-based") echo "parallel" ;;
+                "arch-based") echo "parallel" ;;
+                "suse-based") echo "gnu_parallel" ;;
+                "alpine") echo "parallel" ;;
+                "gentoo") echo "sys-process/parallel" ;;
+                "void") echo "parallel" ;;
+                *) echo "parallel" ;;
+            esac
+            ;;
     esac
 }
 
@@ -17100,6 +17705,7 @@ show_manual_install_instructions() {
             "convert") echo -n " imagemagick" ;;
             "notify-send") echo -n " libnotify-bin" ;;
             "xxhsum") echo -n " xxhash" ;;
+            "parallel") echo -n " parallel" ;;
         esac
     done
     echo -e "${NC}"
@@ -17119,6 +17725,7 @@ show_manual_install_instructions() {
             "convert") echo -n " ImageMagick" ;;
             "notify-send") echo -n " libnotify" ;;
             "xxhsum") echo -n " xxhash" ;;
+            "parallel") echo -n " parallel" ;;
         esac
     done
     echo -e "${NC}"
@@ -17138,6 +17745,7 @@ show_manual_install_instructions() {
             "convert") echo -n " imagemagick" ;;
             "notify-send") echo -n " libnotify" ;;
             "xxhsum") echo -n " xxhash" ;;
+            "parallel") echo -n " parallel" ;;
         esac
     done
     echo -e "${NC}"
@@ -17157,6 +17765,7 @@ show_manual_install_instructions() {
             "convert") echo -n " ImageMagick" ;;
             "notify-send") echo -n " libnotify-tools" ;;
             "xxhsum") echo -n " xxhash" ;;
+            "parallel") echo -n " gnu_parallel" ;;
         esac
     done
     echo -e "${NC}"
@@ -17176,6 +17785,7 @@ show_manual_install_instructions() {
             "convert") echo -n " imagemagick" ;;
             "notify-send") echo -n " libnotify" ;;
             "xxhsum") echo -n " xxhash" ;;
+            "parallel") echo -n " parallel" ;;
         esac
     done
     echo -e "${NC}"
@@ -17195,6 +17805,7 @@ show_manual_install_instructions() {
             "convert") echo -n " media-gfx/imagemagick" ;;
             "notify-send") echo -n " x11-libs/libnotify" ;;
             "xxhsum") echo -n " app-crypt/xxhash" ;;
+            "parallel") echo -n " sys-process/parallel" ;;
         esac
     done
     echo -e "${NC}"
@@ -17214,6 +17825,7 @@ show_manual_install_instructions() {
             "convert") echo -n " ImageMagick" ;;
             "notify-send") echo -n " libnotify" ;;
             "xxhsum") echo -n " xxhash" ;;
+            "parallel") echo -n " parallel" ;;
         esac
     done
     echo -e "${NC}"
@@ -17232,6 +17844,7 @@ show_manual_install_instructions() {
             "jq") echo -n "jq " ;;
             "convert") echo -n "imagemagick " ;;
             "notify-send") echo -n "libnotify " ;;
+            "parallel") echo -n "parallel " ;;
         esac
     done
     echo -e "${NC}"
@@ -17664,7 +18277,7 @@ check_dependencies() {
             # Cache is still valid - load cached results, but sanity-check presence of required tools
             if source "$cache_file" 2>/dev/null; then
                 local sanity_missing=()
-                local sanity_required=("ffmpeg" "git" "curl" "tmux" "notify-send" "gifsicle" "jq" "convert" "xxhsum")
+                local sanity_required=("ffmpeg" "git" "curl" "tmux" "notify-send" "gifsicle" "jq" "convert" "xxhsum" "parallel")
                 for t in "${sanity_required[@]}"; do
                     if [[ "$t" == "xxhsum" ]]; then
                         if ! command -v xxh128sum >/dev/null 2>&1 && \
@@ -17696,7 +18309,7 @@ check_dependencies() {
     echo -e "${CYAN}🔍 Checking system dependencies...${NC}"
     
     # Promote all former optional tools to required
-    local required_tools=("ffmpeg" "git" "curl" "tmux" "notify-send" "gifsicle" "jq" "convert" "xxhsum")
+    local required_tools=("ffmpeg" "git" "curl" "tmux" "notify-send" "gifsicle" "jq" "convert" "xxhsum" "parallel")
     local optional_tools=()  # none
     local missing_required=()
     local missing_optional=()
@@ -17760,6 +18373,9 @@ check_dependencies() {
                     ;;
                 "convert")
                     version=$(convert -version 2>/dev/null | head -1 | sed 's/Version: ImageMagick /ImageMagick /' || echo "available")
+                    ;;
+                "parallel")
+                    version=$(parallel --version 2>/dev/null | head -1 || echo "available")
                     ;;
                 *)
                     # Fall back to common flags
@@ -21869,26 +22485,26 @@ show_dependency_check_menu() {
         "← Return to main menu"
     )
     
+    # Perform dependency check ONCE before entering loop
+    local required_tools=("ffmpeg" "git" "curl" "tmux" "notify-send" "gifsicle" "jq" "convert" "xxhsum" "parallel")
+    local optional_tools=()  # All tools are now required per existing logic
+    local needs_recheck=true
+    
     while true; do
+        # Only run dependency check if needed (first time or after option 3)
+        if [[ "$needs_recheck" == true ]]; then
+            # Arrays to track results
+            local missing_required=()
+            local missing_optional=()
+            local installed_required=()
+            local installed_optional=()
+            local hw_drivers_missing=()
+            needs_recheck=false
+        fi
+        
         clear
         print_header
-        echo -e "${CYAN}${BOLD}📦 DEPENDENCY CHECK & MANAGEMENT${NC}\n"
-        
-        # Force a fresh dependency check (bypass cache)
-        local cache_file="$LOG_DIR/.dependency_cache"
-        rm -f "$cache_file" 2>/dev/null
-        
-        # Use the existing global dependency arrays and lists from check_dependencies()
-        # These are defined at line 17699-17703
-        local required_tools=("ffmpeg" "git" "curl" "tmux" "notify-send" "gifsicle" "jq" "convert" "xxhsum")
-        local optional_tools=()  # All tools are now required per existing logic
-        
-        # Arrays to track results
-        local missing_required=()
-        local missing_optional=()
-        local installed_required=()
-        local installed_optional=()
-        local hw_drivers_missing=()
+        echo -e "${CYAN}${BOLD}📦 DEPENDENCY CHECK & MANAGEMENT${NC}\\n"
         
         echo -e "${BLUE}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo -e "${BLUE}${BOLD}REQUIRED DEPENDENCIES${NC}"
@@ -21932,6 +22548,7 @@ show_dependency_check_menu() {
                 "gifsicle") echo -e "    ${GRAY}Benefit: GIF size optimization (20-50% smaller)${NC}" ;;
                 "jq") echo -e "    ${GRAY}Benefit: Enhanced auto-detection features${NC}" ;;
                 "convert") echo -e "    ${GRAY}Benefit: AI perceptual hashing for duplicates (package: imagemagick)${NC}" ;;
+                "parallel") echo -e "    ${GRAY}Needed for: TRUE parallel hashing (20-30x faster duplicate detection)${NC}" ;;
             esac
         else
             installed_required+=("$tool")
@@ -21961,6 +22578,9 @@ show_dependency_check_menu() {
                     ;;
                 "convert")
                     version=$(convert -version 2>/dev/null | head -1 | sed 's/Version: ImageMagick /ImageMagick /' || echo "available")
+                    ;;
+                "parallel")
+                    version=$(parallel --version 2>/dev/null | head -1 || echo "available")
                     ;;
                 *)
                     version=$("$tool" --version 2>/dev/null | head -1 2>/dev/null || echo "available")
@@ -22116,7 +22736,7 @@ show_dependency_check_menu() {
                     show_manual_install_commands "${missing_required[@]}"
                     echo -e "\n${YELLOW}Press any key to continue...${NC}"; read -rsn1 ;;
                 3)
-                    : # simply loop to re-run
+                    needs_recheck=true  # Trigger dependency recheck on next loop
                     ;;
                 4)
                     return 0 ;;
@@ -22830,7 +23450,7 @@ start_conversion() {
 show_welcome() {
     clear
     echo -e "${CYAN}${BOLD}╔═════════════════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}${BOLD}║                    🎬 SMART GIF CONVERTER v7.1                    ║${NC}"
+echo -e "${CYAN}${BOLD}║                    🎬 SMART GIF CONVERTER v9.0                    ║${NC}"
     echo -e "${CYAN}${BOLD}║                  🤖 AI-Powered Video to GIF Magic                  ║${NC}"
     echo -e "${CYAN}${BOLD}╚═════════════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
@@ -23019,7 +23639,7 @@ show_tmux_controls() {
 # 🎪 Function to print fancy headers (simplified for menus)
 print_header() {
     echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}${BOLD}║                🎬 SMART GIF CONVERTER v8.1                 ║${NC}"
+    echo -e "${CYAN}${BOLD}║                🎬 SMART GIF CONVERTER v9.0                 ║${NC}"
     echo -e "${CYAN}${BOLD}║                AI-Powered Video to GIF Magic                  ║${NC}"
     echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo ""

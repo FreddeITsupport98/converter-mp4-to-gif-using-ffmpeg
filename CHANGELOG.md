@@ -2,6 +2,178 @@
 
 All notable changes to Smart GIF Converter will be documented in this file.
 
+## [9.0.0] - 2025-11-26
+
+### 📦 Comprehensive Dependency Management Menu & Critical Bug Fixes
+
+A complete overhaul of dependency management with an interactive WASD-navigable menu system, plus critical fixes for version display and hardware driver prompts.
+
+#### Added
+- **Interactive Dependency Check Menu** (🎮 WASD Navigation):
+  - **Full Visual Overview**:
+    - Real-time status display with checkmarks (✓) and crosses (✗) for all dependencies
+    - Version information for every installed tool (ffmpeg, git, curl, tmux, etc.)
+    - xxhash version now displays correctly: "xxHash 0.8.3"
+    - Hardware acceleration detection (NVENC, VAAPI, QSV)
+    - Summary statistics showing installed vs missing tools
+    - GPU detection (AMD Radeon, NVIDIA, Intel) with driver status
+  
+  - **5 Interactive Menu Options**:
+    1. 🔧 **Install Missing Tools (Automatic)**: One-click installation of all missing dependencies
+    2. 🚀 **Install Hardware Drivers (Automatic)**: GPU-specific driver installation
+       - Auto-detects AMD, Intel, or NVIDIA GPUs
+       - Installs correct drivers for your distribution
+       - Distribution-specific packages:
+         - openSUSE: `Mesa-libva`, `libva-vdpau-driver`, `libva-intel-driver`, `libva-utils`
+         - Ubuntu/Debian: `mesa-va-drivers`, `intel-media-va-driver`, `libva-utils`
+         - Arch: `libva-mesa-driver`, `intel-media-driver`, `libva-utils`
+         - Fedora/RHEL: `mesa-va-drivers`, `intel-media-driver`, `libva-utils`
+       - Remembers user choice for 24 hours (no repeated prompts)
+       - Shows time remaining until next prompt ("snoozed for X hours")
+    3. 📋 **Show Manual Installation Commands**: Copy-paste commands for all distributions
+    4. 🔄 **Re-run Dependency Check**: Fresh scan after installing packages
+    5. ← **Return to Main Menu**: Exit dependency menu
+  
+  - **WASD + Arrow Key Navigation**:
+    - `w` / ↑ Up Arrow: Navigate up
+    - `s` / ↓ Down Arrow: Navigate down
+    - `Enter` / `Space`: Select option
+    - `q`: Quit to main menu
+    - Visual selection indicator with green arrow (`>`)
+    - Contextual help text for each option
+  
+  - **Reuses Global Dependency System**:
+    - No code duplication - menu uses existing `check_dependencies()` function
+    - Single source of truth for dependency arrays (line 17699)
+    - Calls existing `auto_install_dependencies()` for automatic installation
+    - Uses existing `get_package_names()` for distribution-specific package resolution
+    - Updates to dependency list automatically reflect in menu
+    - Consistent behavior between startup checks and interactive menu
+
+- **Smart Hardware Driver Prompt Skip System**:
+  - Skip marker file: `~/.smart-gif-converter/.hw_prompt_skip`
+  - Format: `skip_hw_prompt_until=<unix_timestamp>`
+  - Stores timestamp 24 hours in the future when user declines
+  - Checks skip file on every startup
+  - Displays: "⏭ Skipping hardware driver prompt (snoozed for X hours)"
+  - User can still access via "Check Dependencies" menu anytime
+  - Automatic cleanup after expiration
+
+#### Fixed
+- **Critical: xxhash version display was empty in all dependency checks**
+  - **Root Cause**: xxhash tools (`xxh128sum`, `xxh64sum`, `xxhsum`) output version to stderr, not stdout
+  - **Previous Behavior**: `xxh128sum --version 2>/dev/null` suppressed stderr, resulting in empty output
+  - **Solution**: Changed to `xxh128sum --version 2>&1 | head -1 | awk '{print $2}'`
+    - `2>&1`: Redirects stderr to stdout to capture version output
+    - `head -1`: Takes only first line ("xxh128sum 0.8.3 by Yann Collet")
+    - `awk '{print $2}'`: Extracts version number ("0.8.3")
+  - **Locations Fixed**:
+    1. Startup dependency check (line 17722-17726)
+    2. Optional tools check (line 17807-17811)
+    3. Dependency menu display (line 21913-21917)
+  - **Result**: Now correctly displays "xxHash 0.8.3" instead of empty string
+
+- **Critical: Hardware driver installation prompt appeared on every script run**
+  - **Root Cause**: Script didn't remember when user declined hardware driver installation
+  - **Previous Behavior**: User says "n" → script continues → next run asks again (infinite loop)
+  - **Solution Implemented**:
+    1. Check for skip file before showing prompt (line 17959-17969)
+    2. Parse `skip_hw_prompt_until` timestamp from file
+    3. Compare with current time (`date +%s`)
+    4. If `now < skip_until`: Skip prompt and show message
+    5. When user declines: Create skip file with `date -d '+24 hours'`
+  - **User Experience**:
+    - Decline installation → Won't ask again for 24 hours
+    - Message: "⏭ Skipping hardware driver prompt (snoozed for 23 hours)"
+    - Helpful note: "Run 'Check Dependencies' from the menu to revisit at any time"
+  - **Location**: Lines 17956-18072 (hardware driver installation section)
+
+- **Improved: Hardware driver prompt workflow**
+  - Prompt now checks skip status BEFORE displaying missing drivers list
+  - Previous: Always showed list → then checked if should skip (visual clutter)
+  - Now: Check skip first → only show list if not skipped (cleaner UX)
+  - Uses `skip_prompt=false` flag to control display logic
+
+#### Changed
+- **Version Number**: Updated from 8.1 to 9.0
+  - `CURRENT_VERSION="9.0"` (line 1181)
+  - Welcome screen header: "SMART GIF CONVERTER v9.0" (line 22833)
+  - Main menu header: "SMART GIF CONVERTER v9.0" (line 23022)
+
+- **Main Menu**: Added "Check Dependencies" option
+  - Position: Between "Help & Documentation" and "Check for Updates"
+  - Menu option 11 (previously 11 items, now 12)
+  - Icon: 📦
+  - Text: "Check Dependencies"
+  - Launches `show_dependency_check_menu()` function
+
+- **Startup Hardware Driver Check**:
+  - Now respects skip marker file
+  - Displays skip status with time remaining
+  - Cleaner output when skipped
+  - Hardware driver arrays still populated for menu access
+
+#### Technical Details
+
+**Dependency Menu Architecture**:
+- Function: `show_dependency_check_menu()` (lines 21860-22114)
+- Arrays used:
+  - `required_tools`: ffmpeg, git, curl, tmux, notify-send, gifsicle, jq, convert, xxhsum
+  - `missing_required`: Populated during check
+  - `installed_required`: Populated during check
+  - `hw_drivers_missing`: GPU-specific drivers (nvidia-drivers, mesa-va-drivers, intel-media-driver)
+- Display sections:
+  1. Required Dependencies (with version numbers)
+  2. Hardware Acceleration (NVENC, VAAPI, QSV status)
+  3. Summary statistics
+  4. Menu options (5 items with WASD navigation)
+
+**xxhash Version Detection**:
+```bash
+# Previous (broken):
+xxh128sum --version 2>/dev/null  # Output: "" (empty)
+
+# New (working):
+xxh128sum --version 2>&1 | head -1 | awk '{print $2}'  # Output: "0.8.3"
+```
+
+**Hardware Driver Skip Logic**:
+```bash
+# Skip file format:
+skip_hw_prompt_until=1732744800  # Unix timestamp 24h in future
+
+# Check logic:
+if [[ -f "$LOG_DIR/.hw_prompt_skip" ]]; then
+    source "$skip_file"
+    local now_ts=$(date +%s)
+    if [[ $now_ts -lt $skip_hw_prompt_until ]]; then
+        skip_prompt=true
+        hours_left=$(( (skip_hw_prompt_until - now_ts) / 3600 ))
+        echo "Snoozed for $hours_left hours"
+    fi
+fi
+```
+
+**Distribution-Specific Hardware Packages**:
+- **openSUSE/SUSE**:
+  - NVIDIA: `libva-vdpau-driver libva-utils` (VDPAU-to-VAAPI bridge)
+  - AMD: `Mesa-libva libva-utils`
+  - Intel: `libva-intel-driver libva-utils`
+- **Ubuntu/Debian**:
+  - NVIDIA: `libva-utils` (proprietary driver handles VAAPI)
+  - AMD: `mesa-va-drivers libva-utils`
+  - Intel: `intel-media-va-driver libva-utils`
+- **Arch/Manjaro**:
+  - NVIDIA: `libva-utils`
+  - AMD: `libva-mesa-driver libva-utils`
+  - Intel: `intel-media-driver libva-utils`
+- **Fedora/RHEL/CentOS**:
+  - NVIDIA: `libva-utils`
+  - AMD: `libva-utils mesa-va-drivers`
+  - Intel: `intel-media-driver libva-utils`
+
+---
+
 ## [8.1.0] - 2025-11-24
 
 ### 🔍 Enhanced Problematic Filename Detection & Workflow Improvements

@@ -7,13 +7,114 @@
 [![FFmpeg](https://img.shields.io/badge/Powered%20by-FFmpeg-007808?logo=ffmpeg&logoColor=white)](https://ffmpeg.org/)
 [![AI](https://img.shields.io/badge/AI-Powered-FF6B6B?logo=brain&logoColor=white)](#ai-features)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-8.1-brightgreen.svg)](#latest-updates)
+[![Version](https://img.shields.io/badge/Version-9.0-brightgreen.svg)](#latest-updates)
 
 ---
 
-## 🆕 Latest Updates (Version 8.1)
+## 🆕 Latest Updates (Version 9.0)
 
-### **🚀 What's New in v8.1**
+### **🚀 What's New in v9.0**
+
+#### **📦 Comprehensive Dependency Management Menu** (BREAKTHROUGH!)
+**Complete control over all dependencies** - Interactive menu with WASD navigation for managing every dependency!
+
+- **🔍 Full Dependency Overview**:
+  - ✅ Visual status display with checkmarks (✓) and crosses (✗)
+  - 📊 Real-time version information for all installed tools
+  - 🚀 Hardware acceleration detection (NVENC, VAAPI, QSV)
+  - 📊 Summary statistics (installed vs missing tools)
+  - 🎮 Complete WASD navigation (w=up, s=down, Enter=select, q=quit)
+
+- **⚙️ Smart Installation Options**:
+  - 🔧 **Install Missing Tools**: One-click automatic installation of all missing dependencies
+  - 🚀 **Install Hardware Drivers**: Automatic GPU driver detection and installation
+    - Detects AMD, Intel, or NVIDIA GPUs automatically
+    - Installs correct drivers for your distribution (openSUSE, Ubuntu, Arch, Fedora, etc.)
+    - Remembers your choice for 24 hours to avoid repeated prompts
+  - 📋 **Manual Installation Commands**: Copy-paste commands for manual installation
+  - 🔄 **Re-run Dependency Check**: Fresh scan to detect newly installed packages
+
+- **📊 Enhanced Display**:
+  ```
+  📦 DEPENDENCY CHECK & MANAGEMENT
+  
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  REQUIRED DEPENDENCIES
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  
+    ✓ ffmpeg - ffmpeg version 8.0
+    ✓ git - git version 2.52.0
+    ✓ curl - curl 8.17.0
+    ✓ tmux - tmux 3.5a
+    ✓ notify-send - notify-send 0.8.7
+    ✓ gifsicle - LCDF Gifsicle 1.96
+    ✓ jq - jq-1.8.1
+    ✓ convert - ImageMagick 7.1.2-8 Q16-HDRI
+    ✓ xxhash - xxHash 0.8.3
+  
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  HARDWARE ACCELERATION
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  
+    ✓ NVIDIA NVENC - Hardware encoding available
+    ✓ VAAPI - Hardware encoding available (AMD/Intel)
+    ✓ Intel QSV - Hardware encoding available
+  
+  📊 SUMMARY
+  ✅ All 9 required tools installed
+  🚀 3 hardware acceleration methods available
+  
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  MENU OPTIONS
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  
+    > 🔧 Install missing tools (automatic)
+      🚀 Install hardware drivers (automatic)
+      📋 Show manual installation commands
+      🔄 Re-run dependency check
+      ← Return to main menu
+  
+  🎮 Controls: w/s=Navigate Enter/Space=Select q=Quit
+  ```
+
+- **🚀 Smart Hardware Driver Installation**:
+  - Detects your GPU automatically (AMD Radeon, NVIDIA, Intel)
+  - Shows exactly which drivers are missing
+  - Installs correct packages for your distribution:
+    - **openSUSE**: `Mesa-libva`, `libva-vdpau-driver`, `libva-intel-driver`
+    - **Ubuntu/Debian**: `mesa-va-drivers`, `intel-media-va-driver`
+    - **Arch**: `libva-mesa-driver`, `intel-media-driver`
+    - **Fedora**: `mesa-va-drivers`, `intel-media-driver`
+  - Remembers if you decline (won't ask again for 24 hours)
+  - Shows time remaining until next prompt
+
+- **✅ Reuses Global Dependency System**:
+  - No duplicate code - menu uses existing `check_dependencies()` function
+  - Updates to dependency list automatically reflect in menu
+  - Single source of truth for package names across distributions
+  - Consistent behavior between startup checks and menu
+
+#### **🐛 Critical Bug Fixes** (IMPORTANT!)
+**Fixed xxhash version display** - No more empty version numbers!
+
+- **✅ Fixed**: xxhash version was showing as empty in dependency checks
+  - **Root Cause**: xxhash outputs version to stderr, not stdout
+  - **Solution**: Changed `2>/dev/null` to `2>&1` to capture stderr
+  - **Result**: Now correctly shows "xxHash 0.8.3" instead of blank
+  - **Locations Fixed**: Startup check, optional tools check, dependency menu (all 3 places)
+
+**Fixed hardware driver installation loop** - No more repeated prompts!
+
+- **✅ Fixed**: Script kept asking to install hardware drivers on every run
+  - **Root Cause**: Script didn't remember when user declined installation
+  - **Solution**: Creates skip marker file when user says "no"
+  - **Duration**: Skip prompt for 24 hours after declining
+  - **Override**: Can still check anytime via "Check Dependencies" menu
+  - **Display**: Shows remaining time before next prompt ("snoozed for X hours")
+
+---
+
+## 📋 Previous Updates (Version 8.1)
 
 #### **🔍 Enhanced Problematic Filename Detection** (NEW!)
 **Bulletproof filename scanning** - Catch and fix problematic filenames before conversion!
