@@ -10560,207 +10560,282 @@ META_EOF
         echo -e "  ${BLUE}🔍 Stage 1: Building candidate pairs based on similarity indicators...${NC}"
         echo -e "  ${CYAN}🧠 AI Pass 1: Analyzing similarity score distribution...${NC}"
         
-        declare -a all_similarity_scores
-        local score_analysis_count=0
-        local max_score_seen=0
-        local total_score_sum=0
-        local total_possible_pairs=$(( total_files * (total_files - 1) / 2 ))
+#!/bin/bash
+# This is the replacement code for video Level 6 (lines 10560-10752)
+
+# After line 10560:
+echo -e "  \${BLUE}🔍 Stage 1: Building candidate pairs based on similarity indicators...\${NC}"
+echo -e "  \${CYAN}🧠 AI Pass 1: Analyzing similarity score distribution...\${NC}"
+
+local total_possible_pairs=$(( total_files * (total_files - 1) / 2 ))
+
+# 💾 PERSISTENT CACHE: Store similarity scores based on file hashes
+local video_score_cache="$HOME/.smart-gif-converter/video_similarity_cache.txt"
+mkdir -p "$(dirname "$video_score_cache")"
+[[ ! -f "$video_score_cache" ]] && touch "$video_score_cache"
+
+# Load existing cache
+declare -A video_score_cache_map
+if [[ -f "$video_score_cache" ]]; then
+    local cache_hits=0
+    while IFS='|' read -r pair_hash score file1 file2; do
+        [[ -z "$pair_hash" || "$pair_hash" == "#"* ]] && continue
+        video_score_cache_map["$pair_hash"]="$score|$file1|$file2"
+        ((cache_hits++))
+    done < "$video_score_cache"
+    [[ $cache_hits -gt 0 ]] && echo -e "  \${GREEN}📦 Loaded $cache_hits cached similarity scores\${NC}"
+fi
+
+# 🚀 PARALLEL AI PASS 1
+local pass1_workers=$((CPU_CORES))
+[[ $pass1_workers -gt 16 ]] && pass1_workers=16
+[[ $pass1_workers -lt 4 ]] && pass1_workers=4
+
+local pass1_dir="$temp_analysis_dir/pass1_results"
+mkdir -p "$pass1_dir"
+local pass1_scores="$pass1_dir/scores.txt"
+local pass1_progress="$pass1_dir/progress.txt"
+local pass1_lock="$pass1_dir/lock"
+local pass1_cache="$pass1_dir/new_cache.txt"
+echo "0" > "$pass1_progress"
+: > "$pass1_scores"
+: > "$pass1_cache"
+
+# Generate queue
+local pass1_queue="$pass1_dir/queue.txt"
+: > "$pass1_queue"
+for ((i=0; i<total_files; i++)); do
+    for ((j=i+1; j<total_files; j++)); do
+        echo "$i|$j" >> "$pass1_queue"
+    done
+done
+
+echo -e "  \${MAGENTA}🚀 Starting $pass1_workers parallel workers...\${NC}"
+
+# Worker function
+calc_video_similarity_worker() {
+    local worker_id=$1 queue=$2 results=$3 progress=$4 lockfile=$5 new_cache=$6
+    
+    while true; do
+        local pair
+        (
+            flock -x 200
+            pair=$(head -n 1 "$queue" 2>/dev/null)
+            [[ -n "$pair" ]] && sed -i '1d' "$queue"
+        ) 200>"$lockfile"
         
-        # Enable Ctrl+C handling
-        local interrupted=false
-        trap 'interrupted=true' INT
+        [[ -z "$pair" ]] && break
         
-        # PASS 1: Calculate ALL similarity scores to understand distribution
-        for ((i=0; i<total_files; i++)); do
-            # Check for interruption
-            if [[ "$interrupted" == "true" ]]; then
-                echo -e "\n  ${YELLOW}⏸️  Analysis interrupted by user${NC}"
-                break
+        local i=$(echo "$pair" | cut -d'|' -f1)
+        local j=$(echo "$pair" | cut -d'|' -f2)
+        local file1="${video_files_array[$i]}"
+        local file2="${video_files_array[$j]}"
+        
+        # Generate cache key
+        local hash1="${video_checksums["$file1"]:-}"
+        local hash2="${video_checksums["$file2"]:-}"
+        [[ -z "$hash1" ]] && hash1="NOHASH_$(stat -c'%s_%Y' "$file1" 2>/dev/null || echo "0")"
+        [[ -z "$hash2" ]] && hash2="NOHASH_$(stat -c'%s_%Y' "$file2" 2>/dev/null || echo "0")"
+        
+        local pair_hash
+        if [[ "$hash1" < "$hash2" ]]; then
+            pair_hash="${hash1}_${hash2}"
+        else
+            pair_hash="${hash2}_${hash1}"
+        fi
+        
+        # Check cache
+        local cached="${video_score_cache_map["$pair_hash"]:-}"
+        if [[ -n "$cached" ]]; then
+            local score=$(echo "$cached" | cut -d'|' -f1)
+            [[ $score -gt 0 ]] && (
+                flock -x 200
+                echo "$score|$file1|$file2" >> "$results"
+            ) 200>"$lockfile"
+            (flock -x 200; echo $(($(cat "$progress") + 1)) > "$progress") 200>"$lockfile"
+            continue
+        fi
+        
+        # Skip already detected
+        local checksum1="${video_checksums["$file1"]:-}"
+        local checksum2="${video_checksums["$file2"]:-}"
+        if [[ -n "$checksum1" && -n "$checksum2" && "$checksum1" == "$checksum2" ]]; then
+            (flock -x 200; echo $(($(cat "$progress") + 1)) > "$progress") 200>"$lockfile"
+            continue
+        fi
+        
+        local vhash1="${video_visual_hashes["$file1"]:-}"
+        local vhash2="${video_visual_hashes["$file2"]:-}"
+        if [[ -n "$vhash1" && -n "$vhash2" && "$vhash1" != "0" && "$vhash2" != "0" && "$vhash1" == "$vhash2" ]]; then
+            (flock -x 200; echo $(($(cat "$progress") + 1)) > "$progress") 200>"$lockfile"
+            continue
+        fi
+        
+        # Calculate score (existing 8-factor logic)
+        local similarity_score=0
+        
+        # Factor 1: Filenames (40 max)
+        local name1=$(basename -- "$file1"); name1="${name1%.*}"
+        local name2=$(basename -- "$file2"); name2="${name2%.*}"
+        [[ "${name1:0:15}" == "${name2:0:15}" ]] && similarity_score=$((similarity_score + 40)) ||
+        [[ "${name1:0:10}" == "${name2:0:10}" ]] && similarity_score=$((similarity_score + 30)) ||
+        [[ "${name1:0:5}" == "${name2:0:5}" ]] && similarity_score=$((similarity_score + 15))
+        
+        # Factor 2: File sizes (35 max)
+        local size1="${video_sizes["$file1"]:-0}"
+        local size2="${video_sizes["$file2"]:-0}"
+        if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
+            local size_diff_pct=$(( (size1 > size2 ? size1 - size2 : size2 - size1) * 100 / (size1 > size2 ? size1 : size2) ))
+            [[ $size_diff_pct -lt 5 ]] && similarity_score=$((similarity_score + 35)) ||
+            [[ $size_diff_pct -lt 15 ]] && similarity_score=$((similarity_score + 25)) ||
+            [[ $size_diff_pct -lt 30 ]] && similarity_score=$((similarity_score + 15)) ||
+            [[ $size_diff_pct -lt 50 ]] && similarity_score=$((similarity_score + 5))
+        fi
+        
+        # Factor 3: Duration (50 max)
+        local dur1="${video_durations["$file1"]:-0}"
+        local dur2="${video_durations["$file2"]:-0}"
+        if [[ $dur1 -gt 0 && $dur2 -gt 0 ]]; then
+            if [[ $dur1 -eq $dur2 ]]; then
+                similarity_score=$((similarity_score + 50))
+            else
+                local dur_diff=$(( (dur1 > dur2 ? dur1 - dur2 : dur2 - dur1) * 100 / (dur1 > dur2 ? dur1 : dur2) ))
+                [[ $dur_diff -lt 5 ]] && similarity_score=$((similarity_score + 40)) ||
+                [[ $dur_diff -lt 10 ]] && similarity_score=$((similarity_score + 25)) ||
+                [[ $dur_diff -lt 20 ]] && similarity_score=$((similarity_score + 10))
             fi
-            
-            for ((j=i+1; j<total_files; j++)); do
-                if [[ "$interrupted" == "true" ]]; then
-                    break
-                fi
-                
-                ((score_analysis_count++))
-                local file1="${video_files_array[$i]}"
-                local file2="${video_files_array[$j]}"
-                
-                # Show Pass 1 progress
-                if [[ $((score_analysis_count % 1000)) -eq 0 || $score_analysis_count -eq $total_possible_pairs ]]; then
-                    local filter_pct=$((score_analysis_count * 100 / total_possible_pairs))
-                    printf "\r  ${CYAN}Analysis: [${NC}"
-                    local filled=$((filter_pct * 30 / 100))
-                    for ((k=0; k<filled; k++)); do printf "${CYAN}█${NC}"; done
-                    for ((k=filled; k<30; k++)); do printf "${GRAY}░${NC}"; done
-                    printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(scores calculated: $score_analysis_count)${NC}" "$filter_pct"
-                fi
-                
-                # Skip if already detected as duplicate
-                local checksum1="${video_checksums["$file1"]:-}"
-                local checksum2="${video_checksums["$file2"]:-}"
-                if [[ -n "$checksum1" && -n "$checksum2" && "$checksum1" == "$checksum2" ]]; then
-                    continue
-                fi
-                
-                local vhash1="${video_visual_hashes["$file1"]:-}"
-                local vhash2="${video_visual_hashes["$file2"]:-}"
-                if [[ -n "$vhash1" && -n "$vhash2" && "$vhash1" != "0" && "$vhash2" != "0" && "$vhash1" == "$vhash2" ]]; then
-                    continue
-                fi
-                
-                # Calculate similarity score
-                
-                local similarity_score=0
-                
-                # Factor 1: Similar filenames (40 points max)
-                local name1="$(basename -- "$file1")"
-                local name2="$(basename -- "$file2")"
-                # Remove extensions for comparison
-                name1="${name1%.*}"
-                name2="${name2%.*}"
-                if [[ "${name1:0:15}" == "${name2:0:15}" ]]; then
-                    similarity_score=$((similarity_score + 40))
-                elif [[ "${name1:0:10}" == "${name2:0:10}" ]]; then
-                    similarity_score=$((similarity_score + 30))
-                elif [[ "${name1:0:5}" == "${name2:0:5}" ]]; then
-                    similarity_score=$((similarity_score + 15))
-                fi
-                
-                # Factor 2: Similar file sizes (35 points max)
-                local size1="${video_sizes["$file1"]:-0}"
-                local size2="${video_sizes["$file2"]:-0}"
-                if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
-                    local size_diff_pct=$(( (size1 > size2 ? size1 - size2 : size2 - size1) * 100 / (size1 > size2 ? size1 : size2) ))
-                    if [[ $size_diff_pct -lt 5 ]]; then
-                        similarity_score=$((similarity_score + 35))
-                    elif [[ $size_diff_pct -lt 15 ]]; then
-                        similarity_score=$((similarity_score + 25))
-                    elif [[ $size_diff_pct -lt 30 ]]; then
-                        similarity_score=$((similarity_score + 15))
-                    elif [[ $size_diff_pct -lt 50 ]]; then
-                        similarity_score=$((similarity_score + 5))
-                    fi
-                fi
-                
-                # Factor 3: Duration match (50 points max)
-                local dur1="${video_durations["$file1"]:-0}"
-                local dur2="${video_durations["$file2"]:-0}"
-                if [[ $dur1 -gt 0 && $dur2 -gt 0 ]]; then
-                    if [[ $dur1 -eq $dur2 ]]; then
-                        similarity_score=$((similarity_score + 50))  # Exact match
-                    else
-                        local dur_diff=$(( (dur1 > dur2 ? dur1 - dur2 : dur2 - dur1) * 100 / (dur1 > dur2 ? dur1 : dur2) ))
-                        if [[ $dur_diff -lt 5 ]]; then
-                            similarity_score=$((similarity_score + 40))
-                        elif [[ $dur_diff -lt 10 ]]; then
-                            similarity_score=$((similarity_score + 25))
-                        elif [[ $dur_diff -lt 20 ]]; then
-                            similarity_score=$((similarity_score + 10))
-                        fi
-                    fi
-                fi
-                
-                # Factor 4: Resolution match (45 points max)
-                local res1="${video_resolutions["$file1"]:-}"
-                local res2="${video_resolutions["$file2"]:-}"
-                if [[ -n "$res1" && -n "$res2" && "$res1" == "$res2" ]]; then
-                    similarity_score=$((similarity_score + 45))
-                fi
-                
-                # Factor 5: Visual hash similarity - SKIPPED (already checked above)
-                
-                # Factor 6: Bitrate similarity (30 points max)
-                local br1="${video_bitrates["$file1"]:-0}"
-                local br2="${video_bitrates["$file2"]:-0}"
-                if [[ $br1 -gt 0 && $br2 -gt 0 ]]; then
-                    local br_diff=$(( (br1 > br2 ? br1 - br2 : br2 - br1) * 100 / (br1 > br2 ? br1 : br2) ))
-                    if [[ $br_diff -lt 10 ]]; then
-                        similarity_score=$((similarity_score + 30))
-                    elif [[ $br_diff -lt 25 ]]; then
-                        similarity_score=$((similarity_score + 15))
-                    fi
-                fi
-                
-                # Factor 7: Codec match (35 points max)
-                local codec1="${video_codecs["$file1"]:-}"
-                local codec2="${video_codecs["$file2"]:-}"
-                if [[ -n "$codec1" && -n "$codec2" && "$codec1" == "$codec2" ]]; then
-                    similarity_score=$((similarity_score + 35))
-                fi
-                
-                # Factor 8: FPS similarity (30 points max)
-                local fps1="${video_fps_values["$file1"]:-0}"
-                local fps2="${video_fps_values["$file2"]:-0}"
-                if [[ -n "$fps1" && -n "$fps2" ]]; then
-                    # Compare FPS as integers (remove decimals)
-                    local fps1_int=${fps1%.*}
-                    local fps2_int=${fps2%.*}
-                    if [[ $fps1_int -eq $fps2_int ]]; then
-                        similarity_score=$((similarity_score + 30))
-                    fi
-                fi
-                
-                # Factors 9-10: SKIPPED for performance (timestamp/directory checks too slow)
-                
-                # Store score for distribution analysis
-                if [[ $similarity_score -gt 0 ]]; then
-                    all_similarity_scores+=("$similarity_score|$file1|$file2")
-                    total_score_sum=$((total_score_sum + similarity_score))
-                    [[ $similarity_score -gt $max_score_seen ]] && max_score_seen=$similarity_score
-                fi
-            done
-        done
-        
-        printf "\r\033[K"
-        
-        # Check if interrupted
-        if [[ "$interrupted" == "true" ]]; then
-            trap - INT
-            INTERRUPT_REQUESTED="true"
-            echo -e "  ${GREEN}✓ Analysis interrupted${NC}"
-            return 1
         fi
         
-        echo -e "  ${GREEN}✓ Pass 1 complete: ${BOLD}${#all_similarity_scores[@]}${NC}${GREEN} pairs with non-zero scores${NC}"
+        # Factor 4: Resolution (45 max)
+        local res1="${video_resolutions["$file1"]:-}"
+        local res2="${video_resolutions["$file2"]:-}"
+        [[ -n "$res1" && -n "$res2" && "$res1" == "$res2" ]] && similarity_score=$((similarity_score + 45))
         
-        # ═══════════════════════════════════════════════════════════════
-        # 🧠 100% DYNAMIC AI THRESHOLD - PASS 2: ANALYZE & DECIDE
-        # AI analyzes actual score distribution to set intelligent threshold
-        # ═══════════════════════════════════════════════════════════════
-        
-        if [[ ${#all_similarity_scores[@]} -eq 0 ]]; then
-            echo -e "  ${GREEN}${BOLD}✨ No similar pairs found - all videos are unique!${NC}"
-            trap - INT
-            return 0
+        # Factor 6: Bitrate (30 max)
+        local br1="${video_bitrates["$file1"]:-0}"
+        local br2="${video_bitrates["$file2"]:-0}"
+        if [[ $br1 -gt 0 && $br2 -gt 0 ]]; then
+            local br_diff=$(( (br1 > br2 ? br1 - br2 : br2 - br1) * 100 / (br1 > br2 ? br1 : br2) ))
+            [[ $br_diff -lt 10 ]] && similarity_score=$((similarity_score + 30)) ||
+            [[ $br_diff -lt 25 ]] && similarity_score=$((similarity_score + 15))
         fi
         
-        echo -e "  ${CYAN}🧠 AI Pass 2: Analyzing score distribution to determine optimal threshold...${NC}"
+        # Factor 7: Codec (35 max)
+        local codec1="${video_codecs["$file1"]:-}"
+        local codec2="${video_codecs["$file2"]:-}"
+        [[ -n "$codec1" && -n "$codec2" && "$codec1" == "$codec2" ]] && similarity_score=$((similarity_score + 35))
         
-        # Sort scores (descending) to find distribution
-        IFS=$'\n' sorted_scores=($(sort -t'|' -k1 -n -r <<<"${all_similarity_scores[*]}"))
-        unset IFS
+        # Factor 8: FPS (30 max)
+        local fps1="${video_fps_values["$file1"]:-0}"
+        local fps2="${video_fps_values["$file2"]:-0}"
+        if [[ -n "$fps1" && -n "$fps2" ]]; then
+            local fps1_int=${fps1%.*}
+            local fps2_int=${fps2%.*}
+            [[ $fps1_int -eq $fps2_int ]] && similarity_score=$((similarity_score + 30))
+        fi
         
-        local avg_score=$((total_score_sum / ${#all_similarity_scores[@]}))
-        local highest_score=$(echo "${sorted_scores[0]}" | cut -d'|' -f1)
-        local median_idx=$((${#sorted_scores[@]} / 2))
-        local median_score=$(echo "${sorted_scores[$median_idx]}" | cut -d'|' -f1)
+        # Write result + cache
+        (
+            flock -x 200
+            [[ $similarity_score -gt 0 ]] && echo "$similarity_score|$file1|$file2" >> "$results"
+            echo "$pair_hash|$similarity_score|$file1|$file2" >> "$new_cache"
+        ) 200>"$lockfile"
         
-        # Find 75th percentile (top 25% of scores)
-        local p75_idx=$((${#sorted_scores[@]} / 4))
-        local p75_score=$(echo "${sorted_scores[$p75_idx]}" | cut -d'|' -f1)
-        
-        # Find 90th percentile (top 10% of scores)
-        local p90_idx=$((${#sorted_scores[@]} / 10))
-        [[ $p90_idx -lt 1 ]] && p90_idx=1
-        local p90_score=$(echo "${sorted_scores[$p90_idx]}" | cut -d'|' -f1)
-        
-        echo -e "    ${GRAY}├─ Max score: ${BOLD}$highest_score${NC}"
-        echo -e "    ${GRAY}├─ 90th percentile: ${BOLD}$p90_score${NC}"
-        echo -e "    ${GRAY}├─ 75th percentile: ${BOLD}$p75_score${NC}"
-        echo -e "    ${GRAY}├─ Median: ${BOLD}$median_score${NC}"
-        echo -e "    ${GRAY}└─ Average: ${BOLD}$avg_score${NC}"
+        (flock -x 200; echo $(($(cat "$progress") + 1)) > "$progress") 200>"$lockfile"
+    done
+}
+
+export -f calc_video_similarity_worker
+
+# Launch workers
+local pids=()
+for ((w=0; w<pass1_workers; w++)); do
+    calc_video_similarity_worker $w "$pass1_queue" "$pass1_scores" "$pass1_progress" "$pass1_lock" "$pass1_cache" &
+    pids+=($!)
+done
+
+# Monitor
+local last=0
+while true; do
+    local curr=$(cat "$pass1_progress" 2>/dev/null || echo "0")
+    local alive=0
+    for pid in "${pids[@]}"; do
+        kill -0 $pid 2>/dev/null && ((alive++))
+    done
+    [[ $alive -eq 0 ]] && break
+    
+    if [[ $curr -ne $last ]]; then
+        local pct=$((curr * 100 / total_possible_pairs))
+        local fill=$((pct * 30 / 100))
+        printf "\r  \${CYAN}Analysis: ["
+        for ((k=0; k<fill; k++)); do printf "\${CYAN}█\${NC}"; done
+        for ((k=fill; k<30; k++)); do printf "\${GRAY}░\${NC}"; done
+        printf "\${CYAN}] \${BOLD}%3d%%\${NC} \${GRAY}(%d/%d) Workers: \${CYAN}%d\${GRAY}\${NC}" "$pct" "$curr" "$total_possible_pairs" "$alive"
+        last=$curr
+    fi
+    sleep 0.2
+done
+
+for pid in "${pids[@]}"; do wait $pid 2>/dev/null; done
+printf "\r\033[K"
+
+# Collect results
+declare -a all_similarity_scores
+local max_score_seen=0 total_score_sum=0
+while IFS='|' read -r score file1 file2; do
+    [[ -z "$score" ]] && continue
+    all_similarity_scores+=("$score|$file1|$file2")
+    total_score_sum=$((total_score_sum + score))
+    [[ $score -gt $max_score_seen ]] && max_score_seen=$score
+done < "$pass1_scores"
+
+# Save cache
+if [[ -f "$pass1_cache" && -s "$pass1_cache" ]]; then
+    local new=$(wc -l < "$pass1_cache")
+    cat "$pass1_cache" >> "$video_score_cache"
+    echo -e "  \${GREEN}💾 Cached $new new scores\${NC}"
+    
+    local temp="$video_score_cache.tmp"
+    awk -F'|' '!seen[$1]++' "$video_score_cache" | tail -n 100000 > "$temp" 2>/dev/null
+    mv "$temp" "$video_score_cache" 2>/dev/null || true
+fi
+
+rm -rf "$pass1_dir" 2>/dev/null
+
+echo -e "  \${GREEN}✓ Pass 1 complete: \${BOLD}${#all_similarity_scores[@]}\${NC}\${GREEN} pairs with non-zero scores\${NC}"
+
+# Early exit if no similar pairs found
+if [[ ${#all_similarity_scores[@]} -eq 0 ]]; then
+    echo -e "  ${GREEN}${BOLD}✨ No similar pairs found - all videos are unique!${NC}"
+    trap - INT
+    return 0
+fi
+
+echo -e "  ${CYAN}🧠 AI Pass 2: Analyzing score distribution to determine optimal threshold...${NC}"
+
+# Sort scores (descending)
+IFS=$'\n' sorted_scores=($(sort -t'|' -k1 -n -r <<<"${all_similarity_scores[*]}"))
+unset IFS
+
+local avg_score=$((total_score_sum / ${#all_similarity_scores[@]}))
+local highest_score=$(echo "${sorted_scores[0]}" | cut -d'|' -f1)
+local median_idx=$((${#sorted_scores[@]} / 2))
+local median_score=$(echo "${sorted_scores[$median_idx]}" | cut -d'|' -f1)
+
+# Find 75th percentile
+local p75_idx=$((${#sorted_scores[@]} / 4))
+local p75_score=$(echo "${sorted_scores[$p75_idx]}" | cut -d'|' -f1)
+
+# Find 90th percentile
+local p90_idx=$((${#sorted_scores[@]} / 10))
+[[ $p90_idx -lt 1 ]] && p90_idx=1
+local p90_score=$(echo "${sorted_scores[$p90_idx]}" | cut -d'|' -f1)
+
+echo -e "    ${GRAY}├─ Max score: ${BOLD}$highest_score${NC}"
+echo -e "    ${GRAY}├─ 90th percentile: ${BOLD}$p90_score${NC}"
+echo -e "    ${GRAY}├─ 75th percentile: ${BOLD}$p75_score${NC}"
+echo -e "    ${GRAY}├─ Median: ${BOLD}$median_score${NC}"
+echo -e "    ${GRAY}└─ Average: ${BOLD}$avg_score${NC}"
         
         # 🧠 INTELLIGENT THRESHOLD SELECTION
         # Strategy: Target top 1-5% of most similar pairs based on collection size
@@ -13008,143 +13083,228 @@ PARALLEL_EOF
         
         echo -e "  ${CYAN}🧠 AI Pass 1: Analyzing similarity score distribution...${NC}"
         
-        declare -a all_similarity_scores
-        local score_analysis_count=0
-        local max_score_seen=0
-        local total_score_sum=0
+        # 💾 PERSISTENT CACHE: Store similarity scores based on file hashes
+        local gif_score_cache="$HOME/.smart-gif-converter/gif_similarity_cache.txt"
+        mkdir -p "$(dirname "$gif_score_cache")"
+        [[ ! -f "$gif_score_cache" ]] && touch "$gif_score_cache"
         
-        # Enable Ctrl+C handling
-        local interrupted=false
-        trap 'interrupted=true' INT
+        # Load existing cache
+        declare -A gif_score_cache_map
+        if [[ -f "$gif_score_cache" ]]; then
+            local cache_hits=0
+            while IFS='|' read -r pair_hash score file1 file2; do
+                [[ -z "$pair_hash" || "$pair_hash" == "#"* ]] && continue
+                gif_score_cache_map["$pair_hash"]="$score|$file1|$file2"
+                ((cache_hits++))
+            done < "$gif_score_cache"
+            [[ $cache_hits -gt 0 ]] && echo -e "  ${GREEN}📦 Loaded $cache_hits cached similarity scores${NC}"
+        fi
         
-        # PASS 1: Calculate ALL similarity scores to understand distribution
+        # 🚀 PARALLEL AI PASS 1
+        local pass1_workers=$((CPU_CORES))
+        [[ $pass1_workers -gt 16 ]] && pass1_workers=16
+        [[ $pass1_workers -lt 4 ]] && pass1_workers=4
+        
+        local gif_pass1_dir="$temp_analysis_dir/gif_pass1_results"
+        mkdir -p "$gif_pass1_dir"
+        local gif_pass1_scores="$gif_pass1_dir/scores.txt"
+        local gif_pass1_progress="$gif_pass1_dir/progress.txt"
+        local gif_pass1_lock="$gif_pass1_dir/lock"
+        local gif_pass1_cache="$gif_pass1_dir/new_cache.txt"
+        echo "0" > "$gif_pass1_progress"
+        : > "$gif_pass1_scores"
+        : > "$gif_pass1_cache"
+        
+        # Generate queue
+        local gif_pass1_queue="$gif_pass1_dir/queue.txt"
+        : > "$gif_pass1_queue"
         for ((i=0; i<total_gifs; i++)); do
-            # Check for interruption
-            if [[ "$interrupted" == "true" ]]; then
-                echo -e "\n  ${YELLOW}⏸️  Pre-filtering interrupted by user${NC}"
-                break
-            fi
-            
             for ((j=i+1; j<total_gifs; j++)); do
-                if [[ "$interrupted" == "true" ]]; then
-                    break
-                fi
+                echo "$i|$j" >> "$gif_pass1_queue"
+            done
+        done
+        
+        echo -e "  ${MAGENTA}🚀 Starting $pass1_workers parallel workers...${NC}"
+        
+        # Worker function
+        calc_gif_similarity_worker() {
+            local worker_id=$1 queue=$2 results=$3 progress=$4 lockfile=$5 new_cache=$6
+            
+            while true; do
+                local pair
+                (
+                    flock -x 200
+                    pair=$(head -n 1 "$queue" 2>/dev/null)
+                    [[ -n "$pair" ]] && sed -i '1d' "$queue"
+                ) 200>"$lockfile"
                 
-                ((score_analysis_count++))
+                [[ -z "$pair" ]] && break
+                
+                local i=$(echo "$pair" | cut -d'|' -f1)
+                local j=$(echo "$pair" | cut -d'|' -f2)
                 local file1="${gif_files[$i]}"
                 local file2="${gif_files[$j]}"
                 
-                # Show Pass 1 progress
-                if [[ $((score_analysis_count % 1000)) -eq 0 || $score_analysis_count -eq $total_possible_pairs ]]; then
-                    local filter_pct=$((score_analysis_count * 100 / total_possible_pairs))
-                    printf "\r  ${CYAN}Analysis: [${NC}"
-                    local filled=$((filter_pct * 30 / 100))
-                    for ((k=0; k<filled; k++)); do printf "${CYAN}█${NC}"; done
-                    for ((k=filled; k<30; k++)); do printf "${GRAY}░${NC}"; done
-                    printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(scores calculated: $score_analysis_count)${NC}" "$filter_pct"
+                # Generate cache key
+                local hash1="${gif_checksums[$i]:-}"
+                local hash2="${gif_checksums[$j]:-}"
+                [[ -z "$hash1" ]] && hash1="NOHASH_$(stat -c'%s_%Y' "$file1" 2>/dev/null || echo "0")"
+                [[ -z "$hash2" ]] && hash2="NOHASH_$(stat -c'%s_%Y' "$file2" 2>/dev/null || echo "0")"
+                
+                local pair_hash
+                if [[ "$hash1" < "$hash2" ]]; then
+                    pair_hash="${hash1}_${hash2}"
+                else
+                    pair_hash="${hash2}_${hash1}"
                 fi
                 
-                # Skip if already detected as duplicate
-                local checksum1="${gif_checksums["$file1"]:-}"
-                local checksum2="${gif_checksums["$file2"]:-}"
+                # Check cache
+                local cached="${gif_score_cache_map["$pair_hash"]:-}"
+                if [[ -n "$cached" ]]; then
+                    local score=$(echo "$cached" | cut -d'|' -f1)
+                    [[ $score -gt 0 ]] && (
+                        flock -x 200
+                        echo "$score|$file1|$file2" >> "$results"
+                    ) 200>"$lockfile"
+                    (flock -x 200; echo $(($(cat "$progress") + 1)) > "$progress") 200>"$lockfile"
+                    continue
+                fi
+                
+                # Skip already detected
+                local checksum1="${gif_checksums[$i]:-}"
+                local checksum2="${gif_checksums[$j]:-}"
                 if [[ -n "$checksum1" && -n "$checksum2" && "$checksum1" == "$checksum2" ]]; then
+                    (flock -x 200; echo $(($(cat "$progress") + 1)) > "$progress") 200>"$lockfile"
                     continue
                 fi
                 
-                local vhash1="${gif_visual_hashes["$file1"]:-}"
-                local vhash2="${gif_visual_hashes["$file2"]:-}"
+                local vhash1="${gif_visual_hashes[$i]:-}"
+                local vhash2="${gif_visual_hashes[$j]:-}"
                 if [[ -n "$vhash1" && -n "$vhash2" && "$vhash1" != "0" && "$vhash2" != "0" && "$vhash1" == "$vhash2" ]]; then
+                    (flock -x 200; echo $(($(cat "$progress") + 1)) > "$progress") 200>"$lockfile"
                     continue
                 fi
                 
-                # Calculate similarity score
-                
+                # Calculate score (GIF 5-factor logic)
                 local similarity_score=0
                 
-                # Factor 1: Similar filenames (40 points max)
-                local name1="$(basename -- "$file1" .gif)"
-                local name2="$(basename -- "$file2" .gif)"
-                if [[ "${name1:0:15}" == "${name2:0:15}" ]]; then
-                    similarity_score=$((similarity_score + 40))
-                elif [[ "${name1:0:10}" == "${name2:0:10}" ]]; then
-                    similarity_score=$((similarity_score + 30))
-                elif [[ "${name1:0:5}" == "${name2:0:5}" ]]; then
-                    similarity_score=$((similarity_score + 15))
-                fi
+                # Factor 1: Filenames (40 max)
+                local name1=$(basename -- "$file1"); name1="${name1%.*}"
+                local name2=$(basename -- "$file2"); name2="${name2%.*}"
+                [[ "${name1:0:15}" == "${name2:0:15}" ]] && similarity_score=$((similarity_score + 40)) ||
+                [[ "${name1:0:10}" == "${name2:0:10}" ]] && similarity_score=$((similarity_score + 30)) ||
+                [[ "${name1:0:5}" == "${name2:0:5}" ]] && similarity_score=$((similarity_score + 15))
                 
-                # Factor 2: Similar file sizes (35 points max)
-                local size1="${gif_sizes["$file1"]:-0}"
-                local size2="${gif_sizes["$file2"]:-0}"
+                # Factor 2: File sizes (35 max)
+                local size1="${gif_sizes[$i]:-0}"
+                local size2="${gif_sizes[$j]:-0}"
                 if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
                     local size_diff_pct=$(( (size1 > size2 ? size1 - size2 : size2 - size1) * 100 / (size1 > size2 ? size1 : size2) ))
-                    if [[ $size_diff_pct -lt 5 ]]; then
-                        similarity_score=$((similarity_score + 35))
-                    elif [[ $size_diff_pct -lt 15 ]]; then
-                        similarity_score=$((similarity_score + 25))
-                    elif [[ $size_diff_pct -lt 30 ]]; then
-                        similarity_score=$((similarity_score + 15))
-                    fi
+                    [[ $size_diff_pct -lt 5 ]] && similarity_score=$((similarity_score + 35)) ||
+                    [[ $size_diff_pct -lt 15 ]] && similarity_score=$((similarity_score + 25)) ||
+                    [[ $size_diff_pct -lt 30 ]] && similarity_score=$((similarity_score + 15)) ||
+                    [[ $size_diff_pct -lt 50 ]] && similarity_score=$((similarity_score + 5))
                 fi
                 
-                # Factor 3: Frame count match (50 points max)
-                local frame1="${gif_frame_counts["$file1"]:-0}"
-                local frame2="${gif_frame_counts["$file2"]:-0}"
-                if [[ $frame1 -gt 0 && $frame2 -gt 0 ]]; then
-                    if [[ $frame1 -eq $frame2 ]]; then
-                        similarity_score=$((similarity_score + 50))  # Exact match
+                # Factor 3: Frame count (50 max)
+                local frames1="${gif_frame_counts[$i]:-0}"
+                local frames2="${gif_frame_counts[$j]:-0}"
+                if [[ $frames1 -gt 0 && $frames2 -gt 0 ]]; then
+                    if [[ $frames1 -eq $frames2 ]]; then
+                        similarity_score=$((similarity_score + 50))
                     else
-                        local frame_diff=$(( (frame1 > frame2 ? frame1 - frame2 : frame2 - frame1) * 100 / (frame1 > frame2 ? frame1 : frame2) ))
-                        if [[ $frame_diff -lt 5 ]]; then
-                            similarity_score=$((similarity_score + 40))
-                        elif [[ $frame_diff -lt 10 ]]; then
-                            similarity_score=$((similarity_score + 25))
-                        fi
+                        local frame_diff=$(( (frames1 > frames2 ? frames1 - frames2 : frames2 - frames1) * 100 / (frames1 > frames2 ? frames1 : frames2) ))
+                        [[ $frame_diff -lt 10 ]] && similarity_score=$((similarity_score + 40)) ||
+                        [[ $frame_diff -lt 25 ]] && similarity_score=$((similarity_score + 20))
                     fi
                 fi
                 
-                # Factor 4: Duration match (45 points max)
-                local dur1="${gif_durations["$file1"]:-0}"
-                local dur2="${gif_durations["$file2"]:-0}"
+                # Factor 4: Duration (45 max)
+                local dur1="${gif_durations[$i]:-0}"
+                local dur2="${gif_durations[$j]:-0}"
                 if [[ $dur1 -gt 0 && $dur2 -gt 0 ]]; then
                     if [[ $dur1 -eq $dur2 ]]; then
                         similarity_score=$((similarity_score + 45))
                     else
                         local dur_diff=$(( (dur1 > dur2 ? dur1 - dur2 : dur2 - dur1) * 100 / (dur1 > dur2 ? dur1 : dur2) ))
-                        if [[ $dur_diff -lt 5 ]]; then
-                            similarity_score=$((similarity_score + 35))
-                        elif [[ $dur_diff -lt 10 ]]; then
-                            similarity_score=$((similarity_score + 20))
-                        fi
+                        [[ $dur_diff -lt 5 ]] && similarity_score=$((similarity_score + 35)) ||
+                        [[ $dur_diff -lt 10 ]] && similarity_score=$((similarity_score + 20)) ||
+                        [[ $dur_diff -lt 20 ]] && similarity_score=$((similarity_score + 10))
                     fi
                 fi
                 
-                # Factor 5: Content fingerprint (30 points max)
-                local fp1="${gif_fingerprints["$file1"]:-}"
-                local fp2="${gif_fingerprints["$file2"]:-}"
-                if [[ -n "$fp1" && -n "$fp2" && "$fp1" == "$fp2" ]]; then
-                    similarity_score=$((similarity_score + 30))
+                # Factor 5: Content fingerprint (30 max)
+                local fp1="${gif_fingerprints[$i]:-}"
+                local fp2="${gif_fingerprints[$j]:-}"
+                if [[ -n "$fp1" && -n "$fp2" && "$fp1" != "0" && "$fp2" != "0" ]]; then
+                    [[ "$fp1" == "$fp2" ]] && similarity_score=$((similarity_score + 30))
                 fi
                 
-                # Store score for distribution analysis
-                if [[ $similarity_score -gt 0 ]]; then
-                    all_similarity_scores+=("$similarity_score|$file1|$file2")
-                    total_score_sum=$((total_score_sum + similarity_score))
-                    [[ $similarity_score -gt $max_score_seen ]] && max_score_seen=$similarity_score
-                fi
+                # Write result + cache
+                (
+                    flock -x 200
+                    [[ $similarity_score -gt 0 ]] && echo "$similarity_score|$file1|$file2" >> "$results"
+                    echo "$pair_hash|$similarity_score|$file1|$file2" >> "$new_cache"
+                ) 200>"$lockfile"
+                
+                (flock -x 200; echo $(($(cat "$progress") + 1)) > "$progress") 200>"$lockfile"
             done
+        }
+        
+        export -f calc_gif_similarity_worker
+        
+        # Launch workers
+        local pids=()
+        for ((w=0; w<pass1_workers; w++)); do
+            calc_gif_similarity_worker $w "$gif_pass1_queue" "$gif_pass1_scores" "$gif_pass1_progress" "$gif_pass1_lock" "$gif_pass1_cache" &
+            pids+=($!)
         done
         
+        # Monitor
+        local last=0
+        while true; do
+            local curr=$(cat "$gif_pass1_progress" 2>/dev/null || echo "0")
+            local alive=0
+            for pid in "${pids[@]}"; do
+                kill -0 $pid 2>/dev/null && ((alive++))
+            done
+            [[ $alive -eq 0 ]] && break
+            
+            if [[ $curr -ne $last ]]; then
+                local pct=$((curr * 100 / total_possible_pairs))
+                local fill=$((pct * 30 / 100))
+                printf "\r  ${CYAN}Analysis: ["
+                for ((k=0; k<fill; k++)); do printf "${CYAN}█${NC}"; done
+                for ((k=fill; k<30; k++)); do printf "${GRAY}░${NC}"; done
+                printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d/%d) Workers: ${CYAN}%d${GRAY}${NC}" "$pct" "$curr" "$total_possible_pairs" "$alive"
+                last=$curr
+            fi
+            sleep 0.2
+        done
+        
+        for pid in "${pids[@]}"; do wait $pid 2>/dev/null; done
         printf "\r\033[K"
         
-        # Check if interrupted
-        if [[ "$interrupted" == "true" ]]; then
-            trap - INT
-            INTERRUPT_REQUESTED="true"
-            echo -e "  ${GREEN}✓ Analysis interrupted${NC}"
-            return 1
-        fi
+        # Collect results
+        declare -a all_similarity_scores
+        local max_score_seen=0 total_score_sum=0
+        while IFS='|' read -r score file1 file2; do
+            [[ -z "$score" ]] && continue
+            all_similarity_scores+=("$score|$file1|$file2")
+            total_score_sum=$((total_score_sum + score))
+            [[ $score -gt $max_score_seen ]] && max_score_seen=$score
+        done < "$gif_pass1_scores"
         
-        echo -e "  ${GREEN}✓ Pass 1 complete: ${BOLD}${#all_similarity_scores[@]}${NC}${GREEN} pairs with non-zero scores${NC}"
+        # Save cache
+        if [[ -f "$gif_pass1_cache" && -s "$gif_pass1_cache" ]]; then
+            local new=$(wc -l < "$gif_pass1_cache")
+            cat "$gif_pass1_cache" >> "$gif_score_cache"
+            echo -e "  ${GREEN}💾 Cached $new new scores${NC}"
+            
+            local temp="$gif_score_cache.tmp"
+            awk -F'|' '!seen[$1]++' "$gif_score_cache" | tail -n 100000 > "$temp" 2>/dev/null
+            mv "$temp" "$gif_score_cache" 2>/dev/null || true
+        fi
         
         # ═══════════════════════════════════════════════════════════════
         # 🧠 100% DYNAMIC AI THRESHOLD - PASS 2: ANALYZE & DECIDE
