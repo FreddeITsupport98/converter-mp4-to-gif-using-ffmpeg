@@ -22499,19 +22499,9 @@ show_dependency_check_menu() {
             local installed_required=()
             local installed_optional=()
             local hw_drivers_missing=()
-            needs_recheck=false
-        fi
-        
-        clear
-        print_header
-        echo -e "${CYAN}${BOLD}📦 DEPENDENCY CHECK & MANAGEMENT${NC}\\n"
-        
-        echo -e "${BLUE}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        echo -e "${BLUE}${BOLD}REQUIRED DEPENDENCIES${NC}"
-        echo -e "${BLUE}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
-        
-        # Check required dependencies using same logic as check_dependencies()
-    for tool in "${required_tools[@]}"; do
+            
+            # Check required dependencies using same logic as check_dependencies()
+            for tool in "${required_tools[@]}"; do
         # Special handling for xxhash: accept any variant (matches line 17711-17731)
         if [[ "$tool" == "xxhsum" ]]; then
             if ! command -v xxh128sum >/dev/null 2>&1 && \
@@ -22588,12 +22578,9 @@ show_dependency_check_menu() {
             esac
             echo -e "  ${GREEN}✓${NC} ${BOLD}$tool${NC} - $version"
         fi
-    done
-    
-    # Hardware acceleration check (matches line 17843-18006)
-    echo -e "\n${BLUE}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BLUE}${BOLD}HARDWARE ACCELERATION${NC}"
-    echo -e "${BLUE}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+            done
+            
+            # Hardware acceleration check (matches line 17843-18006)
     
     if command -v ffmpeg >/dev/null 2>&1; then
         local ffmpeg_encoders=$(ffmpeg -encoders 2>/dev/null | grep -E "nvenc|qsv|vaapi|videotoolbox")
@@ -22630,18 +22617,45 @@ show_dependency_check_menu() {
             echo -e "  ${YELLOW}⚠${NC}  ${YELLOW}No hardware acceleration detected${NC}"
             echo -e "    ${GRAY}CPU-only encoding will be used (slower)${NC}"
         fi
-    else
-        echo -e "  ${RED}✗${NC} ${YELLOW}Cannot check - FFmpeg not installed${NC}"
-    fi
-    
-    # Summary
-    echo -e "\n${BLUE}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BLUE}${BOLD}SUMMARY${NC}"
-    echo -e "${BLUE}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
-    
-    echo -e "  ${GREEN}✓${NC} Tools installed: ${BOLD}${#installed_required[@]}${NC}/${BOLD}${#required_tools[@]}${NC}"
-    [[ ${#missing_required[@]} -gt 0 ]] && echo -e "  ${RED}✗${NC} Missing tools: ${BOLD}${#missing_required[@]}${NC}"
-    [[ ${#hw_drivers_missing[@]} -gt 0 ]] && echo -e "  ${YELLOW}!${NC} Missing HW drivers: ${BOLD}${#hw_drivers_missing[@]}${NC}"
+            else
+                echo -e "  ${RED}✗${NC} ${YELLOW}Cannot check - FFmpeg not installed${NC}"
+            fi
+            
+            needs_recheck=false
+        fi
+        
+        # Display results (always show, only refresh when needs_recheck was true)
+        clear
+        print_header
+        echo -e "${CYAN}${BOLD}📦 DEPENDENCY CHECK & MANAGEMENT${NC}\\n"
+        
+        echo -e "${BLUE}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${BLUE}${BOLD}REQUIRED DEPENDENCIES${NC}"
+        echo -e "${BLUE}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\\n"
+        
+        # Display tools status (showing cached results)
+        for tool in "${required_tools[@]}"; do
+            if [[ " ${installed_required[@]} " =~ " ${tool} " ]]; then
+                echo -e "  ${GREEN}✓${NC} ${BOLD}$tool${NC} - installed"
+            else
+                echo -e "  ${RED}✗${NC} ${BOLD}$tool${NC} - ${YELLOW}MISSING${NC}"
+            fi
+        done
+        
+        echo -e "\n${BLUE}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${BLUE}${BOLD}HARDWARE ACCELERATION${NC}"
+        echo -e "${BLUE}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\\n"
+        
+        echo -e "  ${GREEN}✓${NC} Hardware checks shown during dependency scan"
+        
+        # Summary
+        echo -e "\n${BLUE}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${BLUE}${BOLD}SUMMARY${NC}"
+        echo -e "${BLUE}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\\n"
+        
+        echo -e "  ${GREEN}✓${NC} Tools installed: ${BOLD}${#installed_required[@]}${NC}/${BOLD}${#required_tools[@]}${NC}"
+        [[ ${#missing_required[@]} -gt 0 ]] && echo -e "  ${RED}✗${NC} Missing tools: ${BOLD}${#missing_required[@]}${NC}"
+        [[ ${#hw_drivers_missing[@]} -gt 0 ]] && echo -e "  ${YELLOW}!${NC} Missing HW drivers: ${BOLD}${#hw_drivers_missing[@]}${NC}"
     
     # Render options with WASD navigation
     echo -e "\n${CYAN}${BOLD}ACTIONS (W/S to navigate, Enter to select, q to go back)${NC}\n"
@@ -22666,7 +22680,14 @@ show_dependency_check_menu() {
     
     # Single-key input (WASD + arrows + Enter/Space/q)
     local key=""
-    if read -rsn1 key 2>/dev/null; then :; else printf "${MAGENTA}Select: ${NC}"; read -r key; key="${key:0:1}"; fi
+    read -rsn1 key 2>/dev/null
+    
+    # Handle escape sequences for arrow keys
+    if [[ "$key" == $'\x1b' ]]; then
+        read -rsn2 -t 0.001 key_rest
+        key+="$key_rest"
+    fi
+    
     case "$key" in
         ''|$'\n'|$'\r'|' ') # Enter/Return/Space
             case $selected in
