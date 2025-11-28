@@ -9360,7 +9360,10 @@ detect_duplicate_videos() {
             if [[ "$cached_fingerprint" == "$current_fingerprint" ]]; then
                 ((files_cached++))
                 needs_analysis=false
-                echo "${cached_data}" >> "$results_file"
+                # Write cached data but replace first field with full path
+                local cached_checksum=$(echo "$cached_data" | cut -d'|' -f2)
+                local cached_rest=$(echo "$cached_data" | cut -d'|' -f3-)
+                echo "$video_file|$cached_checksum|$cached_rest" >> "$results_file"
             fi
         fi
         
@@ -9661,8 +9664,8 @@ detect_duplicate_videos() {
     
     # 🚀 REVOLUTIONARY: TRUE PARALLEL BATCH HASHING!
     # Instead of hashing one file at a time, hash ALL files at once using all CPU cores
-    if [[ $total_to_process -gt 0 ]]; then
-        echo -e "  ${MAGENTA}🔥 Using parallel batch hashing for ${total_to_process} files...${NC}"
+    if [[ $files_to_analyze -gt 0 ]]; then
+        echo -e "  ${MAGENTA}🔥 Using parallel batch hashing for ${files_to_analyze} files...${NC}"
         
         # Create temporary file for batch hash results
         local batch_hash_file="$temp_analysis_dir/batch_hashes.txt"
@@ -9671,10 +9674,10 @@ detect_duplicate_videos() {
         # Use parallel_hash_batch to hash ALL uncached files at once!
         parallel_hash_batch uncached_files_list "$batch_hash_file"
         
-        echo -e "  ${GREEN}✓ Pre-calculated ${total_to_process} hashes in parallel${NC}"
+        echo -e "  ${GREEN}✓ Pre-calculated ${files_to_analyze} hashes in parallel${NC}"
         
         # 🚀 PARALLEL METADATA EXTRACTION with progress bar
-        if command -v parallel >/dev/null 2>&1 && [[ $total_to_process -gt 5 ]]; then
+        if command -v parallel >/dev/null 2>&1 && [[ $files_to_analyze -gt 5 ]]; then
             echo -e "  ${MAGENTA}🚀 Analyzing metadata in parallel (${AI_DUPLICATE_THREADS} threads)...${NC}"
             
             # Create parallel metadata extraction script
@@ -9761,7 +9764,7 @@ META_EOF
                 local current_count=$(cat "$progress_counter" 2>/dev/null || echo "0")
                 
                 if [[ $current_count -ne $last_count || $current_count -eq 0 ]]; then
-                    local progress=$((current_count * 100 / total_to_process))
+                    local progress=$((current_count * 100 / files_to_analyze))
                     [[ $progress -gt 100 ]] && progress=100
                     local filled=$((progress * 30 / 100))
                     local empty=$((30 - filled))
@@ -9769,7 +9772,7 @@ META_EOF
                     printf "\r  ${CYAN}["
                     for ((k=0; k<filled; k++)); do printf "${GREEN}█${NC}"; done
                     for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
-                    printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d/%d videos)${NC}" "$progress" "$current_count" "$total_to_process"
+                    printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d/%d videos)${NC}" "$progress" "$current_count" "$files_to_analyze"
                     
                     last_count=$current_count
                 fi
@@ -9783,7 +9786,7 @@ META_EOF
             # Show final 100%
             printf "\r  ${CYAN}["
             for ((k=0; k<30; k++)); do printf "${GREEN}█${NC}"; done
-            printf "${CYAN}] ${BOLD}100%%${NC} ${GRAY}(%d/%d videos)${NC}\n" "$total_to_process" "$total_to_process"
+            printf "${CYAN}] ${BOLD}100%%${NC} ${GRAY}(%d/%d videos)${NC}\n" "$files_to_analyze" "$files_to_analyze"
             
             # Append results to main file and save to cache
             while IFS='|' read -r filepath checksum size fingerprint phash duration resolution codec format; do
@@ -9816,7 +9819,7 @@ META_EOF
             fi
             
             # Now analyze with pre-calculated hash (skip hash calculation)
-            analyze_video_with_hash "$video_file" "$checksum" "$temp_analysis_dir" "$results_file" "$loop_idx" "$total_to_process"
+            analyze_video_with_hash "$video_file" "$checksum" "$temp_analysis_dir" "$results_file" "$loop_idx" "$files_to_analyze"
         done
         fi  # End of parallel/sequential metadata extraction
         
@@ -9825,6 +9828,14 @@ META_EOF
     fi
     
     echo -e "\n  ${GREEN}✓ Stage 1 complete${NC}"
+    
+    # DEBUG: Check results file
+    local results_line_count=$(wc -l < "$results_file" 2>/dev/null || echo "0")
+    echo -e "  ${YELLOW}DEBUG: Results file has $results_line_count lines${NC}"
+    if [[ $results_line_count -eq 0 ]]; then
+        echo -e "  ${RED}ERROR: Results file is empty! Path: $results_file${NC}"
+        echo -e "  ${YELLOW}This means all files failed analysis or cache lookup failed${NC}"
+    fi
     
     # Parse results and build comprehensive lookup tables
     local processed_count=0
@@ -9891,11 +9902,9 @@ META_EOF
     
     declare -A compared_pairs
     
-    # 🚀 PARALLEL COMPARISON FRAMEWORK
-    # Determine optimal worker count (use fewer workers for safety)
-    local max_workers=$((CPU_CORES / 2))
-    [[ $max_workers -lt 2 ]] && max_workers=2
-    [[ $max_workers -gt 8 ]] && max_workers=8  # Cap at 8 for stability
+    # 🚀 PARALLEL COMPARISON FRAMEWORK - DISABLED (arrays can't be exported to subshells)
+    # Using sequential comparison instead (still very fast with hash optimization)
+    local max_workers=0  # Disabled
     
     # Create synchronized result files
     local results_dir="$temp_analysis_dir/stage2_results"
@@ -9966,7 +9975,7 @@ META_EOF
             local duplicate_found=""
             
             # Level 1: MD5 match
-            if [[ "$checksum1" == "$checksum2" ]]; then
+            if [[ -n "$checksum1" && -n "$checksum2" && "$checksum1" == "$checksum2" ]]; then
                 duplicate_found="LEVEL1|100|$file1|$file2|Exact binary match"
             fi
             
@@ -10075,9 +10084,8 @@ META_EOF
     # Clean up parallel framework
     rm -rf "$results_dir" 2>/dev/null
     
-    # OLD SEQUENTIAL CODE REMOVED - Now using parallel framework above
-    # Skip the old for loop
-    if false; then
+    # SEQUENTIAL CODE - Re-enabled because parallel workers can't access bash arrays
+    if true; then
     for ((i=0; i<total_files; i++)); do
         local file1="${video_files_list[$i]}"
         [[ ! -f "$file1" ]] && continue
@@ -10560,13 +10568,6 @@ META_EOF
         echo -e "  ${BLUE}🔍 Stage 1: Building candidate pairs based on similarity indicators...${NC}"
         echo -e "  ${CYAN}🧠 AI Pass 1: Analyzing similarity score distribution...${NC}"
         
-#!/bin/bash
-# This is the replacement code for video Level 6 (lines 10560-10752)
-
-# After line 10560:
-echo -e "  \${BLUE}🔍 Stage 1: Building candidate pairs based on similarity indicators...\${NC}"
-echo -e "  \${CYAN}🧠 AI Pass 1: Analyzing similarity score distribution...\${NC}"
-
 local total_possible_pairs=$(( total_files * (total_files - 1) / 2 ))
 
 # 💾 PERSISTENT CACHE: Store similarity scores based on file hashes
@@ -10583,7 +10584,7 @@ if [[ -f "$video_score_cache" ]]; then
         video_score_cache_map["$pair_hash"]="$score|$file1|$file2"
         ((cache_hits++))
     done < "$video_score_cache"
-    [[ $cache_hits -gt 0 ]] && echo -e "  \${GREEN}📦 Loaded $cache_hits cached similarity scores\${NC}"
+    [[ $cache_hits -gt 0 ]] && echo -e "  ${GREEN}📦 Loaded $cache_hits cached similarity scores${NC}"
 fi
 
 # 🚀 PARALLEL AI PASS 1
@@ -10610,7 +10611,7 @@ for ((i=0; i<total_files; i++)); do
     done
 done
 
-echo -e "  \${MAGENTA}🚀 Starting $pass1_workers parallel workers...\${NC}"
+echo -e "  ${MAGENTA}🚀 Starting $pass1_workers parallel workers...${NC}"
 
 # Worker function
 calc_video_similarity_worker() {
@@ -10767,10 +10768,10 @@ while true; do
     if [[ $curr -ne $last ]]; then
         local pct=$((curr * 100 / total_possible_pairs))
         local fill=$((pct * 30 / 100))
-        printf "\r  \${CYAN}Analysis: ["
-        for ((k=0; k<fill; k++)); do printf "\${CYAN}█\${NC}"; done
-        for ((k=fill; k<30; k++)); do printf "\${GRAY}░\${NC}"; done
-        printf "\${CYAN}] \${BOLD}%3d%%\${NC} \${GRAY}(%d/%d) Workers: \${CYAN}%d\${GRAY}\${NC}" "$pct" "$curr" "$total_possible_pairs" "$alive"
+        printf "\r  ${CYAN}Analysis: ["
+        for ((k=0; k<fill; k++)); do printf "${CYAN}█${NC}"; done
+        for ((k=fill; k<30; k++)); do printf "${GRAY}░${NC}"; done
+        printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d/%d) Workers: ${CYAN}%d${GRAY}${NC}" "$pct" "$curr" "$total_possible_pairs" "$alive"
         last=$curr
     fi
     sleep 0.2
@@ -10793,7 +10794,7 @@ done < "$pass1_scores"
 if [[ -f "$pass1_cache" && -s "$pass1_cache" ]]; then
     local new=$(wc -l < "$pass1_cache")
     cat "$pass1_cache" >> "$video_score_cache"
-    echo -e "  \${GREEN}💾 Cached $new new scores\${NC}"
+    echo -e "  ${GREEN}💾 Cached $new new scores${NC}"
     
     local temp="$video_score_cache.tmp"
     awk -F'|' '!seen[$1]++' "$video_score_cache" | tail -n 100000 > "$temp" 2>/dev/null
@@ -10802,7 +10803,7 @@ fi
 
 rm -rf "$pass1_dir" 2>/dev/null
 
-echo -e "  \${GREEN}✓ Pass 1 complete: \${BOLD}${#all_similarity_scores[@]}\${NC}\${GREEN} pairs with non-zero scores\${NC}"
+echo -e "  ${GREEN}✓ Pass 1 complete: ${BOLD}${#all_similarity_scores[@]}${NC}${GREEN} pairs with non-zero scores${NC}"
 
 # Early exit if no similar pairs found
 if [[ ${#all_similarity_scores[@]} -eq 0 ]]; then
@@ -12632,11 +12633,9 @@ PARALLEL_EOF
     # Step 2: Smart comparison queue - only compare within same clusters
     # MASSIVE REDUCTION: Instead of 247K all-pairs, we only compare clustered candidates
     
-    # 🚀 PARALLEL COMPARISON FRAMEWORK FOR GIFS
-    # Determine optimal worker count
-    local max_workers=$((CPU_CORES / 2))
-    [[ $max_workers -lt 2 ]] && max_workers=2
-    [[ $max_workers -gt 8 ]] && max_workers=8
+    # 🚀 PARALLEL COMPARISON FRAMEWORK FOR GIFS - DISABLED (arrays can't be exported)
+    # Using sequential comparison with queue optimization instead
+    local max_workers=0  # Disabled
     
     # Create results directory
     local gif_results_dir="$temp_analysis_dir/gif_stage2_results"
@@ -12904,8 +12903,8 @@ PARALLEL_EOF
             # Passed pre-filters - now perform detailed comparison (Levels 1-3)
             # ═══════════════════════════════════════════════════════════════
             
-            local checksum1="${gif_checksums["$file1"]}}"
-            local checksum2="${gif_checksums["$file2"]}}"
+            local checksum1="${gif_checksums["$file1"]}"
+            local checksum2="${gif_checksums["$file2"]}"
             local duplicate_found=""
             
             # Level 1: MD5 match
@@ -12915,8 +12914,8 @@ PARALLEL_EOF
             
             # Level 2: Visual hash
             if [[ -z "$duplicate_found" ]]; then
-                local hash1="${gif_visual_hashes["$file1"]}}"
-                local hash2="${gif_visual_hashes["$file2"]}}"
+                local hash1="${gif_visual_hashes["$file1"]}"
+                local hash2="${gif_visual_hashes["$file2"]}"
                 if [[ -n "$hash1" && -n "$hash2" && "$hash1" == "$hash2" ]]; then
                     duplicate_found="LEVEL2|95|$file1|$file2|Identical visual fingerprint"
                 fi
@@ -12924,8 +12923,8 @@ PARALLEL_EOF
             
             # Level 3: Content fingerprint
             if [[ -z "$duplicate_found" ]]; then
-                local fp1="${gif_fingerprints["$file1"]}}"
-                local fp2="${gif_fingerprints["$file2"]}}"
+                local fp1="${gif_fingerprints["$file1"]}"
+                local fp2="${gif_fingerprints["$file2"]}"
                 if [[ -n "$fp1" && -n "$fp2" && "$fp1" == "$fp2" ]]; then
                     if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
                         local size_ratio=$(( (size1 < size2 ? size1 * 100 / size2 : size2 * 100 / size1) ))
@@ -13011,7 +13010,63 @@ PARALLEL_EOF
     done < "$gif_duplicates_file"
     
     echo -e "  ${GREEN}✓ Parallel GIF comparison complete (Levels 1-5)${NC}"
-    echo -e "  ${CYAN}📊 Found ${BOLD}$duplicate_count${NC}${CYAN} duplicates via fast hash-based detection${NC}\n"
+    echo -e "  ${CYAN}📊 Found ${BOLD}$duplicate_count${NC}${CYAN} duplicates via fast hash-based detection${NC}\\n"
+    
+    # SEQUENTIAL FALLBACK - Process queue sequentially when workers disabled
+    if [[ $max_workers -eq 0 && -f "$gif_queue_file" ]]; then
+        echo -e "  ${CYAN}Processing queue sequentially (optimized with clustering)...${NC}"
+        local seq_progress=0
+        while IFS='|' read -r i j; do
+            [[ -z "$i" ]] && continue
+            ((seq_progress++))
+            
+            # Progress every 1000 pairs
+            if [[ $((seq_progress % 1000)) -eq 0 ]]; then
+                local progress_pct=$((seq_progress * 100 / gif_total_queued))
+                printf "\r  ${CYAN}[█] ${BOLD}%3d%%${NC} ${GRAY}(%d/%d)${NC}" "$progress_pct" "$seq_progress" "$gif_total_queued"
+            fi
+            
+            local file1="${gif_files[$i]}"
+            local file2="${gif_files[$j]}"
+            
+            local checksum1="${gif_checksums["$file1"]}"
+            local checksum2="${gif_checksums["$file2"]}"
+            
+            # Level 1: MD5 match
+            if [[ -n "$checksum1" && -n "$checksum2" && "$checksum1" == "$checksum2" ]]; then
+                duplicate_pairs+=("LEVEL1|100|$file1|$file2|Exact binary match")
+                ((duplicate_count++))
+                continue
+            fi
+            
+            # Level 2: Visual hash
+            local hash1="${gif_visual_hashes["$file1"]}"
+            local hash2="${gif_visual_hashes["$file2"]}"
+            if [[ -n "$hash1" && -n "$hash2" && "$hash1" == "$hash2" ]]; then
+                duplicate_pairs+=("LEVEL2|95|$file1|$file2|Identical visual fingerprint")
+                ((duplicate_count++))
+                continue
+            fi
+            
+            # Level 3: Content fingerprint
+            local fp1="${gif_fingerprints["$file1"]}"
+            local fp2="${gif_fingerprints["$file2"]}"
+            if [[ -n "$fp1" && -n "$fp2" && "$fp1" == "$fp2" ]]; then
+                local size1="${gif_sizes["$file1"]:-0}"
+                local size2="${gif_sizes["$file2"]:-0}"
+                if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
+                    local size_ratio=$(( (size1 < size2 ? size1 * 100 / size2 : size2 * 100 / size1) ))
+                    if [[ $size_ratio -ge 95 ]]; then
+                        duplicate_pairs+=("LEVEL3|90|$file1|$file2|Identical metadata")
+                        ((duplicate_count++))
+                    fi
+                fi
+            fi
+        done < "$gif_queue_file"
+        printf "\r\033[K"
+        echo -e "  ${GREEN}✓ Sequential GIF comparison complete (Levels 1-5)${NC}"
+        echo -e "  ${CYAN}📊 Found ${BOLD}$duplicate_count${NC}${CYAN} duplicates via clustering + hash detection${NC}\\n"
+    fi
     
     # Clean up
     rm -rf "$gif_results_dir" 2>/dev/null
