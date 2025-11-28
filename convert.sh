@@ -9902,9 +9902,10 @@ META_EOF
     
     declare -A compared_pairs
     
-    # 🚀 PARALLEL COMPARISON FRAMEWORK - DISABLED (arrays can't be exported to subshells)
-    # Using sequential comparison instead (still very fast with hash optimization)
-    local max_workers=0  # Disabled
+    # 🚀 PARALLEL COMPARISON FRAMEWORK with file-based data exchange
+    local max_workers=$(nproc 2>/dev/null || echo "4")
+    [[ $max_workers -gt 16 ]] && max_workers=16
+    [[ $max_workers -lt 4 ]] && max_workers=4
     
     # Create synchronized result files
     local results_dir="$temp_analysis_dir/stage2_results"
@@ -9914,6 +9915,63 @@ META_EOF
     local lock_file="$results_dir/lock"
     echo "0" > "$progress_file"
     : > "$duplicates_file"
+    
+    # Write all array data to lookup files for workers
+    local lookup_dir="$results_dir/lookup"
+    mkdir -p "$lookup_dir"
+    
+    echo -e "  ${CYAN}⚡ Creating lookup tables for parallel workers...${NC}"
+    
+    # Write file list with indices
+    local filelist="$lookup_dir/files.txt"
+    : > "$filelist"
+    for ((i=0; i<total_files; i++)); do
+        echo "$i|${video_files_list[$i]}" >> "$filelist"
+    done
+    
+    # Write checksums lookup
+    local checksums_lookup="$lookup_dir/checksums.txt"
+    : > "$checksums_lookup"
+    for file in "${!video_checksums[@]}"; do
+        echo "$file|${video_checksums["$file"]}" >> "$checksums_lookup"
+    done
+    
+    # Write visual hashes lookup
+    local hashes_lookup="$lookup_dir/visual_hashes.txt"
+    : > "$hashes_lookup"
+    for file in "${!video_visual_hashes[@]}"; do
+        echo "$file|${video_visual_hashes["$file"]}" >> "$hashes_lookup"
+    done
+    
+    # Write fingerprints lookup
+    local fingerprints_lookup="$lookup_dir/fingerprints.txt"
+    : > "$fingerprints_lookup"
+    for file in "${!video_fingerprints[@]}"; do
+        echo "$file|${video_fingerprints["$file"]}" >> "$fingerprints_lookup"
+    done
+    
+    # Write sizes lookup
+    local sizes_lookup="$lookup_dir/sizes.txt"
+    : > "$sizes_lookup"
+    for file in "${!video_sizes[@]}"; do
+        echo "$file|${video_sizes["$file"]}" >> "$sizes_lookup"
+    done
+    
+    # Write durations lookup
+    local durations_lookup="$lookup_dir/durations.txt"
+    : > "$durations_lookup"
+    for file in "${!video_durations[@]}"; do
+        echo "$file|${video_durations["$file"]}" >> "$durations_lookup"
+    done
+    
+    # Write resolutions lookup
+    local resolutions_lookup="$lookup_dir/resolutions.txt"
+    : > "$resolutions_lookup"
+    for file in "${!video_resolutions[@]}"; do
+        echo "$file|${video_resolutions["$file"]}" >> "$resolutions_lookup"
+    done
+    
+    echo -e "  ${GREEN}✓ Lookup tables ready${NC}"
     
     # Generate comparison queue (all pairs to compare)
     local queue_file="$results_dir/queue.txt"
@@ -9941,13 +9999,23 @@ META_EOF
     echo -e "  ${GREEN}✓ Queue ready: $total_queued comparisons${NC}"
     echo -e "  ${MAGENTA}🚀 Starting $max_workers parallel workers...${NC}"
     
-    # Worker function for parallel comparison
+    # Worker function for parallel comparison (uses file-based lookups)
     compare_worker() {
         local worker_id=$1
         local queue=$2
         local results=$3
         local progress=$4
         local lockfile=$5
+        local lookup_dir=$6
+        
+        # Load lookup files into worker memory once
+        local filelist="$lookup_dir/files.txt"
+        local checksums_lookup="$lookup_dir/checksums.txt"
+        local hashes_lookup="$lookup_dir/visual_hashes.txt"
+        local fingerprints_lookup="$lookup_dir/fingerprints.txt"
+        local sizes_lookup="$lookup_dir/sizes.txt"
+        local durations_lookup="$lookup_dir/durations.txt"
+        local resolutions_lookup="$lookup_dir/resolutions.txt"
         
         while true; do
             # Atomic queue pop (get next pair)
@@ -9965,12 +10033,15 @@ META_EOF
             local i=$(echo "$pair" | cut -d'|' -f1)
             local j=$(echo "$pair" | cut -d'|' -f2)
             
-            local file1="${video_files_list[$i]}"
-            local file2="${video_files_list[$j]}"
+            # Get files from lookup
+            local file1=$(grep -F "$i|" "$filelist" | cut -d'|' -f2)
+            local file2=$(grep -F "$j|" "$filelist" | cut -d'|' -f2)
             
-            # Perform comparison (Levels 1-5, skip Level 6 for now)
-            local checksum1="${video_checksums["$file1"]}"
-            local checksum2="${video_checksums["$file2"]}"
+            [[ -z "$file1" || -z "$file2" ]] && continue
+            
+            # Get checksums from lookup
+            local checksum1=$(grep -F "$file1|" "$checksums_lookup" | cut -d'|' -f2)
+            local checksum2=$(grep -F "$file2|" "$checksums_lookup" | cut -d'|' -f2)
             
             local duplicate_found=""
             
@@ -9981,8 +10052,8 @@ META_EOF
             
             # Level 2: Visual hash
             if [[ -z "$duplicate_found" ]]; then
-                local hash1="${video_visual_hashes["$file1"]}"
-                local hash2="${video_visual_hashes["$file2"]}"
+                local hash1=$(grep -F "$file1|" "$hashes_lookup" | cut -d'|' -f2)
+                local hash2=$(grep -F "$file2|" "$hashes_lookup" | cut -d'|' -f2)
                 if [[ -n "$hash1" && -n "$hash2" && "$hash1" == "$hash2" ]]; then
                     duplicate_found="LEVEL2|95|$file1|$file2|Identical visual fingerprint"
                 fi
@@ -9990,11 +10061,13 @@ META_EOF
             
             # Level 3: Content fingerprint
             if [[ -z "$duplicate_found" ]]; then
-                local fp1="${video_fingerprints["$file1"]}"
-                local fp2="${video_fingerprints["$file2"]}"
-                if [[ "$fp1" == "$fp2" ]]; then
-                    local size1="${video_sizes["$file1"]:-0}"
-                    local size2="${video_sizes["$file2"]:-0}"
+                local fp1=$(grep -F "$file1|" "$fingerprints_lookup" | cut -d'|' -f2)
+                local fp2=$(grep -F "$file2|" "$fingerprints_lookup" | cut -d'|' -f2)
+                if [[ -n "$fp1" && -n "$fp2" && "$fp1" == "$fp2" ]]; then
+                    local size1=$(grep -F "$file1|" "$sizes_lookup" | cut -d'|' -f2)
+                    local size2=$(grep -F "$file2|" "$sizes_lookup" | cut -d'|' -f2)
+                    size1=${size1:-0}
+                    size2=${size2:-0}
                     if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
                         local size_ratio=$(( (size1 < size2 ? size1 * 100 / size2 : size2 * 100 / size1) ))
                         if [[ $size_ratio -ge 95 ]]; then
@@ -10028,12 +10101,12 @@ META_EOF
     # Launch workers in background
     local worker_pids=()
     for ((w=0; w<max_workers; w++)); do
-        compare_worker $w "$queue_file" "$duplicates_file" "$progress_file" "$lock_file" &
+        compare_worker $w "$queue_file" "$duplicates_file" "$progress_file" "$lock_file" "$lookup_dir" &
         worker_pids+=($!)
     done
     
     # Monitor progress
-    echo -e "  ${CYAN}Comparing pairs with $max_workers workers...${NC}"
+    echo -e "  ${CYAN}Comparing pairs with $max_workers parallel workers...${NC}"
     local last_progress=0
     while true; do
         local current_progress=$(cat "$progress_file" 2>/dev/null || echo "0")
@@ -10048,7 +10121,7 @@ META_EOF
         
         [[ $workers_alive -eq 0 ]] && break
         
-        # Show progress
+        # Show progress with worker count
         if [[ $current_progress -ne $last_progress ]]; then
             local progress_pct=$((current_progress * 100 / total_queued))
             local filled=$((progress_pct * 30 / 100))
@@ -10057,7 +10130,7 @@ META_EOF
             printf "\r  ${CYAN}["
             for ((k=0; k<filled; k++)); do printf "${GREEN}█${NC}"; done
             for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
-            printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d/%d)${NC}" "$progress_pct" "$current_progress" "$total_queued"
+            printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d/%d)${NC} ${BLUE}Workers: %d${NC}" "$progress_pct" "$current_progress" "$total_queued" "$workers_alive"
             
             last_progress=$current_progress
         fi
@@ -10079,13 +10152,13 @@ META_EOF
         ((duplicate_count++))
     done < "$duplicates_file"
     
-    echo -e "  ${GREEN}✓ Parallel comparison complete${NC}"
+    echo -e "  ${GREEN}✓ Parallel comparison complete (Levels 1-3)${NC}"
     
-    # Clean up parallel framework
-    rm -rf "$results_dir" 2>/dev/null
+    # Clean up parallel framework lookup files
+    rm -rf "$lookup_dir" 2>/dev/null
     
-    # SEQUENTIAL CODE - Re-enabled because parallel workers can't access bash arrays
-    if true; then
+    # SEQUENTIAL CODE - DISABLED (parallel workers now use file-based lookups)
+    if false; then
     for ((i=0; i<total_files; i++)); do
         local file1="${video_files_list[$i]}"
         [[ ! -f "$file1" ]] && continue
@@ -12633,9 +12706,10 @@ PARALLEL_EOF
     # Step 2: Smart comparison queue - only compare within same clusters
     # MASSIVE REDUCTION: Instead of 247K all-pairs, we only compare clustered candidates
     
-    # 🚀 PARALLEL COMPARISON FRAMEWORK FOR GIFS - DISABLED (arrays can't be exported)
-    # Using sequential comparison with queue optimization instead
-    local max_workers=0  # Disabled
+    # 🚀 PARALLEL COMPARISON FRAMEWORK FOR GIFS with file-based data exchange
+    local max_workers=$(nproc 2>/dev/null || echo "4")
+    [[ $max_workers -gt 16 ]] && max_workers=16
+    [[ $max_workers -lt 4 ]] && max_workers=4
     
     # Create results directory
     local gif_results_dir="$temp_analysis_dir/gif_stage2_results"
@@ -12645,6 +12719,63 @@ PARALLEL_EOF
     local gif_lock_file="$gif_results_dir/lock"
     echo "0" > "$gif_progress_file"
     : > "$gif_duplicates_file"
+    
+    # Write all GIF array data to lookup files for workers
+    local gif_lookup_dir="$gif_results_dir/lookup"
+    mkdir -p "$gif_lookup_dir"
+    
+    echo -e "  ${CYAN}⚡ Creating GIF lookup tables for parallel workers...${NC}"
+    
+    # Write file list with indices
+    local gif_filelist="$gif_lookup_dir/files.txt"
+    : > "$gif_filelist"
+    for ((i=0; i<total_gifs; i++)); do
+        echo "$i|${gif_files[$i]}" >> "$gif_filelist"
+    done
+    
+    # Write checksums lookup
+    local gif_checksums_lookup="$gif_lookup_dir/checksums.txt"
+    : > "$gif_checksums_lookup"
+    for file in "${!gif_checksums[@]}"; do
+        echo "$file|${gif_checksums["$file"]}" >> "$gif_checksums_lookup"
+    done
+    
+    # Write visual hashes lookup
+    local gif_hashes_lookup="$gif_lookup_dir/visual_hashes.txt"
+    : > "$gif_hashes_lookup"
+    for file in "${!gif_visual_hashes[@]}"; do
+        echo "$file|${gif_visual_hashes["$file"]}" >> "$gif_hashes_lookup"
+    done
+    
+    # Write fingerprints lookup
+    local gif_fingerprints_lookup="$gif_lookup_dir/fingerprints.txt"
+    : > "$gif_fingerprints_lookup"
+    for file in "${!gif_fingerprints[@]}"; do
+        echo "$file|${gif_fingerprints["$file"]}" >> "$gif_fingerprints_lookup"
+    done
+    
+    # Write sizes lookup
+    local gif_sizes_lookup="$gif_lookup_dir/sizes.txt"
+    : > "$gif_sizes_lookup"
+    for file in "${!gif_sizes[@]}"; do
+        echo "$file|${gif_sizes["$file"]}" >> "$gif_sizes_lookup"
+    done
+    
+    # Write frame counts lookup
+    local gif_frames_lookup="$gif_lookup_dir/frame_counts.txt"
+    : > "$gif_frames_lookup"
+    for file in "${!gif_frame_counts[@]}"; do
+        echo "$file|${gif_frame_counts["$file"]}" >> "$gif_frames_lookup"
+    done
+    
+    # Write durations lookup
+    local gif_durations_lookup="$gif_lookup_dir/durations.txt"
+    : > "$gif_durations_lookup"
+    for file in "${!gif_durations[@]}"; do
+        echo "$file|${gif_durations["$file"]}" >> "$gif_durations_lookup"
+    done
+    
+    echo -e "  ${GREEN}✓ GIF lookup tables ready${NC}"
     
     # Generate SMART comparison queue using cluster intersection
     local gif_queue_file="$gif_results_dir/queue.txt"
@@ -12810,21 +12941,26 @@ PARALLEL_EOF
     echo -e "    ${GRAY}└─ From frame clusters: $pairs_from_frames pairs${NC}"
     echo -e "  ${MAGENTA}🚀 Starting $max_workers parallel workers for GIFs...${NC}"
     
-    # Worker function for parallel GIF comparison with ULTRA-FAST pre-filtering
+    # Worker function for parallel GIF comparison (uses file-based lookups)
     compare_gif_worker() {
         local worker_id=$1
         local queue=$2
         local results=$3
         local progress=$4
         local lockfile=$5
+        local lookup_dir=$6
         
-        # Worker-local counters for stats
-        local worker_comparisons=0
-        local worker_skipped=0
-        local worker_duplicates=0
+        # Load lookup files
+        local filelist="$lookup_dir/files.txt"
+        local checksums_lookup="$lookup_dir/checksums.txt"
+        local hashes_lookup="$lookup_dir/visual_hashes.txt"
+        local fingerprints_lookup="$lookup_dir/fingerprints.txt"
+        local sizes_lookup="$lookup_dir/sizes.txt"
+        local frames_lookup="$lookup_dir/frame_counts.txt"
+        local durations_lookup="$lookup_dir/durations.txt"
         
         while true; do
-            # Atomic queue pop with batch processing
+            # Atomic queue pop
             local pair
             (
                 flock -x 200
@@ -12836,26 +12972,29 @@ PARALLEL_EOF
             
             [[ -z "$pair" ]] && break
             
-            ((worker_comparisons++))
-            
             local i=$(echo "$pair" | cut -d'|' -f1)
             local j=$(echo "$pair" | cut -d'|' -f2)
             
-            local file1="${gif_files[$i]}"
-            local file2="${gif_files[$j]}"
+            # Get files from lookup
+            local file1=$(grep -F "$i|" "$filelist" | cut -d'|' -f2)
+            local file2=$(grep -F "$j|" "$filelist" | cut -d'|' -f2)
             
-            # ═══════════════════════════════════════════════════════════════
-            # LAYER 0: INSTANT EARLY TERMINATION (no file I/O)
-            # Check metadata for obviously different files before any disk access
-            # ═══════════════════════════════════════════════════════════════
+            [[ -z "$file1" || -z "$file2" ]] && continue
             
-            # Get file properties for pre-filtering (cached in memory)
-            local size1="${gif_sizes["$file1"]:-0}"
-            local size2="${gif_sizes["$file2"]:-0}"
-            local frame1="${gif_frame_counts["$file1"]:-0}"
-            local frame2="${gif_frame_counts["$file2"]:-0}"
-            local dur1="${gif_durations["$file1"]:-0}"
-            local dur2="${gif_durations["$file2"]:-0}"
+            # Get file properties for pre-filtering
+            local size1=$(grep -F "$file1|" "$sizes_lookup" | cut -d'|' -f2)
+            local size2=$(grep -F "$file2|" "$sizes_lookup" | cut -d'|' -f2)
+            local frame1=$(grep -F "$file1|" "$frames_lookup" | cut -d'|' -f2)
+            local frame2=$(grep -F "$file2|" "$frames_lookup" | cut -d'|' -f2)
+            local dur1=$(grep -F "$file1|" "$durations_lookup" | cut -d'|' -f2)
+            local dur2=$(grep -F "$file2|" "$durations_lookup" | cut -d'|' -f2)
+            
+            size1=${size1:-0}
+            size2=${size2:-0}
+            frame1=${frame1:-0}
+            frame2=${frame2:-0}
+            dur1=${dur1:-0}
+            dur2=${dur2:-0}
             
             # PRE-FILTER 1: Size difference > 80% = definitely not duplicates
             if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
@@ -12899,12 +13038,9 @@ PARALLEL_EOF
                 fi
             fi
             
-            # ═══════════════════════════════════════════════════════════════
-            # Passed pre-filters - now perform detailed comparison (Levels 1-3)
-            # ═══════════════════════════════════════════════════════════════
-            
-            local checksum1="${gif_checksums["$file1"]}"
-            local checksum2="${gif_checksums["$file2"]}"
+            # Passed pre-filters - perform detailed comparison (Levels 1-3)
+            local checksum1=$(grep -F "$file1|" "$checksums_lookup" | cut -d'|' -f2)
+            local checksum2=$(grep -F "$file2|" "$checksums_lookup" | cut -d'|' -f2)
             local duplicate_found=""
             
             # Level 1: MD5 match
@@ -12914,8 +13050,8 @@ PARALLEL_EOF
             
             # Level 2: Visual hash
             if [[ -z "$duplicate_found" ]]; then
-                local hash1="${gif_visual_hashes["$file1"]}"
-                local hash2="${gif_visual_hashes["$file2"]}"
+                local hash1=$(grep -F "$file1|" "$hashes_lookup" | cut -d'|' -f2)
+                local hash2=$(grep -F "$file2|" "$hashes_lookup" | cut -d'|' -f2)
                 if [[ -n "$hash1" && -n "$hash2" && "$hash1" == "$hash2" ]]; then
                     duplicate_found="LEVEL2|95|$file1|$file2|Identical visual fingerprint"
                 fi
@@ -12923,8 +13059,8 @@ PARALLEL_EOF
             
             # Level 3: Content fingerprint
             if [[ -z "$duplicate_found" ]]; then
-                local fp1="${gif_fingerprints["$file1"]}"
-                local fp2="${gif_fingerprints["$file2"]}"
+                local fp1=$(grep -F "$file1|" "$fingerprints_lookup" | cut -d'|' -f2)
+                local fp2=$(grep -F "$file2|" "$fingerprints_lookup" | cut -d'|' -f2)
                 if [[ -n "$fp1" && -n "$fp2" && "$fp1" == "$fp2" ]]; then
                     if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
                         local size_ratio=$(( (size1 < size2 ? size1 * 100 / size2 : size2 * 100 / size1) ))
@@ -12958,12 +13094,12 @@ PARALLEL_EOF
     # Launch workers
     local gif_worker_pids=()
     for ((w=0; w<max_workers; w++)); do
-        compare_gif_worker $w "$gif_queue_file" "$gif_duplicates_file" "$gif_progress_file" "$gif_lock_file" &
+        compare_gif_worker $w "$gif_queue_file" "$gif_duplicates_file" "$gif_progress_file" "$gif_lock_file" "$gif_lookup_dir" &
         gif_worker_pids+=($!)
     done
     
     # Monitor progress
-    echo -e "  ${CYAN}Comparing GIF pairs with $max_workers workers...${NC}"
+    echo -e "  ${CYAN}Comparing GIF pairs with $max_workers parallel workers...${NC}"
     local gif_last_progress=0
     while true; do
         local gif_current_progress=$(cat "$gif_progress_file" 2>/dev/null || echo "0")
@@ -12978,7 +13114,7 @@ PARALLEL_EOF
         
         [[ $workers_alive -eq 0 ]] && break
         
-        # Show progress
+        # Show progress with worker count
         if [[ $gif_current_progress -ne $gif_last_progress ]]; then
             local progress_pct=$((gif_current_progress * 100 / gif_total_queued))
             local filled=$((progress_pct * 30 / 100))
@@ -12987,7 +13123,7 @@ PARALLEL_EOF
             printf "\r  ${CYAN}["
             for ((k=0; k<filled; k++)); do printf "${GREEN}█${NC}"; done
             for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
-            printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d/%d)${NC}" "$progress_pct" "$gif_current_progress" "$gif_total_queued"
+            printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d/%d)${NC} ${BLUE}Workers: %d${NC}" "$progress_pct" "$gif_current_progress" "$gif_total_queued" "$workers_alive"
             
             gif_last_progress=$gif_current_progress
         fi
@@ -13009,11 +13145,13 @@ PARALLEL_EOF
         ((duplicate_count++))
     done < "$gif_duplicates_file"
     
-    echo -e "  ${GREEN}✓ Parallel GIF comparison complete (Levels 1-5)${NC}"
-    echo -e "  ${CYAN}📊 Found ${BOLD}$duplicate_count${NC}${CYAN} duplicates via fast hash-based detection${NC}\\n"
+    echo -e "  ${GREEN}✓ Parallel GIF comparison complete (Levels 1-3)${NC}"
     
-    # SEQUENTIAL FALLBACK - Process queue sequentially when workers disabled
-    if [[ $max_workers -eq 0 && -f "$gif_queue_file" ]]; then
+    # Clean up lookup files
+    rm -rf "$gif_lookup_dir" 2>/dev/null
+    
+    # SEQUENTIAL FALLBACK - DISABLED (parallel workers now use file-based lookups)
+    if false; then
         echo -e "  ${CYAN}Processing queue sequentially (optimized with clustering)...${NC}"
         local seq_progress=0
         while IFS='|' read -r i j; do
