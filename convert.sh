@@ -312,6 +312,7 @@ NOTIFY_TERMINAL_CLOSED=true
 
 # 🚨 Log directory (needed by terminal detection)
 LOG_DIR="$HOME/.smart-gif-converter"
+GIF_CONVERTER_DIR="$HOME/.smart-gif-converter"  # Main settings directory
 
 # Check if tmux protection should run
 if [[ "$TMUX_PROTECTION_ENABLED" == "true" ]] && [[ -z "$TMUX" ]] && [[ "$*" != *"--no-tmux"* ]]; then
@@ -3203,11 +3204,23 @@ init_checksum_cache() {
         return 1
     }
     
-    # Create cache DB if it doesn't exist
+    # Create cache DB if it doesn't exist OR if hash algorithm changed
+    local cache_needs_rebuild=false
     if [[ ! -f "$CHECKSUM_CACHE_DB" ]]; then
+        cache_needs_rebuild=true
+    else
+        # Check if cache uses the same hash algorithm
+        local cache_header=$(head -n 2 "$CHECKSUM_CACHE_DB" 2>/dev/null | grep 'Format:')
+        if [[ ! "$cache_header" =~ "hash_algo=${HASH_ALGORITHM}" ]]; then
+            echo -e "  ${YELLOW}🔄 Hash algorithm changed (${HASH_ALGORITHM}), rebuilding cache...${NC}" >&2
+            cache_needs_rebuild=true
+        fi
+    fi
+    
+    if [[ "$cache_needs_rebuild" == "true" ]]; then
         cat > "$CHECKSUM_CACHE_DB" << EOF
 # Checksum Cache Database - Version $CHECKSUM_CACHE_VERSION
-# Format: filepath|filesize|filemtime|md5_checksum|timestamp
+# Format: filepath|filesize|filemtime|checksum|timestamp (hash_algo=${HASH_ALGORITHM})
 # Created: $(date)
 EOF
     fi
@@ -9153,6 +9166,117 @@ calculate_filename_similarity() {
     echo "$similarity"
 }
 
+# Worker function for parallel video comparison (uses file-based lookups)
+# Must be defined at top level to allow export to background processes
+video_compare_worker() {
+    local worker_id=$1
+    local queue=$2
+    local results=$3
+    local progress=$4
+    local lockfile=$5
+    local lookup_dir=$6
+    
+    # Load lookup files
+    local filelist="$lookup_dir/files.txt"
+    local checksums_lookup="$lookup_dir/checksums.txt"
+    local hashes_lookup="$lookup_dir/visual_hashes.txt"
+    local fingerprints_lookup="$lookup_dir/fingerprints.txt"
+    local sizes_lookup="$lookup_dir/sizes.txt"
+    local durations_lookup="$lookup_dir/durations.txt"
+    local resolutions_lookup="$lookup_dir/resolutions.txt"
+    
+    local comparison_count=0
+    
+    while true; do
+        # Atomic queue pop
+        local pair
+        (
+            flock -x 200
+            pair=$(head -n 1 "$queue" 2>/dev/null)
+            if [[ -n "$pair" ]]; then
+                sed -i '1d' "$queue"
+            fi
+        ) 200>"$lockfile"
+        
+        [[ -z "$pair" ]] && break
+        
+        ((comparison_count++))
+        
+        local i=$(echo "$pair" | cut -d'|' -f1)
+        local j=$(echo "$pair" | cut -d'|' -f2)
+        
+        # Get files from lookup
+        local file1=$(awk -F'|' -v k="$i" '$1==k{print $2; exit}' "$filelist")
+        local file2=$(awk -F'|' -v k="$j" '$1==k{print $2; exit}' "$filelist")
+        
+        [[ -z "$file1" || -z "$file2" ]] && continue
+        
+        # Get checksums from lookup
+        local checksum1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$checksums_lookup")
+        local checksum2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$checksums_lookup")
+        
+        local duplicate_found=""
+        
+        # DEBUG: Log first few comparisons
+        if [[ $worker_id -eq 0 && $comparison_count -le 3 ]]; then
+            echo "DEBUG Worker $worker_id (#$comparison_count): Comparing indices $i vs $j" >> "${results}.debug"
+            echo "  file1=$file1" >> "${results}.debug"
+            echo "  file2=$file2" >> "${results}.debug"
+            echo "  checksum1=${checksum1:-EMPTY}" >> "${results}.debug"
+            echo "  checksum2=${checksum2:-EMPTY}" >> "${results}.debug"
+            [[ "$checksum1" == "$checksum2" ]] && echo "  MATCH!" >> "${results}.debug" || echo "  No match" >> "${results}.debug"
+        fi
+        
+        # Level 1: Checksum match
+        if [[ -n "$checksum1" && -n "$checksum2" && "$checksum1" == "$checksum2" ]]; then
+            duplicate_found="LEVEL1|100|$file1|$file2|Exact binary match"
+            echo "DEBUG: FOUND DUPLICATE Level1: $(basename "$file1") vs $(basename "$file2")" >> "${results}.debug"
+        fi
+        
+        # Level 2: Visual hash
+        if [[ -z "$duplicate_found" ]]; then
+            local hash1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$hashes_lookup")
+            local hash2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$hashes_lookup")
+            if [[ -n "$hash1" && -n "$hash2" && "$hash1" == "$hash2" ]]; then
+                duplicate_found="LEVEL2|95|$file1|$file2|Identical visual fingerprint"
+            fi
+        fi
+        
+        # Level 3: Content fingerprint
+        if [[ -z "$duplicate_found" ]]; then
+            local fp1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$fingerprints_lookup")
+            local fp2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$fingerprints_lookup")
+            if [[ -n "$fp1" && -n "$fp2" && "$fp1" == "$fp2" ]]; then
+                local size1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$sizes_lookup")
+                local size2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$sizes_lookup")
+                size1=${size1:-0}
+                size2=${size2:-0}
+                if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
+                    local size_ratio=$(( (size1 < size2 ? size1 * 100 / size2 : size2 * 100 / size1) ))
+                    if [[ $size_ratio -ge 95 ]]; then
+                        duplicate_found="LEVEL3|90|$file1|$file2|Identical metadata + similar size"
+                    fi
+                fi
+            fi
+        fi
+        
+        # Write result atomically
+        if [[ -n "$duplicate_found" ]]; then
+            (
+                flock -x 200
+                echo "$duplicate_found" >> "$results"
+            ) 200>"$lockfile"
+        fi
+        
+        # Update progress atomically
+        (
+            flock -x 200
+            local current=$(cat "$progress")
+            echo $((current + 1)) > "$progress"
+        ) 200>"$lockfile"
+    done
+}
+
 # 🎬 AI-Powered Video Duplicate Detection with Multi-Level Analysis
 detect_duplicate_videos() {
     echo -e "${BLUE}${BOLD}🎬 AI-Enhanced Parallel Video Duplicate Detection${NC}"
@@ -9160,6 +9284,7 @@ detect_duplicate_videos() {
     echo -e "${GREEN}⚡ Using ${BOLD}$AI_DUPLICATE_THREADS${NC}${GREEN} CPU threads for maximum performance!${NC}"
     
     # Initialize all cache and AI systems
+    init_hash_system  # Must be first - sets HASH_ALGORITHM
     init_video_cache
     init_ai_cache
     init_ai_training
@@ -9203,9 +9328,12 @@ detect_duplicate_videos() {
     declare -A video_fps_values
     declare -A video_formats
     
-    # Create temporary directory for analysis
-    local temp_analysis_dir="$(mktemp -d)"
-    trap "rm -rf '$temp_analysis_dir'" EXIT
+    # Create temporary directory for analysis in persistent location
+    local temp_analysis_dir="${GIF_CONVERTER_DIR}/temp/video/analysis_$$"
+    mkdir -p "$temp_analysis_dir"
+    # Cleanup old temp directories (older than 1 day)
+    find "${GIF_CONVERTER_DIR}/temp/video" -maxdepth 1 -name "analysis_*" -type d -mtime +1 -exec rm -rf {} \; 2>/dev/null || true
+    # NOTE: Don't set EXIT trap here - cleanup happens after workers complete
     
     # Count total video files first for progress calculation
     local video_files_list=()
@@ -9764,6 +9892,10 @@ META_EOF
                 local current_count=$(cat "$progress_counter" 2>/dev/null || echo "0")
                 
                 if [[ $current_count -ne $last_count || $current_count -eq 0 ]]; then
+                    # Validate numbers before division
+                    [[ ! "$current_count" =~ ^[0-9]+$ ]] && current_count=0
+                    [[ ! "$files_to_analyze" =~ ^[0-9]+$ || $files_to_analyze -eq 0 ]] && files_to_analyze=1
+                    
                     local progress=$((current_count * 100 / files_to_analyze))
                     [[ $progress -gt 100 ]] && progress=100
                     local filled=$((progress * 30 / 100))
@@ -9902,10 +10034,13 @@ META_EOF
     
     declare -A compared_pairs
     
-    # 🚀 PARALLEL COMPARISON FRAMEWORK with file-based data exchange
-    local max_workers=$(nproc 2>/dev/null || echo "4")
-    [[ $max_workers -gt 16 ]] && max_workers=16
-    [[ $max_workers -lt 4 ]] && max_workers=4
+    # 🚀 PARALLEL COMPARISON FRAMEWORK - RE-ENABLED
+    # Now works with top-level worker function + persistent directories + no EXIT trap
+    local cpu_cores=$(nproc 2>/dev/null || echo "4")
+    # Use 66% of available cores (leave 33% for system + other processes)
+    local max_workers=$(( cpu_cores * 2 / 3 ))
+    [[ $max_workers -lt 4 ]] && max_workers=4     # Minimum 4 workers
+    [[ $max_workers -gt 24 ]] && max_workers=24   # Maximum 24 workers (diminishing returns)
     
     # Create synchronized result files
     local results_dir="$temp_analysis_dir/stage2_results"
@@ -9918,9 +10053,10 @@ META_EOF
     
     # Write all array data to lookup files for workers
     local lookup_dir="$results_dir/lookup"
-    mkdir -p "$lookup_dir"
+    mkdir -p "$lookup_dir" || { echo "ERROR: Failed to create $lookup_dir" >&2; return 1; }
     
     echo -e "  ${CYAN}⚡ Creating lookup tables for parallel workers...${NC}"
+    echo -e "  ${YELLOW}DEBUG: Lookup dir: $lookup_dir${NC}"
     
     # Write file list with indices
     local filelist="$lookup_dir/files.txt"
@@ -9971,7 +10107,29 @@ META_EOF
         echo "$file|${video_resolutions["$file"]}" >> "$resolutions_lookup"
     done
     
+    # Verify lookup files were created
+    if [[ ! -d "$lookup_dir" ]]; then
+        echo -e "  ${RED}ERROR: Lookup directory not found: $lookup_dir${NC}" >&2
+        return 1
+    fi
+    if [[ ! -f "$checksums_lookup" ]]; then
+        echo -e "  ${RED}ERROR: Checksums lookup file not created${NC}" >&2
+        return 1
+    fi
+    
     echo -e "  ${GREEN}✓ Lookup tables ready${NC}"
+    echo -e "  ${YELLOW}DEBUG: Checksum entries: $(wc -l < "$checksums_lookup"), Sample:${NC}"
+    head -2 "$checksums_lookup" | while IFS='|' read -r path hash; do
+        local fname=$(basename "$path")
+        echo -e "    ${GRAY}$fname -> ${hash:0:16}...${NC}"
+    done
+    
+    # Verify lookup dir still exists before workers start
+    if [[ ! -d "$lookup_dir" ]]; then
+        echo -e "  ${RED}ERROR: Lookup directory disappeared before workers started!${NC}" >&2
+        ls -la "$results_dir" >&2
+        return 1
+    fi
     
     # Generate comparison queue (all pairs to compare)
     local queue_file="$results_dir/queue.txt"
@@ -9999,8 +10157,9 @@ META_EOF
     echo -e "  ${GREEN}✓ Queue ready: $total_queued comparisons${NC}"
     echo -e "  ${MAGENTA}🚀 Starting $max_workers parallel workers...${NC}"
     
-    # Worker function for parallel comparison (uses file-based lookups)
-    compare_worker() {
+    # Call top-level worker function (defined outside to allow export)
+    # Inline worker definition removed - using video_compare_worker() instead
+    if false; then  # OLD INLINE WORKER - DISABLED
         local worker_id=$1
         local queue=$2
         local results=$3
@@ -10017,6 +10176,8 @@ META_EOF
         local durations_lookup="$lookup_dir/durations.txt"
         local resolutions_lookup="$lookup_dir/resolutions.txt"
         
+        local comparison_count=0
+        
         while true; do
             # Atomic queue pop (get next pair)
             local pair
@@ -10030,30 +10191,43 @@ META_EOF
             
             [[ -z "$pair" ]] && break
             
+            ((comparison_count++))
+            
             local i=$(echo "$pair" | cut -d'|' -f1)
             local j=$(echo "$pair" | cut -d'|' -f2)
             
-            # Get files from lookup
-            local file1=$(grep -F "$i|" "$filelist" | cut -d'|' -f2)
-            local file2=$(grep -F "$j|" "$filelist" | cut -d'|' -f2)
+            # Get files from lookup (exact index match)
+            local file1=$(awk -F'|' -v k="$i" '$1==k{print $2; exit}' "$filelist")
+            local file2=$(awk -F'|' -v k="$j" '$1==k{print $2; exit}' "$filelist")
             
             [[ -z "$file1" || -z "$file2" ]] && continue
             
-            # Get checksums from lookup
-            local checksum1=$(grep -F "$file1|" "$checksums_lookup" | cut -d'|' -f2)
-            local checksum2=$(grep -F "$file2|" "$checksums_lookup" | cut -d'|' -f2)
+            # Get checksums from lookup (exact path match)
+            local checksum1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$checksums_lookup")
+            local checksum2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$checksums_lookup")
             
             local duplicate_found=""
+            
+            # DEBUG: Log first few comparisons from worker 0
+            if [[ $worker_id -eq 0 && $comparison_count -le 3 ]]; then
+                echo "DEBUG Worker $worker_id (#$comparison_count): Comparing indices $i vs $j" >> "${results}.debug"
+                echo "  file1=$file1" >> "${results}.debug"
+                echo "  file2=$file2" >> "${results}.debug"
+                echo "  checksum1=${checksum1:-EMPTY}" >> "${results}.debug"
+                echo "  checksum2=${checksum2:-EMPTY}" >> "${results}.debug"
+                [[ "$checksum1" == "$checksum2" ]] && echo "  MATCH!" >> "${results}.debug" || echo "  No match" >> "${results}.debug"
+            fi
             
             # Level 1: MD5 match
             if [[ -n "$checksum1" && -n "$checksum2" && "$checksum1" == "$checksum2" ]]; then
                 duplicate_found="LEVEL1|100|$file1|$file2|Exact binary match"
+                echo "DEBUG: FOUND DUPLICATE Level1: $(basename "$file1") vs $(basename "$file2")" >> "${results}.debug"
             fi
             
             # Level 2: Visual hash
             if [[ -z "$duplicate_found" ]]; then
-                local hash1=$(grep -F "$file1|" "$hashes_lookup" | cut -d'|' -f2)
-                local hash2=$(grep -F "$file2|" "$hashes_lookup" | cut -d'|' -f2)
+                local hash1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$hashes_lookup")
+                local hash2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$hashes_lookup")
                 if [[ -n "$hash1" && -n "$hash2" && "$hash1" == "$hash2" ]]; then
                     duplicate_found="LEVEL2|95|$file1|$file2|Identical visual fingerprint"
                 fi
@@ -10061,11 +10235,11 @@ META_EOF
             
             # Level 3: Content fingerprint
             if [[ -z "$duplicate_found" ]]; then
-                local fp1=$(grep -F "$file1|" "$fingerprints_lookup" | cut -d'|' -f2)
-                local fp2=$(grep -F "$file2|" "$fingerprints_lookup" | cut -d'|' -f2)
+                local fp1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$fingerprints_lookup")
+                local fp2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$fingerprints_lookup")
                 if [[ -n "$fp1" && -n "$fp2" && "$fp1" == "$fp2" ]]; then
-                    local size1=$(grep -F "$file1|" "$sizes_lookup" | cut -d'|' -f2)
-                    local size2=$(grep -F "$file2|" "$sizes_lookup" | cut -d'|' -f2)
+                    local size1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$sizes_lookup")
+                    local size2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$sizes_lookup")
                     size1=${size1:-0}
                     size2=${size2:-0}
                     if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
@@ -10092,18 +10266,22 @@ META_EOF
                 echo $((current + 1)) > "$progress"
             ) 200>"$lockfile"
         done
-    }
+    fi  # End of disabled inline worker
     
-    # Export necessary variables and functions for workers
-    export -f compare_worker
-    export temp_analysis_dir
+    # Export top-level worker function
+    export -f video_compare_worker
     
-    # Launch workers in background
+    # Launch workers in background using top-level function
+    echo -e "  ${YELLOW}DEBUG: About to launch $max_workers workers...${NC}"
+    echo -e "  ${YELLOW}DEBUG: Lookup dir before launch: $lookup_dir${NC}"
+    [[ -d "$lookup_dir" ]] && echo -e "  ${GREEN}DEBUG: Lookup dir EXISTS${NC}" || echo -e "  ${RED}DEBUG: Lookup dir MISSING!${NC}"
+    
     local worker_pids=()
     for ((w=0; w<max_workers; w++)); do
-        compare_worker $w "$queue_file" "$duplicates_file" "$progress_file" "$lock_file" "$lookup_dir" &
+        video_compare_worker $w "$queue_file" "$duplicates_file" "$progress_file" "$lock_file" "$lookup_dir" &
         worker_pids+=($!)
     done
+    echo -e "  ${GREEN}DEBUG: Launched ${#worker_pids[@]} worker PIDs: ${worker_pids[*]}${NC}"
     
     # Monitor progress
     echo -e "  ${CYAN}Comparing pairs with $max_workers parallel workers...${NC}"
@@ -10154,10 +10332,17 @@ META_EOF
     
     echo -e "  ${GREEN}✓ Parallel comparison complete (Levels 1-3)${NC}"
     
+    # Show debug output
+    if [[ -f "${duplicates_file}.debug" ]]; then
+        echo -e "  ${YELLOW}DEBUG: Worker trace (first 20 lines):${NC}"
+        head -20 "${duplicates_file}.debug" | sed 's/^/    /'
+        echo -e "  ${YELLOW}DEBUG: Full trace in: ${duplicates_file}.debug${NC}"
+    fi
+    
     # Clean up parallel framework lookup files
     rm -rf "$lookup_dir" 2>/dev/null
     
-    # SEQUENTIAL CODE - DISABLED (parallel workers now use file-based lookups)
+    # SEQUENTIAL CODE - DISABLED (parallel workers are working now!)
     if false; then
     for ((i=0; i<total_files; i++)); do
         local file1="${video_files_list[$i]}"
@@ -11498,6 +11683,7 @@ detect_duplicate_gifs() {
     echo -e "${GREEN}⚡ Using ${BOLD}$AI_DUPLICATE_THREADS${NC}${GREEN} CPU threads for maximum performance!${NC}"
     
     # Initialize AI cache and training systems
+    init_hash_system  # Must be first - sets HASH_ALGORITHM
     init_ai_cache
     init_ai_training
     init_checksum_cache
@@ -11552,9 +11738,12 @@ detect_duplicate_gifs() {
     declare -A gif_frame_counts
     declare -A gif_durations
     
-    # Create temporary directory for analysis
-    local temp_analysis_dir="$(mktemp -d)"
-    trap "rm -rf '$temp_analysis_dir'" EXIT
+    # Create temporary directory for analysis in persistent location
+    local temp_analysis_dir="${GIF_CONVERTER_DIR}/temp/gif/analysis_$$"
+    mkdir -p "$temp_analysis_dir"
+    # Cleanup old temp directories (older than 1 day)
+    find "${GIF_CONVERTER_DIR}/temp/gif" -maxdepth 1 -name "analysis_*" -type d -mtime +1 -exec rm -rf {} \; 2>/dev/null || true
+rue
     
     # Count total GIF files first for progress calculation (avoid duplicates)
     local gif_files_list=()
@@ -12706,10 +12895,13 @@ PARALLEL_EOF
     # Step 2: Smart comparison queue - only compare within same clusters
     # MASSIVE REDUCTION: Instead of 247K all-pairs, we only compare clustered candidates
     
-    # 🚀 PARALLEL COMPARISON FRAMEWORK FOR GIFS with file-based data exchange
-    local max_workers=$(nproc 2>/dev/null || echo "4")
-    [[ $max_workers -gt 16 ]] && max_workers=16
-    [[ $max_workers -lt 4 ]] && max_workers=4
+    # 🚀 PARALLEL COMPARISON FRAMEWORK with file-based data exchange
+    # Re-enabled now that EXIT trap removed and using persistent directories
+    local cpu_cores=$(nproc 2>/dev/null || echo "4")
+    # Use 66% of available cores (leave 33% for system + other processes)
+    local max_workers=$(( cpu_cores * 2 / 3 ))
+    [[ $max_workers -lt 4 ]] && max_workers=4     # Minimum 4 workers
+    [[ $max_workers -gt 24 ]] && max_workers=24   # Maximum 24 workers
     
     # Create results directory
     local gif_results_dir="$temp_analysis_dir/gif_stage2_results"
@@ -12722,9 +12914,10 @@ PARALLEL_EOF
     
     # Write all GIF array data to lookup files for workers
     local gif_lookup_dir="$gif_results_dir/lookup"
-    mkdir -p "$gif_lookup_dir"
+    mkdir -p "$gif_lookup_dir" || { echo "ERROR: Failed to create $gif_lookup_dir" >&2; return 1; }
     
     echo -e "  ${CYAN}⚡ Creating GIF lookup tables for parallel workers...${NC}"
+    echo -e "  ${YELLOW}DEBUG: GIF Lookup dir: $gif_lookup_dir${NC}"
     
     # Write file list with indices
     local gif_filelist="$gif_lookup_dir/files.txt"
@@ -12776,6 +12969,11 @@ PARALLEL_EOF
     done
     
     echo -e "  ${GREEN}✓ GIF lookup tables ready${NC}"
+    echo -e "  ${YELLOW}DEBUG: GIF Checksum entries: $(wc -l < "$gif_checksums_lookup"), Sample:${NC}"
+    head -2 "$gif_checksums_lookup" | while IFS='|' read -r path hash; do
+        local fname=$(basename "$path")
+        echo -e "    ${GRAY}$fname -> ${hash:0:16}...${NC}"
+    done
     
     # Generate SMART comparison queue using cluster intersection
     local gif_queue_file="$gif_results_dir/queue.txt"
@@ -12959,6 +13157,8 @@ PARALLEL_EOF
         local frames_lookup="$lookup_dir/frame_counts.txt"
         local durations_lookup="$lookup_dir/durations.txt"
         
+        local comparison_count=0
+        
         while true; do
             # Atomic queue pop
             local pair
@@ -12975,19 +13175,19 @@ PARALLEL_EOF
             local i=$(echo "$pair" | cut -d'|' -f1)
             local j=$(echo "$pair" | cut -d'|' -f2)
             
-            # Get files from lookup
-            local file1=$(grep -F "$i|" "$filelist" | cut -d'|' -f2)
-            local file2=$(grep -F "$j|" "$filelist" | cut -d'|' -f2)
+            # Get files from lookup (exact index match)
+            local file1=$(awk -F'|' -v k="$i" '$1==k{print $2; exit}' "$filelist")
+            local file2=$(awk -F'|' -v k="$j" '$1==k{print $2; exit}' "$filelist")
             
             [[ -z "$file1" || -z "$file2" ]] && continue
             
-            # Get file properties for pre-filtering
-            local size1=$(grep -F "$file1|" "$sizes_lookup" | cut -d'|' -f2)
-            local size2=$(grep -F "$file2|" "$sizes_lookup" | cut -d'|' -f2)
-            local frame1=$(grep -F "$file1|" "$frames_lookup" | cut -d'|' -f2)
-            local frame2=$(grep -F "$file2|" "$frames_lookup" | cut -d'|' -f2)
-            local dur1=$(grep -F "$file1|" "$durations_lookup" | cut -d'|' -f2)
-            local dur2=$(grep -F "$file2|" "$durations_lookup" | cut -d'|' -f2)
+            # Get file properties for pre-filtering (exact path match)
+            local size1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$sizes_lookup")
+            local size2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$sizes_lookup")
+            local frame1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$frames_lookup")
+            local frame2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$frames_lookup")
+            local dur1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$durations_lookup")
+            local dur2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$durations_lookup")
             
             size1=${size1:-0}
             size2=${size2:-0}
@@ -13038,20 +13238,33 @@ PARALLEL_EOF
                 fi
             fi
             
+            ((comparison_count++))
+            
             # Passed pre-filters - perform detailed comparison (Levels 1-3)
-            local checksum1=$(grep -F "$file1|" "$checksums_lookup" | cut -d'|' -f2)
-            local checksum2=$(grep -F "$file2|" "$checksums_lookup" | cut -d'|' -f2)
+            local checksum1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$checksums_lookup")
+            local checksum2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$checksums_lookup")
             local duplicate_found=""
+            
+            # DEBUG: Log first few comparisons from worker 0
+            if [[ $worker_id -eq 0 && $comparison_count -le 3 ]]; then
+                echo "DEBUG GIF Worker $worker_id (#$comparison_count): Comparing indices $i vs $j" >> "${results}.debug"
+                echo "  file1=$file1" >> "${results}.debug"
+                echo "  file2=$file2" >> "${results}.debug"
+                echo "  checksum1=${checksum1:-EMPTY}" >> "${results}.debug"
+                echo "  checksum2=${checksum2:-EMPTY}" >> "${results}.debug"
+                [[ "$checksum1" == "$checksum2" ]] && echo "  MATCH!" >> "${results}.debug" || echo "  No match" >> "${results}.debug"
+            fi
             
             # Level 1: MD5 match
             if [[ -n "$checksum1" && -n "$checksum2" && "$checksum1" == "$checksum2" ]]; then
                 duplicate_found="LEVEL1|100|$file1|$file2|Exact binary match"
+                echo "DEBUG GIF: FOUND DUPLICATE Level1: $(basename "$file1") vs $(basename "$file2")" >> "${results}.debug"
             fi
             
             # Level 2: Visual hash
             if [[ -z "$duplicate_found" ]]; then
-                local hash1=$(grep -F "$file1|" "$hashes_lookup" | cut -d'|' -f2)
-                local hash2=$(grep -F "$file2|" "$hashes_lookup" | cut -d'|' -f2)
+                local hash1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$hashes_lookup")
+                local hash2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$hashes_lookup")
                 if [[ -n "$hash1" && -n "$hash2" && "$hash1" == "$hash2" ]]; then
                     duplicate_found="LEVEL2|95|$file1|$file2|Identical visual fingerprint"
                 fi
@@ -13059,8 +13272,8 @@ PARALLEL_EOF
             
             # Level 3: Content fingerprint
             if [[ -z "$duplicate_found" ]]; then
-                local fp1=$(grep -F "$file1|" "$fingerprints_lookup" | cut -d'|' -f2)
-                local fp2=$(grep -F "$file2|" "$fingerprints_lookup" | cut -d'|' -f2)
+                local fp1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$fingerprints_lookup")
+                local fp2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$fingerprints_lookup")
                 if [[ -n "$fp1" && -n "$fp2" && "$fp1" == "$fp2" ]]; then
                     if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
                         local size_ratio=$(( (size1 < size2 ? size1 * 100 / size2 : size2 * 100 / size1) ))
@@ -13146,6 +13359,13 @@ PARALLEL_EOF
     done < "$gif_duplicates_file"
     
     echo -e "  ${GREEN}✓ Parallel GIF comparison complete (Levels 1-3)${NC}"
+    
+    # Show debug output
+    if [[ -f "${gif_duplicates_file}.debug" ]]; then
+        echo -e "  ${YELLOW}DEBUG GIF: Worker trace (first 20 lines):${NC}"
+        head -20 "${gif_duplicates_file}.debug" | sed 's/^/    /'
+        echo -e "  ${YELLOW}DEBUG GIF: Full trace in: ${gif_duplicates_file}.debug${NC}"
+    fi
     
     # Clean up lookup files
     rm -rf "$gif_lookup_dir" 2>/dev/null
