@@ -10681,7 +10681,7 @@ META_EOF
             printf "\r  ${CYAN}["
             for ((k=0; k<filled; k++)); do printf "${GREEN}█${NC}"; done
             for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
-            printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d/%d)${NC} ${BLUE}Workers: %d${NC}" "$progress_pct" "$current_progress" "$total_queued" "$workers_alive"
+            printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d/%d)${NC} ${BLUE}Workers: %d${NC}" "${progress_pct:-0}" "${current_progress:-0}" "${total_queued:-0}" "${workers_alive:-0}"
             
             last_progress=$current_progress
         fi
@@ -13881,8 +13881,12 @@ PARALLEL_EOF
             exec 200>&-
             
             # Save to smart cache (still immediate for persistence)
+            # BUGFIX: use the shared smart cache file, not the pair_hash, otherwise
+            # it creates thousands of small files named "checksum1_checksum2" in the
+            # current working directory. The first argument to save_comparison_to_cache
+            # must be the cache file path.
             if [[ -n "$smart_cache" && -f "$smart_cache" ]]; then
-                save_comparison_to_cache "$pair_hash" "$checksum1" "$checksum2" "$cache_result" "$duration_ms" "gif" 2>/dev/null || true
+                save_comparison_to_cache "$smart_cache" "$pair_hash" "$checksum1" "$checksum2" "$cache_result" "$duration_ms" 2>/dev/null || true
             fi
             
             # Flush batch when full
@@ -13977,7 +13981,7 @@ PARALLEL_EOF
             printf "\r  ${CYAN}["
             for ((k=0; k<filled; k++)); do printf "${GREEN}█${NC}"; done
             for ((k=0; k<empty; k++)); do printf "${GRAY}░${NC}"; done
-            printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d/%d)${NC} ${BLUE}Workers: %d${NC}" "$progress_pct" "$gif_current_progress" "$gif_total_queued" "$workers_alive"
+            printf "${CYAN}] ${BOLD}%3d%%${NC} ${GRAY}(%d/%d)${NC} ${BLUE}Workers: %d${NC}" "${progress_pct:-0}" "${gif_current_progress:-0}" "${gif_total_queued:-0}" "${workers_alive:-0}"
             
             gif_last_progress=$gif_current_progress
         fi
