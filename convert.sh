@@ -19319,7 +19319,17 @@ check_dependencies() {
     # Prompt to update outdated packages
     if [[ ${#OUTDATED_PACKAGES[@]} -gt 0 ]]; then
         echo -e "\n${YELLOW}⚠️  Found ${#OUTDATED_PACKAGES[@]} package(s) with updates available${NC}"
-        echo -ne "${CYAN}Would you like to update them now? [y/N]:${NC} "
+        
+        # Show detailed list of tools and exact commands before asking
+        echo -e "${BLUE}Details:${NC}"
+        for entry in "${OUTDATED_PACKAGES[@]}"; do
+            local tool="${entry%%:*}"
+            local cmd="${entry#*:}"
+            echo -e "  ${CYAN}• ${BOLD}$tool${NC}${CYAN} → ${GRAY}$cmd${NC}"
+        done
+        
+        echo ""
+        echo -ne "${CYAN}Would you like to run these update commands now? [y/N]:${NC} "
         read -r update_choice
         
         if [[ "$update_choice" =~ ^[Yy]$ ]]; then
@@ -19338,7 +19348,7 @@ check_dependencies() {
             done
             echo -e "\n${GREEN}✅ Package updates completed${NC}"
         else
-            echo -e "${CYAN}📝 You can update later using the commands shown above${NC}"
+            echo -e "${CYAN}📝 You can run the commands above manually later if you prefer.${NC}"
         fi
     fi
     
