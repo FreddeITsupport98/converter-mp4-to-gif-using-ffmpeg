@@ -3369,6 +3369,288 @@ get_checksum_cache_stats() {
     fi
 }
 
+# 💡 Smart Comparison Cache System (Multi-Layer)
+# ================================================================
+# Layer 1: In-memory hash table (current session)
+# Layer 2: Persistent pair cache with metadata
+# Layer 3: Auto-validation and repair
+# Layer 4: Health monitoring and statistics
+# ================================================================
+
+# Initialize comparison cache (video or GIF)
+init_comparison_cache() {
+    local cache_type="$1"  # "video" or "gif"
+    local cache_file="$HOME/.smart-gif-converter/${cache_type}_comparison_cache.db"
+    
+    mkdir -p "$(dirname "$cache_file")" 2>/dev/null || return 1
+    
+    # Check if cache needs initialization or rebuild
+    if [[ ! -f "$cache_file" ]] || ! validate_comparison_cache "$cache_file"; then
+        rebuild_comparison_cache "$cache_file" "$cache_type"
+    fi
+    
+    echo "$cache_file"
+}
+
+# Validate comparison cache integrity
+validate_comparison_cache() {
+    local cache_file="$1"
+    
+    [[ -f "$cache_file" && -r "$cache_file" ]] || return 1
+    
+    # Check header
+    local header=$(head -n 1 "$cache_file" 2>/dev/null || echo "")
+    [[ "$header" =~ ^#.*Comparison.*Cache ]] || return 1
+    
+    # Check version
+    local version_line=$(head -n 2 "$cache_file" 2>/dev/null | tail -n 1)
+    [[ "$version_line" =~ ^#.*Version ]] || return 1
+    
+    # Validate structure (sample check)
+    local data_line=$(grep -v '^#' "$cache_file" 2>/dev/null | head -n 1)
+    if [[ -n "$data_line" ]]; then
+        # Format: pair_hash|checksum1|checksum2|result|timestamp|duration_ms
+        local fields=$(echo "$data_line" | tr -cd '|' | wc -c)
+        [[ $fields -eq 5 ]] || return 1
+    fi
+    
+    return 0
+}
+
+# Rebuild corrupted comparison cache
+rebuild_comparison_cache() {
+    local cache_file="$1"
+    local cache_type="$2"
+    
+    local backup="${cache_file}.backup.$(date +%s)"
+    [[ -f "$cache_file" ]] && cp "$cache_file" "$backup" 2>/dev/null
+    
+    # Create fresh cache with structured header
+    cat > "$cache_file" << EOF
+# Smart ${cache_type^} Comparison Cache - Multi-Layer System
+# Version: 2.0
+# Format: pair_hash|checksum1|checksum2|result|timestamp|duration_ms
+# Result: DUPLICATE (Level1/2/3) or NOT_DUPLICATE
+# Created: $(date '+%Y-%m-%d %H:%M:%S')
+# Hash Algorithm: ${HASH_ALGORITHM}
+EOF
+    
+    # Try to recover valid entries from backup
+    if [[ -f "$backup" ]]; then
+        local recovered=0
+        while IFS= read -r line; do
+            [[ -z "$line" || "$line" =~ ^# ]] && continue
+            local fields=$(echo "$line" | tr -cd '|' | wc -c)
+            if [[ $fields -eq 5 ]]; then
+                echo "$line" >> "$cache_file"
+                ((recovered++))
+            fi
+        done < "$backup" 2>/dev/null || true
+        
+        [[ $recovered -gt 0 ]] && echo -e "${GREEN}✅ Recovered $recovered comparison entries${NC}" >&2
+    fi
+}
+
+# Load comparison cache into memory (Layer 1 + Layer 2)
+load_comparison_cache() {
+    local cache_file="$1"
+    local -n cache_array=$2  # Pass associative array by reference
+    
+    local loaded=0
+    local skipped=0
+    local current_time=$(date +%s)
+    local max_age=$((180 * 86400))  # 180 days
+    
+    if [[ -f "$cache_file" ]]; then
+        while IFS='|' read -r pair_hash checksum1 checksum2 result timestamp duration_ms; do
+            [[ -z "$pair_hash" || "$pair_hash" =~ ^# ]] && continue
+            
+            # Skip very old entries (automatic aging)
+            local age=$((current_time - timestamp))
+            if [[ $age -gt $max_age ]]; then
+                ((skipped++))
+                continue
+            fi
+            
+            # Store in memory with metadata
+            cache_array["$pair_hash"]="$result|$timestamp|$duration_ms"
+            ((loaded++))
+        done < "$cache_file"
+    fi
+    
+    echo "$loaded" # Return count
+}
+
+# Save comparison result to cache (Layer 2 - persistent)
+save_comparison_to_cache() {
+    local cache_file="$1"
+    local pair_hash="$2"
+    local checksum1="$3"
+    local checksum2="$4"
+    local result="$5"
+    local duration_ms="${6:-0}"
+    
+    local timestamp=$(date +%s)
+    local cache_entry="$pair_hash|$checksum1|$checksum2|$result|$timestamp|$duration_ms"
+    
+    # Atomic append
+    echo "$cache_entry" >> "$cache_file" 2>/dev/null || true
+}
+
+# Cleanup and optimize comparison cache (Layer 4 - maintenance)
+cleanup_comparison_cache() {
+    local cache_file="$1"
+    local cache_type="$2"
+    
+    [[ ! -f "$cache_file" ]] && return 0
+    
+    local current_time=$(date +%s)
+    local max_age=$((180 * 86400))  # 180 days
+    local cutoff_time=$((current_time - max_age))
+    
+    local temp_cache="$(mktemp)"
+    
+    # Keep header
+    head -n 6 "$cache_file" > "$temp_cache"
+    
+    declare -A latest_results
+    declare -A latest_timestamps
+    
+    local old_entries=0
+    local duplicate_entries=0
+    local total_entries=0
+    
+    # Deduplicate and remove old entries
+    while IFS='|' read -r pair_hash checksum1 checksum2 result timestamp duration_ms; do
+        [[ "$pair_hash" =~ ^# || -z "$pair_hash" ]] && continue
+        ((total_entries++))
+        
+        # Skip old entries
+        if [[ $timestamp -lt $cutoff_time ]]; then
+            ((old_entries++))
+            continue
+        fi
+        
+        # Keep only latest entry per pair
+        local existing_ts="${latest_timestamps[$pair_hash]:-0}"
+        if [[ $timestamp -gt $existing_ts ]]; then
+            [[ $existing_ts -gt 0 ]] && ((duplicate_entries++))
+            latest_timestamps[$pair_hash]=$timestamp
+            latest_results[$pair_hash]="$pair_hash|$checksum1|$checksum2|$result|$timestamp|$duration_ms"
+        else
+            ((duplicate_entries++))
+        fi
+    done < <(tail -n +7 "$cache_file")
+    
+    # Write deduplicated entries
+    for pair_hash in "${!latest_results[@]}"; do
+        echo "${latest_results[$pair_hash]}" >> "$temp_cache"
+    done
+    
+    # Atomic replace
+    mv "$temp_cache" "$cache_file"
+    
+    local cleaned=$((old_entries + duplicate_entries))
+    local kept=${#latest_results[@]}
+    
+    echo -e "  ${BLUE}🧺 ${cache_type^} cache optimized: removed $cleaned entries, kept $kept${NC}" >&2
+}
+
+# Get comparison cache statistics (Layer 4 - monitoring)
+get_comparison_cache_stats() {
+    local cache_file="$1"
+    local cache_type="$2"
+    
+    if [[ ! -f "$cache_file" ]]; then
+        echo "${cache_type^}: 0 comparisons cached"
+        return
+    fi
+    
+    local total=$(grep -v '^#' "$cache_file" | grep -c '|' || echo "0")
+    local duplicates=$(grep -v '^#' "$cache_file" | grep -c 'DUPLICATE' || echo "0")
+    local not_duplicates=$((total - duplicates))
+    
+    # Calculate cache age
+    local creation_date=$(grep '^# Created:' "$cache_file" | sed 's/^# Created: //')
+    local cache_age="unknown"
+    if [[ -n "$creation_date" ]]; then
+        local created_ts=$(date -d "$creation_date" +%s 2>/dev/null || echo "0")
+        if [[ $created_ts -gt 0 ]]; then
+            local current_ts=$(date +%s)
+            local age_days=$(( (current_ts - created_ts) / 86400 ))
+            cache_age="${age_days}d"
+        fi
+    fi
+    
+    # Calculate average comparison time
+    local avg_time="N/A"
+    local total_time=0
+    local count_with_time=0
+    while IFS='|' read -r pair_hash checksum1 checksum2 result timestamp duration_ms; do
+        [[ "$pair_hash" =~ ^# || -z "$duration_ms" || "$duration_ms" == "0" ]] && continue
+        total_time=$((total_time + duration_ms))
+        ((count_with_time++))
+    done < <(tail -n +7 "$cache_file")
+    
+    if [[ $count_with_time -gt 0 ]]; then
+        avg_time="$((total_time / count_with_time))ms"
+    fi
+    
+    echo "${cache_type^}: $total cached ($duplicates dups, $not_duplicates unique) Age: $cache_age, Avg: $avg_time"
+}
+
+# Validate cache health and repair if needed (Layer 3 - auto-repair)
+validate_and_repair_comparison_cache() {
+    local cache_file="$1"
+    local cache_type="$2"
+    
+    if [[ ! -f "$cache_file" ]]; then
+        return 0  # No cache to validate
+    fi
+    
+    local issues=0
+    
+    # Check 1: File readable
+    if [[ ! -r "$cache_file" ]]; then
+        echo -e "  ${RED}⚠ ${cache_type^} cache not readable${NC}" >&2
+        ((issues++))
+    fi
+    
+    # Check 2: Valid header
+    if ! validate_comparison_cache "$cache_file"; then
+        echo -e "  ${YELLOW}🔧 ${cache_type^} cache header corrupted, rebuilding...${NC}" >&2
+        rebuild_comparison_cache "$cache_file" "$cache_type"
+        ((issues++))
+    fi
+    
+    # Check 3: Size check (if > 100MB, cleanup recommended)
+    local cache_size=$(stat -c%s "$cache_file" 2>/dev/null || echo "0")
+    if [[ $cache_size -gt 104857600 ]]; then  # 100MB
+        local size_mb=$((cache_size / 1048576))
+        echo -e "  ${YELLOW}💾 ${cache_type^} cache is ${size_mb}MB - cleanup recommended${NC}" >&2
+        cleanup_comparison_cache "$cache_file" "$cache_type"
+    fi
+    
+    # Check 4: Corruption check (sample validation)
+    local corrupted_lines=0
+    local sample_size=100
+    local sample_lines=$(tail -n $sample_size "$cache_file" 2>/dev/null | grep -v '^#')
+    
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        local fields=$(echo "$line" | tr -cd '|' | wc -c)
+        [[ $fields -ne 5 ]] && ((corrupted_lines++))
+    done <<< "$sample_lines"
+    
+    if [[ $corrupted_lines -gt 10 ]]; then  # More than 10% corruption in sample
+        echo -e "  ${RED}🐛 ${cache_type^} cache corruption detected ($corrupted_lines/$sample_size lines), repairing...${NC}" >&2
+        rebuild_comparison_cache "$cache_file" "$cache_type"
+        ((issues++))
+    fi
+    
+    [[ $issues -eq 0 ]] && return 0 || return 1
+}
+
 # 🎬 Video Cache System
 # =======================================
 
@@ -3380,11 +3662,27 @@ init_video_cache() {
     # Create video cache directory (silently fail if not possible)
     mkdir -p "$video_cache_dir" 2>/dev/null || return 1
     
-    # Create cache index if it doesn't exist
+    # Check if cache exists and has correct hash algorithm
+    local cache_needs_rebuild=false
     if [[ ! -f "$video_cache_index" ]]; then
-        cat > "$video_cache_index" << 'EOF'
+        cache_needs_rebuild=true
+    else
+        # Check if cache header mentions hash algorithm
+        local cache_header=$(head -n 3 "$video_cache_index" 2>/dev/null | grep -E 'Format:|hash_algo')
+        if [[ -n "$cache_header" && ! "$cache_header" =~ "hash_algo=${HASH_ALGORITHM}" ]]; then
+            echo -e "${YELLOW}🔄 Video cache hash algorithm changed (${HASH_ALGORITHM}), rebuilding...${NC}" >&2
+            cache_needs_rebuild=true
+        elif [[ -z "$cache_header" ]]; then
+            # Old cache without hash algorithm marker - rebuild
+            echo -e "${YELLOW}🔄 Video cache missing hash algorithm marker, rebuilding...${NC}" >&2
+            cache_needs_rebuild=true
+        fi
+    fi
+    
+    if [[ "$cache_needs_rebuild" == "true" ]]; then
+        cat > "$video_cache_index" << EOF
 # Smart GIF Converter - Video Analysis Cache
-# Format: filename|filesize|filemtime|timestamp|analysis_data
+# Format: filename|filesize|filemtime|timestamp|analysis_data (hash_algo=${HASH_ALGORITHM})
 # analysis_data: checksum|size|fingerprint|perceptual_hash|duration|resolution
 EOF
     fi
@@ -9175,106 +9473,187 @@ video_compare_worker() {
     local progress=$4
     local lockfile=$5
     local lookup_dir=$6
+    local completed_state=$7
+    local progress_state=$8
+    local smart_cache=$9  # Multi-layer smart cache file
     
-    # Load lookup files
-    local filelist="$lookup_dir/files.txt"
-    local checksums_lookup="$lookup_dir/checksums.txt"
-    local hashes_lookup="$lookup_dir/visual_hashes.txt"
-    local fingerprints_lookup="$lookup_dir/fingerprints.txt"
-    local sizes_lookup="$lookup_dir/sizes.txt"
-    local durations_lookup="$lookup_dir/durations.txt"
-    local resolutions_lookup="$lookup_dir/resolutions.txt"
+    # OPTIMIZATION 2: Load ALL lookup data into memory once (avoid repeated disk I/O)
+    declare -A file_map checksum_map hash_map fingerprint_map size_map
     
-    local comparison_count=0
+    # Load file list
+    while IFS='|' read -r idx filepath; do
+        file_map["$idx"]="$filepath"
+    done < "$lookup_dir/files.txt"
+    
+    # Load checksums
+    while IFS='|' read -r filepath checksum; do
+        checksum_map["$filepath"]="$checksum"
+    done < "$lookup_dir/checksums.txt"
+    
+    # Load visual hashes
+    while IFS='|' read -r filepath hash; do
+        hash_map["$filepath"]="$hash"
+    done < "$lookup_dir/visual_hashes.txt"
+    
+    # Load fingerprints
+    while IFS='|' read -r filepath fp; do
+        fingerprint_map["$filepath"]="$fp"
+    done < "$lookup_dir/fingerprints.txt"
+    
+    # Load sizes
+    while IFS='|' read -r filepath size; do
+        size_map["$filepath"]="$size"
+    done < "$lookup_dir/sizes.txt"
+    
+    # OPTIMIZATION 3: Batch results in memory
+    local batch_results=()
+    local batch_completed=()
+    local batch_progress_state=()
+    local batch_count=0
+    local batch_size=100
+    local comparisons_done=0
     
     while true; do
-        # Atomic queue pop
+        # Atomic queue pop - use exec to avoid subshell
         local pair
-        (
-            flock -x 200
-            pair=$(head -n 1 "$queue" 2>/dev/null)
-            if [[ -n "$pair" ]]; then
-                sed -i '1d' "$queue"
-            fi
-        ) 200>"$lockfile"
+        exec 200>"$lockfile"
+        flock -x 200
+        pair=$(head -n 1 "$queue" 2>/dev/null)
+        if [[ -n "$pair" ]]; then
+            sed -i '1d' "$queue"
+        fi
+        flock -u 200
+        exec 200>&-
         
         [[ -z "$pair" ]] && break
         
-        ((comparison_count++))
-        
         local i=$(echo "$pair" | cut -d'|' -f1)
         local j=$(echo "$pair" | cut -d'|' -f2)
+        local pair_hash=$(echo "$pair" | cut -d'|' -f3)
         
-        # Get files from lookup
-        local file1=$(awk -F'|' -v k="$i" '$1==k{print $2; exit}' "$filelist")
-        local file2=$(awk -F'|' -v k="$j" '$1==k{print $2; exit}' "$filelist")
+        # Get files from in-memory map (OPTIMIZATION 2)
+        local file1="${file_map[$i]}"
+        local file2="${file_map[$j]}"
         
         [[ -z "$file1" || -z "$file2" ]] && continue
         
-        # Get checksums from lookup
-        local checksum1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$checksums_lookup")
-        local checksum2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$checksums_lookup")
+        # Get checksums from in-memory map (OPTIMIZATION 2)
+        local checksum1="${checksum_map[$file1]}"
+        local checksum2="${checksum_map[$file2]}"
+        
+        # Start timing for cache
+        local start_time=$(date +%s%N)
         
         local duplicate_found=""
-        
-        # DEBUG: Log first few comparisons
-        if [[ $worker_id -eq 0 && $comparison_count -le 3 ]]; then
-            echo "DEBUG Worker $worker_id (#$comparison_count): Comparing indices $i vs $j" >> "${results}.debug"
-            echo "  file1=$file1" >> "${results}.debug"
-            echo "  file2=$file2" >> "${results}.debug"
-            echo "  checksum1=${checksum1:-EMPTY}" >> "${results}.debug"
-            echo "  checksum2=${checksum2:-EMPTY}" >> "${results}.debug"
-            [[ "$checksum1" == "$checksum2" ]] && echo "  MATCH!" >> "${results}.debug" || echo "  No match" >> "${results}.debug"
-        fi
+        local cache_result="NOT_DUPLICATE"
         
         # Level 1: Checksum match
         if [[ -n "$checksum1" && -n "$checksum2" && "$checksum1" == "$checksum2" ]]; then
             duplicate_found="LEVEL1|100|$file1|$file2|Exact binary match"
-            echo "DEBUG: FOUND DUPLICATE Level1: $(basename "$file1") vs $(basename "$file2")" >> "${results}.debug"
+            cache_result="DUPLICATE_Level1"
         fi
         
-        # Level 2: Visual hash
+        # Level 2: Visual hash (OPTIMIZATION 2: in-memory lookup)
         if [[ -z "$duplicate_found" ]]; then
-            local hash1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$hashes_lookup")
-            local hash2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$hashes_lookup")
+            local hash1="${hash_map[$file1]}"
+            local hash2="${hash_map[$file2]}"
             if [[ -n "$hash1" && -n "$hash2" && "$hash1" == "$hash2" ]]; then
                 duplicate_found="LEVEL2|95|$file1|$file2|Identical visual fingerprint"
+                cache_result="DUPLICATE_Level2"
             fi
         fi
         
-        # Level 3: Content fingerprint
+        # Level 3: Content fingerprint (OPTIMIZATION 2: in-memory lookup)
         if [[ -z "$duplicate_found" ]]; then
-            local fp1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$fingerprints_lookup")
-            local fp2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$fingerprints_lookup")
+            local fp1="${fingerprint_map[$file1]}"
+            local fp2="${fingerprint_map[$file2]}"
             if [[ -n "$fp1" && -n "$fp2" && "$fp1" == "$fp2" ]]; then
-                local size1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$sizes_lookup")
-                local size2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$sizes_lookup")
-                size1=${size1:-0}
-                size2=${size2:-0}
+                local size1="${size_map[$file1]:-0}"
+                local size2="${size_map[$file2]:-0}"
                 if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
                     local size_ratio=$(( (size1 < size2 ? size1 * 100 / size2 : size2 * 100 / size1) ))
                     if [[ $size_ratio -ge 95 ]]; then
                         duplicate_found="LEVEL3|90|$file1|$file2|Identical metadata + similar size"
+                        cache_result="DUPLICATE_Level3"
                     fi
                 fi
             fi
         fi
         
-        # Write result atomically
-        if [[ -n "$duplicate_found" ]]; then
-            (
-                flock -x 200
-                echo "$duplicate_found" >> "$results"
-            ) 200>"$lockfile"
+        # Calculate comparison duration
+        local end_time=$(date +%s%N)
+        local duration_ms=$(( (end_time - start_time) / 1000000 ))
+        
+        # OPTIMIZATION 3: Batch results in memory
+        [[ -n "$duplicate_found" ]] && batch_results+=("$duplicate_found")
+        batch_completed+=("$pair_hash")
+        batch_progress_state+=("$pair_hash")
+        ((batch_count++))
+        ((comparisons_done++))
+        
+        # Update progress immediately for live progress bar (lightweight)
+        exec 200>"$lockfile"
+        flock -x 200
+        local current=$(cat "$progress")
+        echo $((current + 1)) > "$progress"
+        flock -u 200
+        exec 200>&-
+        
+        # Save to smart cache (still immediate for persistence)
+        if [[ -n "$smart_cache" && -n "$checksum1" && -n "$checksum2" ]]; then
+            save_comparison_to_cache "$smart_cache" "$pair_hash" "$checksum1" "$checksum2" "$cache_result" "$duration_ms"
         fi
         
-        # Update progress atomically
-        (
+        # Flush batch when full
+            if [[ $batch_count -ge $batch_size ]]; then
+            exec 200>"$lockfile"
             flock -x 200
-            local current=$(cat "$progress")
-            echo $((current + 1)) > "$progress"
-        ) 200>"$lockfile"
+            
+            # Write all batched results
+            for result in "${batch_results[@]}"; do
+                echo "$result" >> "$results"
+            done
+            
+            # Write all completed pairs
+            for pair in "${batch_completed[@]}"; do
+                echo "$pair" >> "$completed_state"
+            done
+            
+            for pair in "${batch_progress_state[@]}"; do
+                echo "$pair" >> "$progress_state"
+            done
+            
+            flock -u 200
+            exec 200>&-
+            
+            # Clear batches
+            batch_results=()
+            batch_completed=()
+            batch_progress_state=()
+            batch_count=0
+        fi
     done
+    
+    # Flush remaining batch at end
+    if [[ $batch_count -gt 0 ]]; then
+        exec 200>"$lockfile"
+        flock -x 200
+        
+        for result in "${batch_results[@]}"; do
+            echo "$result" >> "$results"
+        done
+        
+        for pair in "${batch_completed[@]}"; do
+            echo "$pair" >> "$completed_state"
+        done
+        
+        for pair in "${batch_progress_state[@]}"; do
+            echo "$pair" >> "$progress_state"
+        done
+        
+        flock -u 200
+        exec 200>&-
+    fi
 }
 
 # 🎬 AI-Powered Video Duplicate Detection with Multi-Level Analysis
@@ -9959,7 +10338,7 @@ META_EOF
         rm -f "$batch_hash_file" 2>/dev/null
     fi
     
-    echo -e "\n  ${GREEN}✓ Stage 1 complete${NC}"
+    echo -e "  ${GREEN}✓ Stage 1 complete${NC}"
     
     # DEBUG: Check results file
     local results_line_count=$(wc -l < "$results_file" 2>/dev/null || echo "0")
@@ -9969,21 +10348,52 @@ META_EOF
         echo -e "  ${YELLOW}This means all files failed analysis or cache lookup failed${NC}"
     fi
     
+    # SANITY CHECK: Verify checksums detect duplicates
+    echo -e "  ${CYAN}🔍 Sanity check: Validating checksum uniqueness...${NC}"
+    local duplicate_checksums=$(cut -d'|' -f2 "$results_file" | sort | uniq -d | wc -l)
+    if [[ $duplicate_checksums -gt 0 ]]; then
+        echo -e "  ${GREEN}✓ Found $duplicate_checksums duplicate checksum(s) - detection working!${NC}"
+        # Show sample duplicates
+        local sample_dup=$(cut -d'|' -f2 "$results_file" | sort | uniq -d | head -1)
+        if [[ -n "$sample_dup" ]]; then
+            echo -e "  ${GRAY}  Sample: Files with checksum ${sample_dup:0:16}...${NC}"
+            grep "|$sample_dup|" "$results_file" | cut -d'|' -f1 | while read fname; do
+                echo -e "  ${GRAY}    - $(basename "$fname")${NC}"
+            done | head -3
+        fi
+    else
+        echo -e "  ${YELLOW}⚠ No duplicate checksums found in Stage 1${NC}"
+        echo -e "  ${GRAY}  This could mean:${NC}"
+        echo -e "  ${GRAY}  - All files are truly unique${NC}"
+        echo -e "  ${GRAY}  - OR cache has stale/mixed hash algorithms${NC}"
+    fi
+    
     # Parse results and build comprehensive lookup tables
+    # Build a basename->fullpath mapping for results file entries
+    declare -A basename_to_fullpath
+    for fullpath in "${video_files_list[@]}"; do
+        local bn=$(basename "$fullpath")
+        basename_to_fullpath["$bn"]="$fullpath"
+    done
+    
     local processed_count=0
     declare -A format_counts
     
     while IFS='|' read -r filename checksum size fingerprint perceptual_hash duration resolution codec format; do
         [[ -z "$filename" || "$checksum" == "ERROR" || "$checksum" == "CORRUPTED" ]] && continue
         
-        video_checksums["$filename"]="$checksum"
-        video_sizes["$filename"]="$size"
-        video_fingerprints["$filename"]="$fingerprint"
-        video_visual_hashes["$filename"]="$perceptual_hash"
-        video_durations["$filename"]="$duration"
-        video_resolutions["$filename"]="$resolution"
-        video_codecs["$filename"]="$codec"
-        video_formats["$filename"]="$format"
+        # Map basename from results to full path from video_files_list
+        local fullpath="${basename_to_fullpath[$filename]}"
+        [[ -z "$fullpath" ]] && continue
+        
+        video_checksums["$fullpath"]="$checksum"
+        video_sizes["$fullpath"]="$size"
+        video_fingerprints["$fullpath"]="$fingerprint"
+        video_visual_hashes["$fullpath"]="$perceptual_hash"
+        video_durations["$fullpath"]="$duration"
+        video_resolutions["$fullpath"]="$resolution"
+        video_codecs["$fullpath"]="$codec"
+        video_formats["$fullpath"]="$format"
         
         # Extract bitrate and FPS from fingerprint (format: size:resolution:duration:bitrate:fps:codec:format)
         local bitrate=$(echo "$fingerprint" | cut -d':' -f4)
@@ -10056,7 +10466,6 @@ META_EOF
     mkdir -p "$lookup_dir" || { echo "ERROR: Failed to create $lookup_dir" >&2; return 1; }
     
     echo -e "  ${CYAN}⚡ Creating lookup tables for parallel workers...${NC}"
-    echo -e "  ${YELLOW}DEBUG: Lookup dir: $lookup_dir${NC}"
     
     # Write file list with indices
     local filelist="$lookup_dir/files.txt"
@@ -10065,78 +10474,126 @@ META_EOF
         echo "$i|${video_files_list[$i]}" >> "$filelist"
     done
     
-    # Write checksums lookup
+    # Write checksums lookup - use same keys as video_files_list
     local checksums_lookup="$lookup_dir/checksums.txt"
     : > "$checksums_lookup"
-    for file in "${!video_checksums[@]}"; do
-        echo "$file|${video_checksums["$file"]}" >> "$checksums_lookup"
+    for file in "${video_files_list[@]}"; do
+        local checksum="${video_checksums["$file"]}"
+        [[ -n "$checksum" ]] && echo "$file|$checksum" >> "$checksums_lookup"
     done
     
-    # Write visual hashes lookup
+    # Write visual hashes lookup - use same keys as video_files_list
     local hashes_lookup="$lookup_dir/visual_hashes.txt"
     : > "$hashes_lookup"
-    for file in "${!video_visual_hashes[@]}"; do
-        echo "$file|${video_visual_hashes["$file"]}" >> "$hashes_lookup"
+    for file in "${video_files_list[@]}"; do
+        local hash="${video_visual_hashes["$file"]}"
+        [[ -n "$hash" ]] && echo "$file|$hash" >> "$hashes_lookup"
     done
     
-    # Write fingerprints lookup
+    # Write fingerprints lookup - use same keys as video_files_list
     local fingerprints_lookup="$lookup_dir/fingerprints.txt"
     : > "$fingerprints_lookup"
-    for file in "${!video_fingerprints[@]}"; do
-        echo "$file|${video_fingerprints["$file"]}" >> "$fingerprints_lookup"
+    for file in "${video_files_list[@]}"; do
+        local fp="${video_fingerprints["$file"]}"
+        [[ -n "$fp" ]] && echo "$file|$fp" >> "$fingerprints_lookup"
     done
     
-    # Write sizes lookup
+    # Write sizes lookup - use same keys as video_files_list
     local sizes_lookup="$lookup_dir/sizes.txt"
     : > "$sizes_lookup"
-    for file in "${!video_sizes[@]}"; do
-        echo "$file|${video_sizes["$file"]}" >> "$sizes_lookup"
+    for file in "${video_files_list[@]}"; do
+        local size="${video_sizes["$file"]}"
+        [[ -n "$size" ]] && echo "$file|$size" >> "$sizes_lookup"
     done
     
-    # Write durations lookup
+    # Write durations lookup - use same keys as video_files_list
     local durations_lookup="$lookup_dir/durations.txt"
     : > "$durations_lookup"
-    for file in "${!video_durations[@]}"; do
-        echo "$file|${video_durations["$file"]}" >> "$durations_lookup"
+    for file in "${video_files_list[@]}"; do
+        local dur="${video_durations["$file"]}"
+        [[ -n "$dur" ]] && echo "$file|$dur" >> "$durations_lookup"
     done
     
-    # Write resolutions lookup
+    # Write resolutions lookup - use same keys as video_files_list
     local resolutions_lookup="$lookup_dir/resolutions.txt"
     : > "$resolutions_lookup"
-    for file in "${!video_resolutions[@]}"; do
-        echo "$file|${video_resolutions["$file"]}" >> "$resolutions_lookup"
+    for file in "${video_files_list[@]}"; do
+        local res="${video_resolutions["$file"]}"
+        [[ -n "$res" ]] && echo "$file|$res" >> "$resolutions_lookup"
     done
-    
-    # Verify lookup files were created
-    if [[ ! -d "$lookup_dir" ]]; then
-        echo -e "  ${RED}ERROR: Lookup directory not found: $lookup_dir${NC}" >&2
-        return 1
-    fi
-    if [[ ! -f "$checksums_lookup" ]]; then
-        echo -e "  ${RED}ERROR: Checksums lookup file not created${NC}" >&2
-        return 1
-    fi
-    
     echo -e "  ${GREEN}✓ Lookup tables ready${NC}"
-    echo -e "  ${YELLOW}DEBUG: Checksum entries: $(wc -l < "$checksums_lookup"), Sample:${NC}"
-    head -2 "$checksums_lookup" | while IFS='|' read -r path hash; do
-        local fname=$(basename "$path")
-        echo -e "    ${GRAY}$fname -> ${hash:0:16}...${NC}"
-    done
     
-    # Verify lookup dir still exists before workers start
-    if [[ ! -d "$lookup_dir" ]]; then
-        echo -e "  ${RED}ERROR: Lookup directory disappeared before workers started!${NC}" >&2
-        ls -la "$results_dir" >&2
-        return 1
+    # 💡 Initialize Multi-Layer Smart Comparison Cache
+    echo -e "  ${CYAN}💡 Initializing smart comparison cache system...${NC}"
+    printf "  ${GRAY}  └─ Validating cache integrity...${NC}"
+    local video_comparison_cache=$(init_comparison_cache "video")
+    validate_and_repair_comparison_cache "$video_comparison_cache" "video"
+    printf "\r\033[K"
+    echo -e "  ${GREEN}  ✓ Cache validated${NC}"
+    
+    # Layer 1: Load cache into memory (in-memory hash table)
+    declare -A completed_pairs_cache
+    printf "  ${CYAN}  └─ Loading smart cache into memory...${NC}"
+    local cache_loaded=$(load_comparison_cache "$video_comparison_cache" completed_pairs_cache)
+    printf "\r\033[K"
+    [[ $cache_loaded -gt 0 ]] && echo -e "  ${GREEN}  ✓ Loaded $cache_loaded cached pairs from smart cache${NC}"
+    
+    # Layer 2: Legacy state file for backward compatibility
+    local progress_state_file="$HOME/.smart-gif-converter/video_comparison_state.txt"
+    mkdir -p "$(dirname "$progress_state_file")"
+    
+    # Merge legacy state file into memory cache
+    declare -A completed_pairs
+    local pairs_resumed=0
+    if [[ -f "$progress_state_file" ]]; then
+        printf "  ${CYAN}  └─ Loading legacy state file...${NC}"
+        while IFS= read -r pair_hash; do
+            [[ -n "$pair_hash" && "$pair_hash" != "#"* ]] && completed_pairs["$pair_hash"]=1 && ((pairs_resumed++))
+        done < "$progress_state_file"
+        printf "\r\033[K"
+        [[ $pairs_resumed -gt 0 ]] && echo -e "  ${GREEN}  ✓ Loaded $pairs_resumed cached pairs from legacy file${NC}"
     fi
+    
+    # Merge both caches (Layer 1 + Layer 2)
+    printf "  ${CYAN}  └─ Merging cache layers...${NC}"
+    for pair_hash in "${!completed_pairs_cache[@]}"; do
+        completed_pairs["$pair_hash"]=1
+    done
+    printf "\r\033[K"
+    
+    local total_cached=$((cache_loaded + pairs_resumed))
+    if [[ $total_cached -gt 0 ]]; then
+        echo -e "  ${GREEN}↻ Smart cache ready: ${BOLD}$total_cached${NC}${GREEN} pairs available (skips comparisons)${NC}"
+        local cache_stats=$(get_comparison_cache_stats "$video_comparison_cache" "video")
+        [[ -n "$cache_stats" ]] && echo -e "  ${GRAY}    $cache_stats${NC}"
+    else
+        echo -e "  ${CYAN}  ✓ Fresh cache initialized (no previous comparisons)${NC}"
+    fi
+    
+    # Note: Cache is dynamic and survives file additions!
+    # Note: No collection hash validation - cache is dynamic and survives file additions!
     
     # Generate comparison queue (all pairs to compare)
     local queue_file="$results_dir/queue.txt"
-    echo -e "  ${CYAN}⚡ Generating comparison queue...${NC}"
+    local completed_state_file="$results_dir/completed_pairs.txt"
+    local estimated_pairs=$(( total_files * (total_files - 1) / 2 ))
+    echo -e "  ${CYAN}⚡ Generating comparison queue (${BOLD}~$estimated_pairs${NC}${CYAN} potential pairs)...${NC}"
     : > "$queue_file"
+    : > "$completed_state_file"
+    
+    local pairs_skipped=0
+    local pairs_generated=0
+    local pairs_exact_match=0
+    local last_progress_pct=0
     
     for ((i=0; i<total_files; i++)); do
+        # Show progress every 5%
+        local progress_pct=$((i * 100 / total_files))
+        if [[ $progress_pct -ge $((last_progress_pct + 5)) ]]; then
+            printf "\r  ${CYAN}  Building queue: ${BOLD}%3d%%${NC} ${GRAY}(file %d/%d, %d pairs generated, %d cached)${NC}" "$progress_pct" "$i" "$total_files" "$pairs_generated" "$pairs_skipped"
+            last_progress_pct=$progress_pct
+        fi
+        
         local file1="${video_files_list[$i]}"
         [[ ! -f "$file1" ]] && continue
         local checksum1="${video_checksums["$file1"]}"
@@ -10148,140 +10605,53 @@ META_EOF
             local checksum2="${video_checksums["$file2"]}"
             [[ -z "$checksum2" ]] && continue
             
-            # Write pair to queue
-            echo "$i|$j" >> "$queue_file"
+            # OPTIMIZATION 1: Skip pairs with identical checksums (exact duplicates already found in Stage 1)
+            if [[ "$checksum1" == "$checksum2" ]]; then
+                ((pairs_exact_match++))
+                continue
+            fi
+            
+            # Create deterministic pair hash using concatenated checksums
+            # OPTIMIZATION: Use checksums directly instead of re-hashing
+            local pair_hash
+            if [[ "$checksum1" < "$checksum2" ]]; then
+                pair_hash="${checksum1}_${checksum2}"
+            else
+                pair_hash="${checksum2}_${checksum1}"
+            fi
+            
+            # Skip if already completed
+            if [[ -n "${completed_pairs[$pair_hash]:-}" ]]; then
+                ((pairs_skipped++))
+                echo "$pair_hash" >> "$completed_state_file"
+                continue
+            fi
+            
+            # Write pair to queue with hash
+            echo "$i|$j|$pair_hash" >> "$queue_file"
+            ((pairs_generated++))
         done
     done
+    printf "\r\033[K"
     
     local total_queued=$(wc -l < "$queue_file")
-    echo -e "  ${GREEN}✓ Queue ready: $total_queued comparisons${NC}"
-    echo -e "  ${MAGENTA}🚀 Starting $max_workers parallel workers...${NC}"
+    [[ $pairs_skipped -gt 0 ]] && echo -e "  ${GREEN}✓ Skipped $pairs_skipped already completed pairs${NC}"
+    [[ $pairs_exact_match -gt 0 ]] && echo -e "  ${GREEN}✓ Skipped $pairs_exact_match exact checksum matches (Stage 1 duplicates)${NC}"
+    echo -e "  ${GREEN}✓ Queue ready: $total_queued new comparisons${NC}"
+    [[ $total_queued -eq 0 ]] && echo -e "  ${GREEN}✓ All comparisons complete!${NC}" && return 0
     
-    # Call top-level worker function (defined outside to allow export)
-    # Inline worker definition removed - using video_compare_worker() instead
-    if false; then  # OLD INLINE WORKER - DISABLED
-        local worker_id=$1
-        local queue=$2
-        local results=$3
-        local progress=$4
-        local lockfile=$5
-        local lookup_dir=$6
-        
-        # Load lookup files into worker memory once
-        local filelist="$lookup_dir/files.txt"
-        local checksums_lookup="$lookup_dir/checksums.txt"
-        local hashes_lookup="$lookup_dir/visual_hashes.txt"
-        local fingerprints_lookup="$lookup_dir/fingerprints.txt"
-        local sizes_lookup="$lookup_dir/sizes.txt"
-        local durations_lookup="$lookup_dir/durations.txt"
-        local resolutions_lookup="$lookup_dir/resolutions.txt"
-        
-        local comparison_count=0
-        
-        while true; do
-            # Atomic queue pop (get next pair)
-            local pair
-            (
-                flock -x 200
-                pair=$(head -n 1 "$queue" 2>/dev/null)
-                if [[ -n "$pair" ]]; then
-                    sed -i '1d' "$queue"
-                fi
-            ) 200>"$lockfile"
-            
-            [[ -z "$pair" ]] && break
-            
-            ((comparison_count++))
-            
-            local i=$(echo "$pair" | cut -d'|' -f1)
-            local j=$(echo "$pair" | cut -d'|' -f2)
-            
-            # Get files from lookup (exact index match)
-            local file1=$(awk -F'|' -v k="$i" '$1==k{print $2; exit}' "$filelist")
-            local file2=$(awk -F'|' -v k="$j" '$1==k{print $2; exit}' "$filelist")
-            
-            [[ -z "$file1" || -z "$file2" ]] && continue
-            
-            # Get checksums from lookup (exact path match)
-            local checksum1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$checksums_lookup")
-            local checksum2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$checksums_lookup")
-            
-            local duplicate_found=""
-            
-            # DEBUG: Log first few comparisons from worker 0
-            if [[ $worker_id -eq 0 && $comparison_count -le 3 ]]; then
-                echo "DEBUG Worker $worker_id (#$comparison_count): Comparing indices $i vs $j" >> "${results}.debug"
-                echo "  file1=$file1" >> "${results}.debug"
-                echo "  file2=$file2" >> "${results}.debug"
-                echo "  checksum1=${checksum1:-EMPTY}" >> "${results}.debug"
-                echo "  checksum2=${checksum2:-EMPTY}" >> "${results}.debug"
-                [[ "$checksum1" == "$checksum2" ]] && echo "  MATCH!" >> "${results}.debug" || echo "  No match" >> "${results}.debug"
-            fi
-            
-            # Level 1: MD5 match
-            if [[ -n "$checksum1" && -n "$checksum2" && "$checksum1" == "$checksum2" ]]; then
-                duplicate_found="LEVEL1|100|$file1|$file2|Exact binary match"
-                echo "DEBUG: FOUND DUPLICATE Level1: $(basename "$file1") vs $(basename "$file2")" >> "${results}.debug"
-            fi
-            
-            # Level 2: Visual hash
-            if [[ -z "$duplicate_found" ]]; then
-                local hash1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$hashes_lookup")
-                local hash2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$hashes_lookup")
-                if [[ -n "$hash1" && -n "$hash2" && "$hash1" == "$hash2" ]]; then
-                    duplicate_found="LEVEL2|95|$file1|$file2|Identical visual fingerprint"
-                fi
-            fi
-            
-            # Level 3: Content fingerprint
-            if [[ -z "$duplicate_found" ]]; then
-                local fp1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$fingerprints_lookup")
-                local fp2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$fingerprints_lookup")
-                if [[ -n "$fp1" && -n "$fp2" && "$fp1" == "$fp2" ]]; then
-                    local size1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$sizes_lookup")
-                    local size2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$sizes_lookup")
-                    size1=${size1:-0}
-                    size2=${size2:-0}
-                    if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
-                        local size_ratio=$(( (size1 < size2 ? size1 * 100 / size2 : size2 * 100 / size1) ))
-                        if [[ $size_ratio -ge 95 ]]; then
-                            duplicate_found="LEVEL3|90|$file1|$file2|Identical metadata + similar size"
-                        fi
-                    fi
-                fi
-            fi
-            
-            # Write result atomically
-            if [[ -n "$duplicate_found" ]]; then
-                (
-                    flock -x 200
-                    echo "$duplicate_found" >> "$results"
-                ) 200>"$lockfile"
-            fi
-            
-            # Update progress atomically
-            (
-                flock -x 200
-                local current=$(cat "$progress")
-                echo $((current + 1)) > "$progress"
-            ) 200>"$lockfile"
-        done
-    fi  # End of disabled inline worker
-    
-    # Export top-level worker function
+    # Export worker function and cache functions
     export -f video_compare_worker
+    export -f save_comparison_to_cache
     
-    # Launch workers in background using top-level function
-    echo -e "  ${YELLOW}DEBUG: About to launch $max_workers workers...${NC}"
-    echo -e "  ${YELLOW}DEBUG: Lookup dir before launch: $lookup_dir${NC}"
-    [[ -d "$lookup_dir" ]] && echo -e "  ${GREEN}DEBUG: Lookup dir EXISTS${NC}" || echo -e "  ${RED}DEBUG: Lookup dir MISSING!${NC}"
-    
+    # Launch workers with smart cache
     local worker_pids=()
     for ((w=0; w<max_workers; w++)); do
-        video_compare_worker $w "$queue_file" "$duplicates_file" "$progress_file" "$lock_file" "$lookup_dir" &
+        video_compare_worker $w "$queue_file" "$duplicates_file" "$progress_file" "$lock_file" "$lookup_dir" "$completed_state_file" "$progress_state_file" "$video_comparison_cache" &
         worker_pids+=($!)
     done
-    echo -e "  ${GREEN}DEBUG: Launched ${#worker_pids[@]} worker PIDs: ${worker_pids[*]}${NC}"
+    
+    echo -e "  ${MAGENTA}🚀 Started $max_workers parallel workers...${NC}"
     
     # Monitor progress
     echo -e "  ${CYAN}Comparing pairs with $max_workers parallel workers...${NC}"
@@ -10301,7 +10671,10 @@ META_EOF
         
         # Show progress with worker count
         if [[ $current_progress -ne $last_progress ]]; then
-            local progress_pct=$((current_progress * 100 / total_queued))
+            local progress_pct=0
+            if [[ $total_queued -gt 0 ]]; then
+                progress_pct=$((current_progress * 100 / total_queued))
+            fi
             local filled=$((progress_pct * 30 / 100))
             local empty=$((30 - filled))
             
@@ -10332,14 +10705,14 @@ META_EOF
     
     echo -e "  ${GREEN}✓ Parallel comparison complete (Levels 1-3)${NC}"
     
-    # Show debug output
-    if [[ -f "${duplicates_file}.debug" ]]; then
-        echo -e "  ${YELLOW}DEBUG: Worker trace (first 20 lines):${NC}"
-        head -20 "${duplicates_file}.debug" | sed 's/^/    /'
-        echo -e "  ${YELLOW}DEBUG: Full trace in: ${duplicates_file}.debug${NC}"
-    fi
+    # 📊 Display smart cache statistics
+    local final_cache_stats=$(get_comparison_cache_stats "$video_comparison_cache" "video")
+    echo -e "  ${CYAN}💾 Smart cache: $final_cache_stats${NC}"
     
-    # Clean up parallel framework lookup files
+    # 🧺 Optimize cache if needed (background)
+    ( cleanup_comparison_cache "$video_comparison_cache" "video" ) &
+    
+    # Clean up temporary files
     rm -rf "$lookup_dir" 2>/dev/null
     
     # SEQUENTIAL CODE - DISABLED (parallel workers are working now!)
@@ -12650,6 +13023,65 @@ PARALLEL_EOF
     echo -e "  ${BLUE}🗄️ Cache updated: $final_cache_stats${NC}"
     echo -e "  ${GRAY}Used ${BOLD}$AI_DUPLICATE_THREADS threads${NC} ${GRAY}for parallel processing${NC}"
     
+    # 💾 Initialize Multi-Layer Smart Cache for GIF comparison
+    echo -e "  ${CYAN}💾 Initializing multi-layer smart comparison cache...${NC}"
+    printf "  ${GRAY}  └─ Validating GIF cache integrity...${NC}"
+    local gif_smart_cache_file=""
+    if init_comparison_cache "gif" 2>/dev/null; then
+        gif_smart_cache_file="$HOME/.smart-gif-converter/gif_comparison_cache.db"
+        printf "\r\033[K"
+        echo -e "  ${GREEN}  ✓ GIF cache validated${NC}"
+        
+        # Check cache health
+        printf "  ${CYAN}  └─ Loading GIF cache entries...${NC}"
+        local cache_header=$(head -n 10 "$gif_smart_cache_file" 2>/dev/null | grep -E "^# (Created|Last|Entries):" || true)
+        local cache_created=$(echo "$cache_header" | grep "Created:" | cut -d':' -f2- | xargs)
+        local cache_modified=$(echo "$cache_header" | grep "Last modified:" | cut -d':' -f2- | xargs)
+        local cache_entries=$(echo "$cache_header" | grep "Entries:" | awk '{print $3}')
+        printf "\r\033[K"
+        
+        if [[ -n "$cache_entries" && $cache_entries -gt 0 ]]; then
+            echo -e "  ${GREEN}↻ Smart cache ready: ${BOLD}$cache_entries${NC}${GREEN} cached comparisons available${NC}"
+            [[ -n "$cache_created" ]] && echo -e "  ${GRAY}    ├─ Cache created: $cache_created${NC}"
+            [[ -n "$cache_modified" ]] && echo -e "  ${GRAY}    └─ Last updated: $cache_modified${NC}"
+        else
+            echo -e "  ${CYAN}  ✓ Fresh cache initialized (no previous comparisons)${NC}"
+        fi
+        
+        # Show cache statistics if available
+        local cache_stats=$(get_comparison_cache_stats "gif" 2>/dev/null || echo "")
+        if [[ -n "$cache_stats" ]]; then
+            echo -e "  ${BLUE}📊 Cache Health:${NC}"
+            echo "$cache_stats" | while IFS= read -r stat_line; do
+                [[ -n "$stat_line" ]] && echo -e "  ${GRAY}    $stat_line${NC}"
+            done
+        fi
+    else
+        printf "\r\033[K"
+        echo -e "  ${YELLOW}  ⚠ Smart cache initialization failed - continuing without cache${NC}"
+    fi
+    echo ""
+    
+    # SANITY CHECK: Verify checksums detect duplicates
+    echo -e "  ${CYAN}🔍 Sanity check: Validating checksum uniqueness...${NC}"
+    local duplicate_checksums=$(cut -d'|' -f2 "$results_file" | grep -v -E '^(ERROR|UNREADABLE|TIMEOUT|EMPTY|AI_)' | sort | uniq -d | wc -l)
+    if [[ $duplicate_checksums -gt 0 ]]; then
+        echo -e "  ${GREEN}✓ Found $duplicate_checksums duplicate checksum(s) - detection working!${NC}"
+        # Show sample duplicates
+        local sample_dup=$(cut -d'|' -f2 "$results_file" | grep -v -E '^(ERROR|UNREADABLE|TIMEOUT|EMPTY|AI_)' | sort | uniq -d | head -1)
+        if [[ -n "$sample_dup" ]]; then
+            echo -e "  ${GRAY}  Sample: Files with checksum ${sample_dup:0:16}...${NC}"
+            grep "|$sample_dup|" "$results_file" | cut -d'|' -f1 | while read fname; do
+                echo -e "  ${GRAY}    - $(basename "$fname")${NC}"
+            done | head -3
+        fi
+    else
+        echo -e "  ${YELLOW}⚠ No duplicate checksums found in Stage 1${NC}"
+        echo -e "  ${GRAY}  This could mean:${NC}"
+        echo -e "  ${GRAY}  - All files are truly unique${NC}"
+        echo -e "  ${GRAY}  - OR cache has stale/mixed hash algorithms${NC}"
+    fi
+    
     echo -e "  ${BLUE}${BOLD}🔍 Stage 2: Multi-level duplicate detection...${NC}"
     echo -e "  ${CYAN}Running 6-layer analysis system:${NC}"
     echo -e "    ${GRAY}├─ Level 1: Exact Binary Match (MD5) ${GREEN}⚡ FAST${NC}${GRAY}${NC}"
@@ -12969,24 +13401,43 @@ PARALLEL_EOF
     done
     
     echo -e "  ${GREEN}✓ GIF lookup tables ready${NC}"
-    echo -e "  ${YELLOW}DEBUG: GIF Checksum entries: $(wc -l < "$gif_checksums_lookup"), Sample:${NC}"
-    head -2 "$gif_checksums_lookup" | while IFS='|' read -r path hash; do
-        local fname=$(basename "$path")
-        echo -e "    ${GRAY}$fname -> ${hash:0:16}...${NC}"
-    done
+    
+    # 💾 Persistent progress tracking using xxhash (dynamic - survives file additions)
+    local gif_progress_state_file="$HOME/.smart-gif-converter/gif_comparison_state.txt"
+    mkdir -p "$(dirname "$gif_progress_state_file")"
+    
+    # Load completed pairs (dynamic - uses pair hashes, not collection hash)
+    declare -A gif_completed_pairs
+    local gif_pairs_resumed=0
+    if [[ -f "$gif_progress_state_file" ]]; then
+        while IFS= read -r pair_hash; do
+            [[ -n "$pair_hash" && "$pair_hash" != "#"* ]] && gif_completed_pairs["$pair_hash"]=1 && ((gif_pairs_resumed++))
+        done < "$gif_progress_state_file"
+        [[ $gif_pairs_resumed -gt 0 ]] && echo -e "  ${GREEN}↻ Resuming: $gif_pairs_resumed pairs already compared (dynamic cache)${NC}"
+    fi
+    
+    # Note: No collection hash validation - cache is dynamic and survives file additions!
     
     # Generate SMART comparison queue using cluster intersection
     local gif_queue_file="$gif_results_dir/queue.txt"
-    echo -e "  ${MAGENTA}🧠 Generating optimized comparison queue using cluster intersection...${NC}"
+    local gif_completed_state_file="$gif_results_dir/completed_pairs.txt"
+    local estimated_gif_pairs=$(( total_gifs * (total_gifs - 1) / 2 ))
+    echo -e "  ${MAGENTA}🧠 Generating optimized comparison queue (smart clustering from ${BOLD}~$estimated_gif_pairs${NC}${MAGENTA} potential pairs)...${NC}"
     : > "$gif_queue_file"
+    : > "$gif_completed_state_file"
     
     declare -A queued_pairs  # Track already queued pairs to avoid duplicates
     local pairs_from_visual=0
     local pairs_from_size=0
     local pairs_from_frames=0
     local pairs_from_duration=0
+    local gif_pairs_skipped=0
+    local gif_pairs_exact_match=0
+    local strategies_completed=0
+    local total_strategies=3
     
     # Strategy 1: Visual hash clusters (instant exact duplicates)
+    printf "  ${CYAN}  \u2514\u2500 Strategy 1/3: Visual hash clustering...${NC}"
     for vhash in "${!visual_hash_map[@]}"; do
         local cluster_members=(${visual_hash_map[$vhash]})
         [[ ${#cluster_members[@]} -lt 2 ]] && continue
@@ -13009,15 +13460,47 @@ PARALLEL_EOF
                         fi
                     fi
                     
-                    echo "$idx1|$idx2" >> "$gif_queue_file"
+                    # Create deterministic pair hash using concatenated checksums
+                    # OPTIMIZATION: Use checksums directly instead of re-hashing
+                    local checksum1="${gif_checksums["$file1"]}"
+                    local checksum2="${gif_checksums["$file2"]}"
+                    
+                    # OPTIMIZATION 1: Skip pairs with identical checksums (exact duplicates already found in Stage 1)
+                    if [[ "$checksum1" == "$checksum2" ]]; then
+                        ((gif_pairs_exact_match++))
+                        continue
+                    fi
+                    
+                    local pair_hash
+                    if [[ "$checksum1" < "$checksum2" ]]; then
+                        pair_hash="${checksum1}_${checksum2}"
+                    else
+                        pair_hash="${checksum2}_${checksum1}"
+                    fi
+                    
+                    # Validate pair_hash before using as array subscript
+                    [[ -z "$pair_hash" || "$pair_hash" =~ [^a-zA-Z0-9_] ]] && continue
+                    
+                    # Skip if already completed
+                    if [[ -n "${gif_completed_pairs[$pair_hash]:-}" ]]; then
+                        ((gif_pairs_skipped++))
+                        echo "$pair_hash" >> "$gif_completed_state_file"
+                        queued_pairs["$pair_key"]=1
+                        continue
+                    fi
+                    
+                    echo "$idx1|$idx2|$pair_hash" >> "$gif_queue_file"
                     queued_pairs["$pair_key"]=1
                     ((pairs_from_visual++))
                 fi
             done
         done
     done
+    printf "\r\033[K"
+    echo -e "  ${GREEN}  ✓ Strategy 1: Found $pairs_from_visual candidate pairs from visual hashes${NC}"
     
     # Strategy 2: Size cluster intersection with frame/duration validation
+    printf "  ${CYAN}  └─ Strategy 2/3: Size-based clustering...${NC}"
     for size_bucket in "${!size_clusters[@]}"; do
         local size_members=(${size_clusters[$size_bucket]})
         [[ ${#size_members[@]} -lt 2 ]] && continue
@@ -13059,15 +13542,47 @@ PARALLEL_EOF
                         fi
                     fi
                     
-                    echo "$idx1|$idx2" >> "$gif_queue_file"
+                    # Create deterministic pair hash using concatenated checksums
+                    # OPTIMIZATION: Use checksums directly instead of re-hashing
+                    local checksum1="${gif_checksums["$file1"]}"
+                    local checksum2="${gif_checksums["$file2"]}"
+                    
+                    # OPTIMIZATION 1: Skip pairs with identical checksums
+                    if [[ "$checksum1" == "$checksum2" ]]; then
+                        ((gif_pairs_exact_match++))
+                        continue
+                    fi
+                    
+                    local pair_hash
+                    if [[ "$checksum1" < "$checksum2" ]]; then
+                        pair_hash="${checksum1}_${checksum2}"
+                    else
+                        pair_hash="${checksum2}_${checksum1}"
+                    fi
+                    
+                    # Validate pair_hash before using as array subscript
+                    [[ -z "$pair_hash" || "$pair_hash" =~ [^a-zA-Z0-9_] ]] && continue
+                    
+                    # Skip if already completed
+                    if [[ -n "${gif_completed_pairs[$pair_hash]:-}" ]]; then
+                        ((gif_pairs_skipped++))
+                        echo "$pair_hash" >> "$gif_completed_state_file"
+                        queued_pairs["$pair_key"]=1
+                        continue
+                    fi
+                    
+                    echo "$idx1|$idx2|$pair_hash" >> "$gif_queue_file"
                     queued_pairs["$pair_key"]=1
                     ((pairs_from_size++))
                 fi
             done
         done
     done
+    printf "\r\033[K"
+    echo -e "  ${GREEN}  ✓ Strategy 2: Found $pairs_from_size candidate pairs from size clusters${NC}"
     
     # Strategy 3: Frame cluster candidates (for files in same frame range)
+    printf "  ${CYAN}  └─ Strategy 3/3: Frame-based clustering...${NC}"
     for frame_bucket in "${!frame_clusters[@]}"; do
         local frame_members=(${frame_clusters[$frame_bucket]})
         [[ ${#frame_members[@]} -lt 2 ]] && continue
@@ -13099,12 +13614,43 @@ PARALLEL_EOF
                     fi
                 fi
                 
-                echo "$idx1|$idx2" >> "$gif_queue_file"
+                # Create deterministic pair hash using concatenated checksums
+                # OPTIMIZATION: Use checksums directly instead of re-hashing
+                local checksum1="${gif_checksums["$file1"]}"
+                local checksum2="${gif_checksums["$file2"]}"
+                
+                # OPTIMIZATION 1: Skip pairs with identical checksums
+                if [[ "$checksum1" == "$checksum2" ]]; then
+                    ((gif_pairs_exact_match++))
+                    continue
+                fi
+                
+                local pair_hash
+                if [[ "$checksum1" < "$checksum2" ]]; then
+                    pair_hash="${checksum1}_${checksum2}"
+                else
+                    pair_hash="${checksum2}_${checksum1}"
+                fi
+                
+                # Validate pair_hash before using as array subscript
+                [[ -z "$pair_hash" || "$pair_hash" =~ [^a-zA-Z0-9_] ]] && continue
+                
+                # Skip if already completed
+                if [[ -n "${gif_completed_pairs[$pair_hash]:-}" ]]; then
+                    ((gif_pairs_skipped++))
+                    echo "$pair_hash" >> "$gif_completed_state_file"
+                    queued_pairs["$pair_key"]=1
+                    continue
+                fi
+                
+                echo "$idx1|$idx2|$pair_hash" >> "$gif_queue_file"
                 queued_pairs["$pair_key"]=1
                 ((pairs_from_frames++))
             done
         done
     done
+    printf "\r\033[K"
+    echo -e "  ${GREEN}  ✓ Strategy 3: Found $pairs_from_frames candidate pairs from frame clusters${NC}"
     
     local gif_total_queued=$(wc -l < "$gif_queue_file")
     local original_pairs=$(( (total_gifs * (total_gifs - 1)) / 2 ))
@@ -13128,7 +13674,12 @@ PARALLEL_EOF
         return 0
     fi
     
-    local reduction_pct=$(( (original_pairs - gif_total_queued) * 100 / original_pairs ))
+    [[ $gif_pairs_skipped -gt 0 ]] && echo -e "  ${GREEN}✓ Skipped $gif_pairs_skipped already completed pairs${NC}"
+    [[ $gif_pairs_exact_match -gt 0 ]] && echo -e "  ${GREEN}✓ Skipped $gif_pairs_exact_match exact checksum matches (Stage 1 duplicates)${NC}"
+    echo -e "  ${GREEN}✓ Queue ready: $gif_total_queued new comparisons${NC}"
+    [[ $gif_total_queued -eq 0 && $gif_pairs_skipped -gt 0 ]] && echo -e "  ${GREEN}✓ All comparisons complete!${NC}" && return 0
+    
+    local reduction_pct=$(( (original_pairs - gif_total_queued - gif_pairs_skipped) * 100 / original_pairs ))
     
     echo -e "  ${GREEN}${BOLD}✓ REVOLUTIONARY SPEEDUP ACHIEVED!${NC}"
     echo -e "    ${CYAN}Original all-pairs: ${BOLD}$original_pairs${NC}${CYAN} comparisons${NC}"
@@ -13137,9 +13688,8 @@ PARALLEL_EOF
     echo -e "    ${GRAY}├─ From visual hash: $pairs_from_visual pairs${NC}"
     echo -e "    ${GRAY}├─ From size clusters: $pairs_from_size pairs${NC}"
     echo -e "    ${GRAY}└─ From frame clusters: $pairs_from_frames pairs${NC}"
-    echo -e "  ${MAGENTA}🚀 Starting $max_workers parallel workers for GIFs...${NC}"
     
-    # Worker function for parallel GIF comparison (uses file-based lookups)
+    # Worker function for parallel GIF comparison
     compare_gif_worker() {
         local worker_id=$1
         local queue=$2
@@ -13147,65 +13697,96 @@ PARALLEL_EOF
         local progress=$4
         local lockfile=$5
         local lookup_dir=$6
+        local completed_state=$7
+        local progress_state=$8
+        local smart_cache=$9
         
-        # Load lookup files
-        local filelist="$lookup_dir/files.txt"
-        local checksums_lookup="$lookup_dir/checksums.txt"
-        local hashes_lookup="$lookup_dir/visual_hashes.txt"
-        local fingerprints_lookup="$lookup_dir/fingerprints.txt"
-        local sizes_lookup="$lookup_dir/sizes.txt"
-        local frames_lookup="$lookup_dir/frame_counts.txt"
-        local durations_lookup="$lookup_dir/durations.txt"
+        # OPTIMIZATION 2: Load ALL lookup data into memory once
+        declare -A gif_file_map gif_checksum_map gif_hash_map gif_fingerprint_map gif_size_map gif_frame_map gif_dur_map
         
-        local comparison_count=0
+        while IFS='|' read -r idx filepath; do
+            gif_file_map["$idx"]="$filepath"
+        done < "$lookup_dir/files.txt"
+        
+        while IFS='|' read -r filepath checksum; do
+            gif_checksum_map["$filepath"]="$checksum"
+        done < "$lookup_dir/checksums.txt"
+        
+        while IFS='|' read -r filepath hash; do
+            gif_hash_map["$filepath"]="$hash"
+        done < "$lookup_dir/visual_hashes.txt"
+        
+        while IFS='|' read -r filepath fp; do
+            gif_fingerprint_map["$filepath"]="$fp"
+        done < "$lookup_dir/fingerprints.txt"
+        
+        while IFS='|' read -r filepath size; do
+            gif_size_map["$filepath"]="$size"
+        done < "$lookup_dir/sizes.txt"
+        
+        while IFS='|' read -r filepath frames; do
+            gif_frame_map["$filepath"]="$frames"
+        done < "$lookup_dir/frame_counts.txt"
+        
+        while IFS='|' read -r filepath dur; do
+            gif_dur_map["$filepath"]="$dur"
+        done < "$lookup_dir/durations.txt"
+        
+        # OPTIMIZATION 3: Batch results
+        local gif_batch_results=()
+        local gif_batch_completed=()
+        local gif_batch_progress_state=()
+        local gif_batch_count=0
+        local gif_batch_size=100
         
         while true; do
-            # Atomic queue pop
+            # Atomic queue pop - use exec to avoid subshell
             local pair
-            (
-                flock -x 200
-                pair=$(head -n 1 "$queue" 2>/dev/null)
-                if [[ -n "$pair" ]]; then
-                    sed -i '1d' "$queue"
-                fi
-            ) 200>"$lockfile"
+            exec 200>"$lockfile"
+            flock -x 200
+            pair=$(head -n 1 "$queue" 2>/dev/null)
+            if [[ -n "$pair" ]]; then
+                sed -i '1d' "$queue"
+            fi
+            flock -u 200
+            exec 200>&-
             
             [[ -z "$pair" ]] && break
             
+            local start_time=$(date +%s%3N)  # Millisecond precision
+            local cache_result="NOT_DUPLICATE"
+            
             local i=$(echo "$pair" | cut -d'|' -f1)
             local j=$(echo "$pair" | cut -d'|' -f2)
+            local pair_hash=$(echo "$pair" | cut -d'|' -f3)
             
-            # Get files from lookup (exact index match)
-            local file1=$(awk -F'|' -v k="$i" '$1==k{print $2; exit}' "$filelist")
-            local file2=$(awk -F'|' -v k="$j" '$1==k{print $2; exit}' "$filelist")
+            # OPTIMIZATION 2: Get files from in-memory map
+            local file1="${gif_file_map[$i]}"
+            local file2="${gif_file_map[$j]}"
             
             [[ -z "$file1" || -z "$file2" ]] && continue
             
-            # Get file properties for pre-filtering (exact path match)
-            local size1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$sizes_lookup")
-            local size2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$sizes_lookup")
-            local frame1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$frames_lookup")
-            local frame2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$frames_lookup")
-            local dur1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$durations_lookup")
-            local dur2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$durations_lookup")
-            
-            size1=${size1:-0}
-            size2=${size2:-0}
-            frame1=${frame1:-0}
-            frame2=${frame2:-0}
-            dur1=${dur1:-0}
-            dur2=${dur2:-0}
+            # OPTIMIZATION 2: Get file properties from in-memory maps
+            local size1="${gif_size_map[$file1]:-0}"
+            local size2="${gif_size_map[$file2]:-0}"
+            local frame1="${gif_frame_map[$file1]:-0}"
+            local frame2="${gif_frame_map[$file2]:-0}"
+            local dur1="${gif_dur_map[$file1]:-0}"
+            local dur2="${gif_dur_map[$file2]:-0}"
             
             # PRE-FILTER 1: Size difference > 80% = definitely not duplicates
             if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
                 local size_diff_pct=$(( (size1 > size2 ? size1 - size2 : size2 - size1) * 100 / (size1 > size2 ? size1 : size2) ))
                 if [[ $size_diff_pct -gt 80 ]]; then
                     # Update progress and skip
-                    (
-                        flock -x 200
-                        local current=$(cat "$progress")
-                        echo $((current + 1)) > "$progress"
-                    ) 200>"$lockfile"
+                    exec 200>"$lockfile"
+                    flock -x 200
+                    local current=$(cat "$progress")
+                    echo $((current + 1)) > "$progress"
+                    echo "$pair_hash" >> "$completed_state"
+                    echo "$pair_hash" >> "$progress_state"
+                    flock -u 200
+                    exec 200>&-
                     continue
                 fi
             fi
@@ -13215,11 +13796,14 @@ PARALLEL_EOF
                 local frame_diff_pct=$(( (frame1 > frame2 ? frame1 - frame2 : frame2 - frame1) * 100 / (frame1 > frame2 ? frame1 : frame2) ))
                 if [[ $frame_diff_pct -gt 50 ]]; then
                     # Update progress and skip
-                    (
-                        flock -x 200
-                        local current=$(cat "$progress")
-                        echo $((current + 1)) > "$progress"
-                    ) 200>"$lockfile"
+                    exec 200>"$lockfile"
+                    flock -x 200
+                    local current=$(cat "$progress")
+                    echo $((current + 1)) > "$progress"
+                    echo "$pair_hash" >> "$completed_state"
+                    echo "$pair_hash" >> "$progress_state"
+                    flock -u 200
+                    exec 200>&-
                     continue
                 fi
             fi
@@ -13229,85 +13813,139 @@ PARALLEL_EOF
                 local dur_diff_pct=$(( (dur1 > dur2 ? dur1 - dur2 : dur2 - dur1) * 100 / (dur1 > dur2 ? dur1 : dur2) ))
                 if [[ $dur_diff_pct -gt 40 ]]; then
                     # Update progress and skip
-                    (
-                        flock -x 200
-                        local current=$(cat "$progress")
-                        echo $((current + 1)) > "$progress"
-                    ) 200>"$lockfile"
+                    exec 200>"$lockfile"
+                    flock -x 200
+                    local current=$(cat "$progress")
+                    echo $((current + 1)) > "$progress"
+                    echo "$pair_hash" >> "$completed_state"
+                    echo "$pair_hash" >> "$progress_state"
+                    flock -u 200
+                    exec 200>&-
                     continue
                 fi
             fi
             
-            ((comparison_count++))
-            
             # Passed pre-filters - perform detailed comparison (Levels 1-3)
-            local checksum1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$checksums_lookup")
-            local checksum2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$checksums_lookup")
+            # OPTIMIZATION 2: Get checksums from in-memory map
+            local checksum1="${gif_checksum_map[$file1]}"
+            local checksum2="${gif_checksum_map[$file2]}"
             local duplicate_found=""
             
-            # DEBUG: Log first few comparisons from worker 0
-            if [[ $worker_id -eq 0 && $comparison_count -le 3 ]]; then
-                echo "DEBUG GIF Worker $worker_id (#$comparison_count): Comparing indices $i vs $j" >> "${results}.debug"
-                echo "  file1=$file1" >> "${results}.debug"
-                echo "  file2=$file2" >> "${results}.debug"
-                echo "  checksum1=${checksum1:-EMPTY}" >> "${results}.debug"
-                echo "  checksum2=${checksum2:-EMPTY}" >> "${results}.debug"
-                [[ "$checksum1" == "$checksum2" ]] && echo "  MATCH!" >> "${results}.debug" || echo "  No match" >> "${results}.debug"
-            fi
-            
-            # Level 1: MD5 match
+            # Level 1: Checksum match
             if [[ -n "$checksum1" && -n "$checksum2" && "$checksum1" == "$checksum2" ]]; then
                 duplicate_found="LEVEL1|100|$file1|$file2|Exact binary match"
-                echo "DEBUG GIF: FOUND DUPLICATE Level1: $(basename "$file1") vs $(basename "$file2")" >> "${results}.debug"
+                cache_result="DUPLICATE_LEVEL1"
             fi
             
-            # Level 2: Visual hash
+            # Level 2: Visual hash (OPTIMIZATION 2: in-memory lookup)
             if [[ -z "$duplicate_found" ]]; then
-                local hash1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$hashes_lookup")
-                local hash2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$hashes_lookup")
+                local hash1="${gif_hash_map[$file1]}"
+                local hash2="${gif_hash_map[$file2]}"
                 if [[ -n "$hash1" && -n "$hash2" && "$hash1" == "$hash2" ]]; then
                     duplicate_found="LEVEL2|95|$file1|$file2|Identical visual fingerprint"
+                    cache_result="DUPLICATE_LEVEL2"
                 fi
             fi
             
-            # Level 3: Content fingerprint
+            # Level 3: Content fingerprint (OPTIMIZATION 2: in-memory lookup)
             if [[ -z "$duplicate_found" ]]; then
-                local fp1=$(awk -F'|' -v k="$file1" '$1==k{print $2; exit}' "$fingerprints_lookup")
-                local fp2=$(awk -F'|' -v k="$file2" '$1==k{print $2; exit}' "$fingerprints_lookup")
+                local fp1="${gif_fingerprint_map[$file1]}"
+                local fp2="${gif_fingerprint_map[$file2]}"
                 if [[ -n "$fp1" && -n "$fp2" && "$fp1" == "$fp2" ]]; then
                     if [[ $size1 -gt 0 && $size2 -gt 0 ]]; then
                         local size_ratio=$(( (size1 < size2 ? size1 * 100 / size2 : size2 * 100 / size1) ))
                         if [[ $size_ratio -ge 95 ]]; then
                             duplicate_found="LEVEL3|90|$file1|$file2|Identical metadata"
+                            cache_result="DUPLICATE_LEVEL3"
                         fi
                     fi
                 fi
             fi
             
-            # Write result
-            if [[ -n "$duplicate_found" ]]; then
-                (
-                    flock -x 200
-                    echo "$duplicate_found" >> "$results"
-                ) 200>"$lockfile"
+            # Calculate duration
+            local end_time=$(date +%s%3N)
+            local duration_ms=$((end_time - start_time))
+            
+            # OPTIMIZATION 3: Batch results in memory
+            [[ -n "$duplicate_found" ]] && gif_batch_results+=("$duplicate_found")
+            gif_batch_completed+=("$pair_hash")
+            gif_batch_progress_state+=("$pair_hash")
+            ((gif_batch_count++))
+            
+            # Update progress immediately for live progress bar (lightweight)
+            exec 200>"$lockfile"
+            flock -x 200
+            local current=$(cat "$progress")
+            echo $((current + 1)) > "$progress"
+            flock -u 200
+            exec 200>&-
+            
+            # Save to smart cache (still immediate for persistence)
+            if [[ -n "$smart_cache" && -f "$smart_cache" ]]; then
+                save_comparison_to_cache "$pair_hash" "$checksum1" "$checksum2" "$cache_result" "$duration_ms" "gif" 2>/dev/null || true
             fi
             
-            # Update progress
-            (
+            # Flush batch when full
+            if [[ $gif_batch_count -ge $gif_batch_size ]]; then
+                exec 200>"$lockfile"
                 flock -x 200
-                local current=$(cat "$progress")
-                echo $((current + 1)) > "$progress"
-            ) 200>"$lockfile"
+                for result in "${gif_batch_results[@]}"; do
+                    echo "$result" >> "$results"
+                done
+                for pair in "${gif_batch_completed[@]}"; do
+                    echo "$pair" >> "$completed_state"
+                done
+                for pair in "${gif_batch_progress_state[@]}"; do
+                    echo "$pair" >> "$progress_state"
+                done
+                flock -u 200
+                exec 200>&-
+                
+                gif_batch_results=()
+                gif_batch_completed=()
+                gif_batch_progress_state=()
+                gif_batch_count=0
+            fi
         done
+        
+        # Flush remaining batch at end
+        if [[ $gif_batch_count -gt 0 ]]; then
+            exec 200>"$lockfile"
+            flock -x 200
+            for result in "${gif_batch_results[@]}"; do
+                echo "$result" >> "$results"
+            done
+            for pair in "${gif_batch_completed[@]}"; do
+                echo "$pair" >> "$completed_state"
+            done
+            for pair in "${gif_batch_progress_state[@]}"; do
+                echo "$pair" >> "$progress_state"
+            done
+            flock -u 200
+            exec 200>&-
+        fi
     }
     
     # Export for workers
     export -f compare_gif_worker
     
+    # Export smart cache functions if enabled
+    if [[ -n "$gif_smart_cache_file" && -f "$gif_smart_cache_file" ]]; then
+        export -f init_comparison_cache 2>/dev/null || true
+        export -f validate_comparison_cache 2>/dev/null || true
+        export -f rebuild_comparison_cache 2>/dev/null || true
+        export -f load_comparison_cache 2>/dev/null || true
+        export -f save_comparison_to_cache 2>/dev/null || true
+        export -f cleanup_comparison_cache 2>/dev/null || true
+        export -f get_comparison_cache_stats 2>/dev/null || true
+        export -f validate_and_repair_comparison_cache 2>/dev/null || true
+    fi
+    
     # Launch workers
+    echo -e "  ${MAGENTA}🚀 Started $max_workers parallel workers for GIFs...${NC}"
     local gif_worker_pids=()
     for ((w=0; w<max_workers; w++)); do
-        compare_gif_worker $w "$gif_queue_file" "$gif_duplicates_file" "$gif_progress_file" "$gif_lock_file" "$gif_lookup_dir" &
+        compare_gif_worker $w "$gif_queue_file" "$gif_duplicates_file" "$gif_progress_file" "$gif_lock_file" "$gif_lookup_dir" "$gif_completed_state_file" "$gif_progress_state_file" "$gif_smart_cache_file" &
         gif_worker_pids+=($!)
     done
     
@@ -13329,7 +13967,10 @@ PARALLEL_EOF
         
         # Show progress with worker count
         if [[ $gif_current_progress -ne $gif_last_progress ]]; then
-            local progress_pct=$((gif_current_progress * 100 / gif_total_queued))
+            local progress_pct=0
+            if [[ $gif_total_queued -gt 0 ]]; then
+                progress_pct=$((gif_current_progress * 100 / gif_total_queued))
+            fi
             local filled=$((progress_pct * 30 / 100))
             local empty=$((30 - filled))
             
@@ -13360,14 +14001,27 @@ PARALLEL_EOF
     
     echo -e "  ${GREEN}✓ Parallel GIF comparison complete (Levels 1-3)${NC}"
     
-    # Show debug output
-    if [[ -f "${gif_duplicates_file}.debug" ]]; then
-        echo -e "  ${YELLOW}DEBUG GIF: Worker trace (first 20 lines):${NC}"
-        head -20 "${gif_duplicates_file}.debug" | sed 's/^/    /'
-        echo -e "  ${YELLOW}DEBUG GIF: Full trace in: ${gif_duplicates_file}.debug${NC}"
+    # 📊 Display smart cache statistics and trigger cleanup
+    if [[ -n "$gif_smart_cache_file" && -f "$gif_smart_cache_file" ]]; then
+        echo ""
+        echo -e "  ${BLUE}💾 Multi-Layer Smart Cache Final Report:${NC}"
+        
+        # Get final cache statistics
+        local final_cache_stats=$(get_comparison_cache_stats "gif" 2>/dev/null || echo "")
+        if [[ -n "$final_cache_stats" ]]; then
+            echo "$final_cache_stats" | while IFS= read -r stat_line; do
+                [[ -n "$stat_line" ]] && echo -e "    ${CYAN}$stat_line${NC}"
+            done
+        fi
+        
+        # Trigger background cleanup and optimization
+        echo -e "    ${GRAY}├─ Running cache optimization...${NC}"
+        cleanup_comparison_cache "gif" 2>/dev/null &
+        echo -e "    ${GRAY}└─ Cache optimization running in background${NC}"
+        echo ""
     fi
     
-    # Clean up lookup files
+    # Clean up temporary files
     rm -rf "$gif_lookup_dir" 2>/dev/null
     
     # SEQUENTIAL FALLBACK - DISABLED (parallel workers now use file-based lookups)
@@ -13380,7 +14034,10 @@ PARALLEL_EOF
             
             # Progress every 1000 pairs
             if [[ $((seq_progress % 1000)) -eq 0 ]]; then
-                local progress_pct=$((seq_progress * 100 / gif_total_queued))
+                local progress_pct=0
+                if [[ $gif_total_queued -gt 0 ]]; then
+                    progress_pct=$((seq_progress * 100 / gif_total_queued))
+                fi
                 printf "\r  ${CYAN}[█] ${BOLD}%3d%%${NC} ${GRAY}(%d/%d)${NC}" "$progress_pct" "$seq_progress" "$gif_total_queued"
             fi
             
