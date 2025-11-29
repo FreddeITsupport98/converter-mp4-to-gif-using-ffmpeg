@@ -19045,13 +19045,16 @@ check_dependencies() {
             hw_support_found=true
             echo -e "  ${GREEN}✓ NVENC encoder available${NC}"
             
-            # Check for nvidia-smi (driver)
-            if ! command -v nvidia-smi >/dev/null 2>&1; then
-                hw_drivers_missing+=("nvidia-driver (for NVENC)")
-                echo -e "  ${YELLOW}⚠️  NVIDIA drivers not detected - NVENC may not work${NC}"
-            else
-                local nvidia_driver_version=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)
-                echo -e "  ${GREEN}✓ NVIDIA driver: ${nvidia_driver_version:-installed}${NC}"
+            # Only warn about drivers if an NVIDIA GPU is actually present
+            if [[ "$has_nvidia_gpu" == true ]]; then
+                # Check for nvidia-smi (driver)
+                if ! command -v nvidia-smi >/dev/null 2>&1; then
+                    hw_drivers_missing+=("nvidia-driver (for NVENC)")
+                    echo -e "  ${YELLOW}⚠️  NVIDIA drivers not detected - NVENC may not work${NC}"
+                else
+                    local nvidia_driver_version=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)
+                    echo -e "  ${GREEN}✓ NVIDIA driver: ${nvidia_driver_version:-installed}${NC}"
+                fi
             fi
         fi
         
@@ -19077,10 +19080,19 @@ check_dependencies() {
                     echo -e "  ${YELLOW}⚠️  libva-utils not installed - install for VAAPI validation${NC}"
                 fi
                 
-                # Check for Mesa drivers
-                if ! ldconfig -p 2>/dev/null | grep -q "libva-mesa-driver"; then
-                    hw_drivers_missing+=("mesa-va-drivers (for AMD VAAPI)")
-                    echo -e "  ${YELLOW}⚠️  Mesa VAAPI drivers may not be installed${NC}"
+                # Check for Mesa VAAPI drivers
+                # Prefer runtime validation via vainfo when available (more reliable across distros)
+                if command -v vainfo >/dev/null 2>&1; then
+                    if ! vainfo >/dev/null 2>&1; then
+                        hw_drivers_missing+=("mesa-va-drivers (for AMD VAAPI)")
+                        echo -e "  ${YELLOW}⚠️  Mesa VAAPI drivers may not be installed (vainfo failed)${NC}"
+                    fi
+                else
+                    # Fallback heuristic for systems without vainfo
+                    if ! ldconfig -p 2>/dev/null | grep -q "libva-mesa"; then
+                        hw_drivers_missing+=("mesa-va-drivers (for AMD VAAPI)")
+                        echo -e "  ${YELLOW}⚠️  Mesa VAAPI drivers may not be installed${NC}"
+                    fi
                 fi
             fi
             
@@ -26257,11 +26269,13 @@ main() {
     # Initialize release fingerprint system (track installed version integrity)
     load_release_fingerprint 2>/dev/null || true
     
-    # Automatic update check (silent, runs in background)
+    # Automatic update check
     # Automatically skipped if DEV_MODE=true
+    # NOTE: Run synchronously to avoid background prompts interfering with
+    #       dependency and hardware detection input handling.
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${BLUE}🔍 Performing system checks...${NC}"
-    check_for_updates &
+    check_for_updates
     
     check_dependencies
     validate_environment
