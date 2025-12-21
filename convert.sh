@@ -10459,10 +10459,14 @@ META_EOF
     # 🚀 PARALLEL COMPARISON FRAMEWORK - RE-ENABLED
     # Now works with top-level worker function + persistent directories + no EXIT trap
     local cpu_cores=$(nproc 2>/dev/null || echo "4")
-    # Use 66% of available cores (leave 33% for system + other processes)
-    local max_workers=$(( cpu_cores * 2 / 3 ))
-    [[ $max_workers -lt 4 ]] && max_workers=4     # Minimum 4 workers
-    [[ $max_workers -gt 24 ]] && max_workers=24   # Maximum 24 workers (diminishing returns)
+    # Dynamically adapt worker count to available cores while keeping the system responsive
+    # Use (cores - 1) when we have 4+ cores so the desktop stays usable.
+    local max_workers=$cpu_cores
+    if [[ $max_workers -ge 4 ]]; then
+        max_workers=$((max_workers - 1))
+    fi
+    [[ $max_workers -lt 2 ]] && max_workers=2      # Minimum 2 workers
+    [[ $max_workers -gt 32 ]] && max_workers=32    # Hard cap to avoid extreme oversubscription
     
     # Create synchronized result files
     local results_dir="$temp_analysis_dir/stage2_results"
@@ -13343,10 +13347,14 @@ PARALLEL_EOF
     # 🚀 PARALLEL COMPARISON FRAMEWORK with file-based data exchange
     # Re-enabled now that EXIT trap removed and using persistent directories
     local cpu_cores=$(nproc 2>/dev/null || echo "4")
-    # Use 66% of available cores (leave 33% for system + other processes)
-    local max_workers=$(( cpu_cores * 2 / 3 ))
-    [[ $max_workers -lt 4 ]] && max_workers=4     # Minimum 4 workers
-    [[ $max_workers -gt 24 ]] && max_workers=24   # Maximum 24 workers
+    # Dynamically adapt worker count to available cores while keeping the system responsive
+    # Use (cores - 1) when we have 4+ cores so the desktop stays usable.
+    local max_workers=$cpu_cores
+    if [[ $max_workers -ge 4 ]]; then
+        max_workers=$((max_workers - 1))
+    fi
+    [[ $max_workers -lt 2 ]] && max_workers=2      # Minimum 2 workers
+    [[ $max_workers -gt 32 ]] && max_workers=32    # Hard cap to avoid extreme oversubscription
     
     # Create results directory
     local gif_results_dir="$temp_analysis_dir/gif_stage2_results"
