@@ -1145,12 +1145,22 @@ AI_CACHE_VERSION="2.0"  # Increment to invalidate old cache
 AI_CACHE_ENABLED=true
 AI_CACHE_MAX_AGE_DAYS=30  # Cache entries older than this are cleaned up
 
+# Ensure AI cache directory exists to avoid "No such file or directory" errors
+if [[ "$AI_CACHE_ENABLED" == "true" ]]; then
+    mkdir -p "$AI_CACHE_DIR" 2>/dev/null || true
+fi
+
 # 🔐 Checksum Cache System Configuration
 CHECKSUM_CACHE_DIR="$LOG_DIR/checksum_cache"
 CHECKSUM_CACHE_DB="$CHECKSUM_CACHE_DIR/checksums.db"
 CHECKSUM_CACHE_VERSION="1.0"
 CHECKSUM_CACHE_ENABLED=true
 CHECKSUM_CACHE_MAX_AGE_DAYS=90  # Cache checksums for 90 days
+
+# Ensure checksum cache directory exists as well
+if [[ "$CHECKSUM_CACHE_ENABLED" == "true" ]]; then
+    mkdir -p "$CHECKSUM_CACHE_DIR" 2>/dev/null || true
+fi
 
 # 📊 Duplicate Detection Statistics
 DUPLICATE_STATS_TOTAL_CHECKED=0
