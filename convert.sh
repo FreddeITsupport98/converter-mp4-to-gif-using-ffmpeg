@@ -10360,11 +10360,13 @@ META_EOF
     
     # SANITY CHECK: Verify checksums detect duplicates
     echo -e "  ${CYAN}🔍 Sanity check: Validating checksum uniqueness...${NC}"
-    local duplicate_checksums=$(cut -d'|' -f2 "$results_file" | sort | uniq -d | wc -l)
+    # Note: head may close the pipe early which can cause uniq to get SIGPIPE and print
+    # "Broken pipe" warnings. We silence uniq's stderr to avoid noisy but harmless messages.
+    local duplicate_checksums=$(cut -d'|' -f2 "$results_file" | sort | uniq -d 2>/dev/null | wc -l)
     if [[ $duplicate_checksums -gt 0 ]]; then
         echo -e "  ${GREEN}✓ Found $duplicate_checksums duplicate checksum(s) - detection working!${NC}"
         # Show sample duplicates
-        local sample_dup=$(cut -d'|' -f2 "$results_file" | sort | uniq -d | head -1)
+        local sample_dup=$(cut -d'|' -f2 "$results_file" | sort | uniq -d 2>/dev/null | head -1)
         if [[ -n "$sample_dup" ]]; then
             echo -e "  ${GRAY}  Sample: Files with checksum ${sample_dup:0:16}...${NC}"
             grep "|$sample_dup|" "$results_file" | cut -d'|' -f1 | while read fname; do
@@ -13074,11 +13076,12 @@ PARALLEL_EOF
     
     # SANITY CHECK: Verify checksums detect duplicates
     echo -e "  ${CYAN}🔍 Sanity check: Validating checksum uniqueness...${NC}"
-    local duplicate_checksums=$(cut -d'|' -f2 "$results_file" | grep -v -E '^(ERROR|UNREADABLE|TIMEOUT|EMPTY|AI_)' | sort | uniq -d | wc -l)
+    # Silence harmless "uniq: Broken pipe" warnings when head closes the pipe early
+    local duplicate_checksums=$(cut -d'|' -f2 "$results_file" | grep -v -E '^(ERROR|UNREADABLE|TIMEOUT|EMPTY|AI_)' | sort | uniq -d 2>/dev/null | wc -l)
     if [[ $duplicate_checksums -gt 0 ]]; then
         echo -e "  ${GREEN}✓ Found $duplicate_checksums duplicate checksum(s) - detection working!${NC}"
         # Show sample duplicates
-        local sample_dup=$(cut -d'|' -f2 "$results_file" | grep -v -E '^(ERROR|UNREADABLE|TIMEOUT|EMPTY|AI_)' | sort | uniq -d | head -1)
+        local sample_dup=$(cut -d'|' -f2 "$results_file" | grep -v -E '^(ERROR|UNREADABLE|TIMEOUT|EMPTY|AI_)' | sort | uniq -d 2>/dev/null | head -1)
         if [[ -n "$sample_dup" ]]; then
             echo -e "  ${GRAY}  Sample: Files with checksum ${sample_dup:0:16}...${NC}"
             grep "|$sample_dup|" "$results_file" | cut -d'|' -f1 | while read fname; do
