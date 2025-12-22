@@ -12132,7 +12132,6 @@ detect_duplicate_gifs() {
     mkdir -p "$temp_analysis_dir"
     # Cleanup old temp directories (older than 1 day)
     find "${GIF_CONVERTER_DIR}/temp/gif" -maxdepth 1 -name "analysis_*" -type d -mtime +1 -exec rm -rf {} \; 2>/dev/null || true
-rue
     
     # Count total GIF files first for progress calculation (avoid duplicates)
     local gif_files_list=()
